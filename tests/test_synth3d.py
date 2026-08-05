@@ -373,3 +373,147 @@ def test_cluster_offsets_ring():
     assert len(offs) == 6
     for dx, dy in offs:
         assert 0.0 < (dx * dx + dy * dy) ** 0.5 < 0.03 * 1.5
+
+
+# --------------------------------------------------------- annotate ----
+
+import numpy as np
+
+from recog.synth3d import annotate as A
+
+
+def _meta(**over):
+    base = {"class": "battery", "asset": "AnkerPowerCore10000",
+            "variant": "cells_only", "role": "cell"}
+    base.update(over)
+    return base
+
+
+def test_box_edges_are_exclusive():
+    """A 1-pixel object must yield a 1x1 box, never a zero-area one."""
+    ids = np.zeros((10, 10), dtype=np.int32)
+    ids[4, 5] = 1
+    cfg = C.FilterCfg(min_px=1, min_side=1)
+    anns, _ = A.boxes_from_mask(ids, {1: _meta()}, C.class_ids(), cfg)
+    assert len(anns) == 1
+    assert anns[0]["bbox_xyxy"] == [5, 4, 6, 5]
+    assert anns[0]["bbox_xywh"] == [5, 4, 1, 1]
+
+
+def test_no_annotation_has_zero_area():
+    rng = np.random.default_rng(0)
+    ids = rng.integers(0, 4, size=(64, 64)).astype(np.int32)
+    meta = {i: _meta() for i in (1, 2, 3)}
+    cfg = C.FilterCfg(min_px=1, min_side=1)
+    anns, _ = A.boxes_from_mask(ids, meta, C.class_ids(), cfg)
+    for a in anns:
+        x0, y0, x1, y1 = a["bbox_xyxy"]
+        assert x1 > x0 and y1 > y0
+
+
+def test_area_is_silhouette_pixels_not_box_area():
+    ids = np.zeros((20, 20), dtype=np.int32)
+    ids[2:12, 2:12] = 1          # 100 px box
+    ids[2:4, 2:4] = 0            # knock out 4 -> 96 visible
+    cfg = C.FilterCfg(min_px=1, min_side=1)
+    anns, _ = A.boxes_from_mask(ids, {1: _meta()}, C.class_ids(), cfg)
+    assert anns[0]["area"] == 96
+    x0, y0, x1, y1 = anns[0]["bbox_xyxy"]
+    assert (x1 - x0) * (y1 - y0) == 100
+
+
+def test_sealed_cell_produces_no_annotation():
+    """A cell inside an assembled shell contributes zero pixels."""
+    ids = np.zeros((32, 32), dtype=np.int32)
+    ids[4:28, 4:28] = 1                      # the case
+    meta = {1: _meta(**{"class": "cartridge", "role": "case"}),
+            2: _meta()}                      # cell id 2 is never drawn
+    cfg = C.FilterCfg(min_px=1, min_side=1)
+    anns, _ = A.boxes_from_mask(ids, meta, C.class_ids(), cfg)
+    assert [a["pass_index"] for a in anns] == [1]
+
+
+def test_truncation_flag_on_frame_edge():
+    ids = np.zeros((16, 16), dtype=np.int32)
+    ids[0:5, 3:9] = 1                        # touches y = 0
+    cfg = C.FilterCfg(min_px=1, min_side=1)
+    anns, _ = A.boxes_from_mask(ids, {1: _meta()}, C.class_ids(), cfg)
+    assert anns[0]["truncated"] is True
+
+
+def test_small_instances_are_dropped_with_a_reason():
+    ids = np.zeros((32, 32), dtype=np.int32)
+    ids[1, 1] = 1
+    cfg = C.FilterCfg(min_px=80, min_side=6)
+    anns, dropped = A.boxes_from_mask(ids, {1: _meta()}, C.class_ids(), cfg)
+    assert anns == []
+    assert dropped[0]["reason"].startswith("visible_px<")
+
+
+def test_merge_collapses_an_assembly_into_one_box():
+    ids = np.zeros((40, 40), dtype=np.int32)
+    ids[5:15, 5:15] = 1                      # shell top
+    ids[20:30, 20:30] = 2                    # shell bottom
+    meta = {1: _meta(), 2: _meta()}
+    for m in meta.values():
+        m["class"] = "cartridge"
+    cfg = C.FilterCfg(min_px=1, min_side=1)
+    anns, _ = A.boxes_from_mask(ids, meta, C.class_ids(), cfg)
+    merged = A.merge_group_boxes(anns, {1: "item0", 2: "item0"},
+                                 C.class_ids(), cfg)
+    assert len(merged) == 1
+    assert merged[0]["bbox_xyxy"] == [5, 5, 30, 30]
+    assert merged[0]["area"] == 200          # union of silhouettes, not box area
+
+
+def test_unmapped_class_is_dropped():
+    ids = np.zeros((16, 16), dtype=np.int32)
+    ids[2:10, 2:10] = 1
+    cfg = C.FilterCfg(min_px=1, min_side=1)
+    anns, dropped = A.boxes_from_mask(
+        ids, {1: _meta(**{"class": "widget"})}, C.class_ids(), cfg)
+    assert anns == []
+    assert dropped[0]["reason"] == "unmapped"
+
+
+# ------------------------------------------------------- VOC output ----
+
+def test_voc_xml_round_trips_through_the_real_loader(tmp_path):
+    """The contract is recog.dataset.parse_voc_xml, not a reimplementation."""
+    from recog.dataset import CLASS_MAP, parse_voc_xml
+
+    ids = np.zeros((60, 80), dtype=np.int32)
+    ids[10:30, 10:40] = 1
+    ids[35:50, 50:70] = 2
+    meta = {1: _meta(), 2: _meta()}
+    meta[2]["class"] = "cartridge"
+    cfg = C.FilterCfg(min_px=1, min_side=1)
+    anns, _ = A.boxes_from_mask(ids, meta, C.class_ids(), cfg)
+
+    xml = tmp_path / "scene_00000.xml"
+    A.write_voc_xml(str(xml), "scene_00000.png", 80, 60, anns)
+
+    parsed = parse_voc_xml(xml, CLASS_MAP)
+    assert parsed.filename == "scene_00000.png"
+    assert parsed.width == 80 and parsed.height == 60
+    assert parsed.labels == [1, 2]
+    assert parsed.boxes == [(10.0, 10.0, 40.0, 30.0), (50.0, 35.0, 70.0, 50.0)]
+
+
+def test_voc_survives_an_empty_annotation_list(tmp_path):
+    from recog.dataset import CLASS_MAP, parse_voc_xml
+    xml = tmp_path / "empty.xml"
+    A.write_voc_xml(str(xml), "empty.png", 32, 32, [])
+    parsed = parse_voc_xml(xml, CLASS_MAP)
+    assert parsed.boxes == [] and parsed.labels == []
+
+
+def test_voc_writes_integers_not_floats(tmp_path):
+    ids = np.zeros((20, 20), dtype=np.int32)
+    ids[2:10, 3:12] = 1
+    cfg = C.FilterCfg(min_px=1, min_side=1)
+    anns, _ = A.boxes_from_mask(ids, {1: _meta()}, C.class_ids(), cfg)
+    xml = tmp_path / "i.xml"
+    A.write_voc_xml(str(xml), "i.png", 20, 20, anns)
+    text = xml.read_text(encoding="utf-8")
+    assert "." not in text.split("<bndbox>")[1].split("</bndbox>")[0]
