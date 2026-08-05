@@ -190,3 +190,176 @@ def test_expected_cell_counts_per_asset():
     counts = {a["name"]: a["role_counts"].get("cell", 0) for a in cat["assets"]}
     assert counts == {"AnkerPowerCore10000": 3, "AnkerPowerCore13000": 4,
                       "AnkerPowerCore20100": 6, "AnkerPowerCore26800": 8}
+
+
+# ----------------------------------------------------------- layout ----
+
+import random
+
+from recog.synth3d import layout as L
+
+
+def _real_footprints():
+    """Footprints in metres, from the real catalog extents."""
+    cat = CAT.load_catalog(str(ASSETS))
+    out = []
+    for a in cat["assets"]:
+        ex = a["extents_mm"]
+        out.append((ex[0] / 1000.0, ex[1] / 1000.0))
+    return out
+
+
+def _aabb(fp, plc, cfg):
+    ex, ey = L.footprint_after_rotation(fp[0], fp[1], plc.quarter)
+    return (plc.x - ex / 2, plc.y - ey / 2, plc.x + ex / 2, plc.y + ey / 2)
+
+
+def _overlap(a, b):
+    # eps tolerates float noise (~1e-16) from the packer's mm<->m, top-left
+    # <-> centre round-trip when two jig pockets sit exactly shelf-adjacent;
+    # it is ~1e9x smaller than any real footprint dimension, so a genuine
+    # overlap (mm-cm scale) still trips this.
+    eps = 1e-9
+    return not (a[2] <= b[0] + eps or b[2] <= a[0] + eps
+                or a[3] <= b[1] + eps or b[3] <= a[1] + eps)
+
+
+def test_scatter_never_overlaps_over_300_scenes():
+    cfg = C.load_config().layout
+    fps = _real_footprints()
+    total = 0
+    for seed in range(300):
+        rng = random.Random(seed)
+        chosen = [rng.choice(fps) for _ in range(rng.randint(1, 4))]
+        plcs = L.plan(chosen, cfg, rng)
+        boxes = [_aabb(f, p, cfg) for f, p in zip(chosen, plcs) if p is not None]
+        total += len(boxes)
+        for i in range(len(boxes)):
+            for j in range(i + 1, len(boxes)):
+                assert not _overlap(boxes[i], boxes[j]), f"seed {seed}"
+    assert total > 500, f"only {total} items placed across 300 scenes"
+
+
+def test_scatter_stays_inside_the_area():
+    cfg = C.load_config().layout
+    W, H = cfg.area
+    fps = _real_footprints()
+    for seed in range(200):
+        rng = random.Random(seed)
+        chosen = [rng.choice(fps) for _ in range(rng.randint(1, 4))]
+        for f, p in zip(chosen, L.plan(chosen, cfg, rng)):
+            if p is None:
+                continue
+            x0, y0, x1, y1 = _aabb(f, p, cfg)
+            assert x0 >= -W / 2 - 1e-6 and x1 <= W / 2 + 1e-6, f"seed {seed}"
+            assert y0 >= -H / 2 - 1e-6 and y1 <= H / 2 + 1e-6, f"seed {seed}"
+
+
+def test_rotation_constraint_always_satisfied():
+    cfg = C.load_config().layout
+    fps = _real_footprints()
+    for seed in range(200):
+        rng = random.Random(seed)
+        for p in L.plan(fps, cfg, rng):
+            if p is None:
+                continue
+            assert p.quarter in (0, 1, 2, 3)
+            off = abs(p.rot_deg - p.quarter * 90)
+            assert off <= cfg.jitter_deg + 1e-9, f"tilt {off} exceeds cap"
+
+
+def test_plan_is_deterministic_for_a_seed():
+    cfg = C.load_config().layout
+    fps = _real_footprints()
+    a = [p.as_dict() if p else None for p in L.plan(fps, cfg, random.Random(7))]
+    b = [p.as_dict() if p else None for p in L.plan(fps, cfg, random.Random(7))]
+    assert a == b
+
+
+# -------------------------------------------------------------- jig ----
+
+def test_jig_pockets_contain_their_items():
+    cfg = C.load_config().layout
+    fps = _real_footprints()
+    for seed in range(100):
+        rng = random.Random(seed)
+        chosen = [rng.choice(fps) for _ in range(rng.randint(1, 4))]
+        plcs, pockets = L.plan_jig(chosen, cfg, rng)
+        placed = [(f, p) for f, p in zip(chosen, plcs) if p is not None]
+        assert len(pockets) == len(placed), f"seed {seed}"
+        for (f, p), pk in zip(placed, pockets):
+            ix0, iy0, ix1, iy1 = _aabb(f, p, cfg)
+            px0, py0 = pk.x - pk.w / 2, pk.y - pk.h / 2
+            px1, py1 = pk.x + pk.w / 2, pk.y + pk.h / 2
+            assert px0 <= ix0 + 1e-6 and ix1 <= px1 + 1e-6, f"seed {seed} x"
+            assert py0 <= iy0 + 1e-6 and iy1 <= py1 + 1e-6, f"seed {seed} y"
+
+
+def test_jig_pockets_never_overlap():
+    cfg = C.load_config().layout
+    fps = _real_footprints()
+    for seed in range(100):
+        rng = random.Random(seed)
+        chosen = [rng.choice(fps) for _ in range(rng.randint(2, 4))]
+        _, pockets = L.plan_jig(chosen, cfg, rng)
+        boxes = [(p.x - p.w / 2, p.y - p.h / 2, p.x + p.w / 2, p.y + p.h / 2)
+                 for p in pockets]
+        for i in range(len(boxes)):
+            for j in range(i + 1, len(boxes)):
+                assert not _overlap(boxes[i], boxes[j]), f"seed {seed}"
+
+
+def test_jig_pockets_stay_inside_the_area():
+    cfg = C.load_config().layout
+    W, H = cfg.area
+    fps = _real_footprints()
+    for seed in range(100):
+        rng = random.Random(seed)
+        chosen = [rng.choice(fps) for _ in range(rng.randint(1, 4))]
+        _, pockets = L.plan_jig(chosen, cfg, rng)
+        for p in pockets:
+            assert p.x - p.w / 2 >= -W / 2 - 1e-6
+            assert p.x + p.w / 2 <= W / 2 + 1e-6
+            assert p.y - p.h / 2 >= -H / 2 - 1e-6
+            assert p.y + p.h / 2 <= H / 2 + 1e-6
+
+
+def test_jig_clearance_is_actually_applied():
+    cfg = C.load_config().layout
+    rng = random.Random(0)
+    fp = [(0.06, 0.09)]
+    plcs, pockets = L.plan_jig(fp, cfg, rng)
+    assert plcs[0] is not None and len(pockets) == 1
+    pk = pockets[0]
+    ex, ey = L.footprint_after_rotation(0.06, 0.09, plcs[0].quarter)
+    assert pk.w >= ex + 2 * cfg.jig_clearance - 1e-9
+    assert pk.h >= ey + 2 * cfg.jig_clearance - 1e-9
+
+
+def test_jig_rotation_uses_the_tighter_jitter_cap():
+    """Parts sit inside pockets; scatter's 2 deg would sweep past the clearance."""
+    cfg = C.load_config().layout
+    fps = _real_footprints()
+    for seed in range(50):
+        rng = random.Random(seed)
+        plcs, _ = L.plan_jig(fps, cfg, rng)
+        for p in plcs:
+            if p is None:
+                continue
+            assert abs(p.rot_deg - p.quarter * 90) <= cfg.jig_jitter_deg + 1e-9
+
+
+def test_jig_returns_none_for_items_that_do_not_fit():
+    cfg = C.load_config().layout
+    rng = random.Random(0)
+    plcs, pockets = L.plan_jig([(5.0, 5.0)], cfg, rng)
+    assert plcs == [None]
+    assert pockets == []
+
+
+def test_cluster_offsets_ring():
+    rng = random.Random(3)
+    offs = L.cluster_offsets(6, 0.03, rng)
+    assert len(offs) == 6
+    for dx, dy in offs:
+        assert 0.0 < (dx * dx + dy * dy) ** 0.5 < 0.03 * 1.5
