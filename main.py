@@ -79,6 +79,23 @@ def _camera_source(device: int = 0) -> Iterable[np.ndarray]:  # pragma: no cover
         cap.release()
 
 
+def _resolve_image_dir(
+    mode_cfg: Dict[str, Any], recog_cfg: Dict[str, Any],
+) -> str:
+    """Directory the ``synthetic`` source cycles through.
+
+    ``mode.img_dir`` wins, because the demo's frames and the detector's
+    training set are not the same corpus: ``recognition.dataset.img_dir``
+    points at the Blender-rendered dataset (``recog/dataset3d``), which is
+    generated on demand and is not in the repo. Falling back to it keeps
+    older configs that carry no ``mode.img_dir`` working unchanged.
+    """
+    explicit = mode_cfg.get("img_dir")
+    if explicit:
+        return str(explicit)
+    return recog_cfg.get("dataset", {}).get("img_dir", "recog/dataset/images")
+
+
 def _image_source(
     mode_cfg: Dict[str, Any], image_dir: str,
 ) -> Iterable[np.ndarray]:
@@ -170,12 +187,7 @@ def run(config_path: str) -> Dict[str, int]:
         cfg=recog_cfg,
     )
 
-    images = _image_source(
-        mode_cfg,
-        recog_cfg.get("dataset", {}).get(
-            "img_dir", "recog/dataset/images",
-        ),
-    )
+    images = _image_source(mode_cfg, _resolve_image_dir(mode_cfg, recog_cfg))
     img_iter = iter(images)
 
     max_cycles = int(mode_cfg.get("max_cycles", 10))

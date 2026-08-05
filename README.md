@@ -87,6 +87,8 @@ There are deliberately two synthetic-scene generators, and they are not intercha
 
 Both write the same flat Pascal-VOC layout (`images/` + `annotations/`), so `recog.dataset.BatteryCartridgeDataset` reads either one and `recog/training.py` owns the train/val split. Point `configs/recognition.yaml`'s `dataset` block at whichever you want to train on.
 
+The demo's frames are configured separately, in `configs/demo.yaml`'s `mode.img_dir` — it defaults to `recog/dataset/images` and falls back to `recognition.dataset.img_dir` when unset. Repointing the training set at `recog/dataset3d` therefore leaves `python main.py --config configs/demo.yaml` working.
+
 ```bash
 python -m recog.sync_config
 BLENDER="/c/Program Files/Blender Foundation/Blender 5.0/blender.exe"
