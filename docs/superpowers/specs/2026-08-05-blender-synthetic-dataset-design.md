@@ -448,7 +448,33 @@ against the installed build and the replacements confirmed working.
 | `scene.render.filter_width = 0.01` | `scene.cycles.filter_width = 0.01` | `AttributeError`; the property does not exist. `scene.render.filter_size` also exists but Cycles reads its own. |
 | `scene.node_tree` | `scene.compositing_node_group`, assigned a tree from `bpy.data.node_groups.new(name, "CompositorNodeTree")` | `AttributeError` on every index pass |
 | `rl.outputs["IndexOB"]` | `rl.outputs["Object Index"]` | `KeyError`; socket renamed |
-| `image_settings.file_format = "OPEN_EXR_MULTILAYER"` | removed from the enum | n/a — the File Output node path is used instead, which still works |
+| `CompositorNodeOutputFile.base_path` / `.file_slots` | `.directory` / `.file_name` / `.file_output_items` | `AttributeError`; the node was rewritten |
+
+**Correction (found during Task 6, after this section was first written).** The
+original version of this table listed `CompositorNodeOutputFile` as confirmed
+working. That was an overclaim: the probe only checked that the node could be
+*created*, never that `file_slots` existed. It does not. Three further details,
+all measured:
+
+- The node-level `format` accepts only `OPEN_EXR_MULTILAYER`, so the pixel
+  format must be set **per item**, not on the node.
+- **A `file_output_items` entry whose name is non-empty becomes an EXR layer
+  prefix.** Any non-empty name writes channel `<item>.V`, which Blender then
+  treats as multilayer and reads back as a **0×0 image** — a valid ~68 KB file
+  on disk and an empty mask, with no error raised. The item name must be `""`.
+- 5.0 writes `{stem}_.exr` with **no frame number**, so the directory-scan
+  fallback in `render_index_map` is load-bearing rather than defensive.
+
+Socket lookup has a further wrinkle: `rl.outputs["Object Index"]` only resolves
+**enabled** sockets, and EEVEE has no object-index pass on 5.0. The render must
+therefore be configured for Cycles with `use_pass_object_index` set *before* the
+socket is looked up — the reverse of partsgen's call order.
+
+**Invariant 1 does not apply to Blender 5.0.** Measured with two adjacent cubes
+at `filter_width` 0.01, 1.5 and 5.0, at 1 and 16 spp: identical masks, zero
+fractional pixels, identical per-id counts. **Cycles 5.0 does not filter the
+Object Index pass at all.** `_set_filter_width` is retained because 4.x does
+filter it, but on 5.0 it is a no-op and the index-pass gate cannot fail on it.
 
 The dangerous one is the second. **`scene.use_nodes = True` still succeeds
 silently in 5.0**, so nothing fails until `scene.node_tree` is dereferenced. Code
@@ -486,9 +512,26 @@ and that rename is confirmed present on 5.0 (`Coat Weight`).
    `{stem}_0001.exr` and falls back to a directory scan. The 5.0 compositor
    rewrite (§11.1) is handled, but the written filename is the remaining
    unverified part of that path — keep the directory-scan fallback.
-3. **glTF orientation.** `assets.lay_flat()` rotates each part so its smallest
-   extent runs along Z. Check with `--save-blend` on sample 0: power banks should
-   lie flat and cells on their sides, not upright.
+3. **glTF orientation — CONFIRMED BROKEN in the source project, fixed in Task 6.**
+   The partsgen HANDOFF listed this as likely failure #1 and was right. The glTF
+   importer sets `rotation_mode = 'QUATERNION'` on every imported object, so
+   `assets.lay_flat()` and `assets.place_item()` — which both write
+   `rotation_euler` — are **complete silent no-ops**. Measured: writing 90° leaves
+   the world bounding box byte-identical while the property reads back `1.5708`.
+
+   Consequences had it shipped: every 18650 cell stands on its end
+   (`18.3 × 18.3 × 65.0` instead of `65 × 18.3 × 18.3`), every shell stands on its
+   long edge, and `place_item` silently discards `Placement.rot_deg` so the entire
+   dataset would have **zero rotation diversity** despite `layout.py` computing
+   rotations correctly.
+
+   The naive `rotation_mode = "XYZ"` fix is worse than the bug: it makes `lay_flat`
+   live, and `lay_flat`'s pivot line `o.location = pivot + Vector(o.location) - pivot`
+   is algebraically a no-op, so each object rotates about its own origin and
+   assemblies tear apart (measured `114.7 × 90.9 × 52.2` versus the correct
+   `62.9 × 90.9 × 22.2`). The correct fix composes a pivot-translate / rotate /
+   pivot-translate-back matrix and assigns `matrix_world`, which is rotation-mode
+   agnostic.
 4. **Jig realism.** A procedurally generated blue plate will not match the real
    3D-printed fixture exactly. It is domain randomization, not a digital twin,
    and only 30% of scenes use it.
