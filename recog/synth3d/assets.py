@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Tuple
 
 import bpy
-from mathutils import Vector
+from mathutils import Matrix, Vector
 
 from .catalog import load_catalog, role_of
 from .config import Variant
@@ -77,19 +77,35 @@ def lay_flat(objects):
     the pipeline independent of how any individual CAD file was modelled. For a
     22mm-thick power bank this puts the slab flat; for an 18650 cell it lays the
     65mm axis horizontal.
+
+    DO NOT "simplify" this back into `o.rotation_euler += ...`. Two reasons,
+    both of which fail SILENTLY - the scene still renders, just wrong:
+
+    1. The glTF importer sets `rotation_mode = 'QUATERNION'` on every object it
+       creates. Blender IGNORES `rotation_euler` in quaternion mode, so euler
+       writes land in the property and never reach `matrix_world`. Measured:
+       after writing 90 degrees the property read back 1.5708 while the world
+       extents stayed byte-identical at [18.3, 18.3, 65.0]mm. Every cell stood
+       on its end and every shell stood on its long edge.
+    2. Even with the rotation mode forced to XYZ, per-object euler writes rotate
+       each object about ITS OWN origin, not about the group pivot, which pulls
+       an assembly apart (measured [114.7, 90.9, 52.2]mm instead of
+       [62.9, 90.9, 22.2]mm). A single pivot-conjugated matrix applied to every
+       member is what keeps the assembly rigid.
+
+    Assigning `matrix_world` is immune to both: it is rotation-mode agnostic and
+    it moves the whole group as one body. `_gate_orientation.py` asserts this.
     """
     lo, hi = group_bbox(objects)
     ext = hi - lo
     axis = min(range(3), key=lambda i: ext[i])
     if axis == 2:
         return
-    rot = (math.radians(90), 0, 0) if axis == 1 else (0, math.radians(90), 0)
+    R = Matrix.Rotation(math.radians(90), 4, "X" if axis == 1 else "Y")
     pivot = (lo + hi) / 2
+    M = Matrix.Translation(pivot) @ R @ Matrix.Translation(-pivot)
     for o in objects:
-        o.rotation_euler = (o.rotation_euler[0] + rot[0],
-                            o.rotation_euler[1] + rot[1],
-                            o.rotation_euler[2] + rot[2])
-        o.location = pivot + Vector(o.location) - pivot
+        o.matrix_world = M @ o.matrix_world
     bpy.context.view_layer.update()
 
 
@@ -235,18 +251,25 @@ class AssetLibrary:
 
 
 def place_item(item: Item, placement, rng: random.Random):
-    """Apply a Placement: rotate about Z, move into position, sit on z=0."""
-    rot = math.radians(placement.rot_deg)
-    cos_r, sin_r = math.cos(rot), math.sin(rot)
+    """
+    Apply a Placement: rotate about Z, move into position, sit on z=0.
+
+    Composes one world matrix and applies it to every member, for the same two
+    reasons lay_flat does - `o.rotation_euler.z += rot` is a no-op under the
+    importer's QUATERNION rotation mode, which silently threw away every
+    rotation layout.py asked for and left the dataset with zero rotation
+    diversity. The gate asserts two rot_deg values give two different bboxes.
+
+    rng is unused; it is kept for signature stability with the callers and with
+    the other placement helpers.
+    """
     bpy.context.view_layer.update()
     lo, hi = group_bbox(item.objects)
-    centre = ((lo.x + hi.x) / 2, (lo.y + hi.y) / 2)
-
+    centre = Vector(((lo.x + hi.x) / 2, (lo.y + hi.y) / 2, 0.0))
+    R = Matrix.Rotation(math.radians(placement.rot_deg), 4, "Z")
+    M = (Matrix.Translation(Vector((placement.x, placement.y, 0.0)))
+         @ R @ Matrix.Translation(-centre))
     for o in item.objects:
-        dx = o.location.x - centre[0]
-        dy = o.location.y - centre[1]
-        o.rotation_euler.z += rot
-        o.location.x = placement.x + dx * cos_r - dy * sin_r
-        o.location.y = placement.y + dx * sin_r + dy * cos_r
+        o.matrix_world = M @ o.matrix_world
     bpy.context.view_layer.update()
     drop_to_floor(item.objects)
