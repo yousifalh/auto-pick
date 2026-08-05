@@ -30,7 +30,11 @@ auto-pick/
 │   ├── training.py         Training loop (cosine LR, frozen BN, ckpts)
 │   ├── inference.py        FasterRCNNDetector + HeuristicDetector
 │   ├── evaluate.py         Pure-numpy VOC 11-point mAP + pose errors
-│   └── synth_dataset.py    Procedural synthetic-scene generator
+│   ├── synth_dataset.py    Procedural cv2 scene generator (demo / tests)
+│   ├── synth3d/            Blender synthetic-scene package (assets, layout,
+│   │                       materials, render, world, scene, annotate)
+│   ├── generate3d.py       Blender entry point -> flat Pascal-VOC dataset
+│   └── verify3d.py         Draws the generated boxes onto the renders
 ├── plan/             Planning module
 │   ├── scene.py            Digital twin (entities + occupancy grids)
 │   ├── placement_area.py   Green-channel + PCB-aware valid-area extractor
@@ -65,6 +69,33 @@ python main.py --config configs/demo.yaml
 
 The loop logs per-cycle perception / planning latencies, the queue length, and a summary of placed / pick-failed / place-failed counts at exit.
 
+## Two synthetic generators, two purposes
+
+There are deliberately two synthetic-scene generators, and they are not interchangeable:
+
+| | `recog/synth_dataset.py` | `recog/generate3d.py` |
+| --- | --- | --- |
+| Renderer | OpenCV rectangles | Blender / Cycles path tracer |
+| Interpreter | system Python | Blender's bundled Python |
+| Speed | ~ms per image | ~3.5 s per 1280×720 frame on an RTX 3060 |
+| Fidelity | flat coloured primitives | real CAD geometry, randomised PBR materials, physical lighting |
+| Used by | `main.py`'s software-only demo, the unit tests | training the Faster R-CNN detector |
+
+`synth_dataset.py` exists so the end-to-end demo and the test suite can run in seconds with no GPU, no Blender and no CAD. It is a stand-in for a camera, not a source of training data — a detector trained on it learns "grey rectangle on grey background".
+
+`generate3d.py` is the real training-data source. It imports the converted `.glb` assemblies from `recog/synth3d/assets/`, randomises materials, backdrop, lighting, layout (loose scatter or a fixture jig) and camera, path-traces a beauty pass, and derives pixel-exact boxes from Cycles' object-index pass rather than from projected 3-D corners. Presets live in `configs/synth3d.yaml`; Blender's bundled Python has no PyYAML, so run `python -m recog.sync_config` to transcribe it to the JSON sidecar Blender reads.
+
+Both write the same flat Pascal-VOC layout (`images/` + `annotations/`), so `recog.dataset.BatteryCartridgeDataset` reads either one and `recog/training.py` owns the train/val split. Point `configs/recognition.yaml`'s `dataset` block at whichever you want to train on.
+
+```bash
+python -m recog.sync_config
+BLENDER="/c/Program Files/Blender Foundation/Blender 5.0/blender.exe"
+"$BLENDER" -b --python recog/generate3d.py -- --n 2000 --out recog/dataset3d --device GPU --resume
+python -m recog.verify3d --data recog/dataset3d --n 16     # then LOOK at contact_sheet.png
+```
+
+`--resume` makes a long run interruptible. `verify3d` runs in system Python because it needs Pillow, which Blender does not ship — that render/inspect split is why generation is two commands.
+
 ## Other entry points
 
 Task | Command
@@ -72,6 +103,10 @@ Task | Command
 Train Faster R-CNN (needs torch + GPU) | `python -m recog.training --config configs/recognition.yaml`
 Start the mock KUKA server standalone | `python -m execution.mock_kuka_server`
 Generate synthetic scenes | `python -m recog.synth_dataset --out recog/dataset --n 200`
+Sync synth3d config to Blender | `python -m recog.sync_config`
+Generate 3-D synthetic scenes (Blender) | `blender -b --python recog/generate3d.py -- --n 200 --out recog/dataset3d`
+Inspect generated boxes | `python -m recog.verify3d --data recog/dataset3d --n 12`
+Sweep lighting presets | `blender -b --python recog/generate3d.py -- --sweep lighting --out recog/sweeps`
 Run the unit tests | `pytest -q`
 Run with coverage | `pytest -q --cov`
 

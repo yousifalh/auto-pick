@@ -10,8 +10,8 @@ model:
   confidence_threshold: 0.70
 
 dataset:
-  img_dir: recog/dataset/images
-  ann_dir: recog/dataset/annotations
+  img_dir: recog/dataset3d/images
+  ann_dir: recog/dataset3d/annotations
   class_map:
     battery: 1
     cartridge: 2
