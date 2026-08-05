@@ -188,7 +188,7 @@ def build(params: dict, rng: random.Random, library: A.AssetLibrary,
     # got packed - it is parallel to the non-None placements, which is exactly
     # the set of items that survived the loop above.
     if pockets:
-        _, jig_meta = W.build_jig(pockets, cfg.layout, rng)
+        _, jig_meta = W.build_jig(pockets, rng)
         meta["jig"] = jig_meta
 
     for item in items:
@@ -220,8 +220,14 @@ def build(params: dict, rng: random.Random, library: A.AssetLibrary,
                 groups[pid] = gid
 
     # ---- backdrop, camera, lighting --------------------------------------- #
+    # Built AFTER the jig so it can be sunk below the plate. Pocket floors are
+    # cut below z = 0; a backdrop left at z = 0 sits in front of them, so every
+    # recess rendered as flat plate colour. Scatter scenes keep z = 0, which is
+    # the plane their parts were dropped onto.
     plane_size = max(cfg.layout.area) * 6.0
-    _, bd = W.build_backdrop(params["backdrop"], rng, cfg, size=plane_size)
+    backdrop_z = meta.get("jig", {}).get("backdrop_z", 0.0)
+    _, bd = W.build_backdrop(params["backdrop"], rng, cfg, size=plane_size,
+                             z=backdrop_z)
     meta["backdrop"] = bd
 
     all_objs = [o for it in items for o in it.objects]

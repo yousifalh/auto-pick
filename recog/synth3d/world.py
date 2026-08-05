@@ -88,7 +88,17 @@ def _procedural(nt, kind: str, rng: random.Random):
     return ramp.outputs["Color"], tex.outputs["Fac"], mapping
 
 
-def build_backdrop(name: str, rng: random.Random, cfg, size: float = 3.0):
+def build_backdrop(name: str, rng: random.Random, cfg, size: float = 3.0,
+                   z: float = 0.0):
+    """
+    The ground plane every scatter scene sits on.
+
+    `z` defaults to 0, which is where scatter parts are dropped to, and must
+    stay there for them. Jig scenes pass the plate's `backdrop_z` instead: the
+    pocket floors are cut BELOW z = 0, so with the backdrop left at 0 a pocket
+    showed backdrop rather than its own floor and the recesses were
+    geometrically real but visually absent. See `build_jig`.
+    """
     spec = cfg.backdrops[name]
     drawn = {
         "backdrop": name,
@@ -100,10 +110,11 @@ def build_backdrop(name: str, rng: random.Random, cfg, size: float = 3.0):
         "source": "image" if spec["image"] else f"proc:{spec['proc']}",
     }
 
-    bpy.ops.mesh.primitive_plane_add(size=size, location=(0, 0, 0))
+    bpy.ops.mesh.primitive_plane_add(size=size, location=(0, 0, z))
     plane = bpy.context.active_object
     plane.name = "Backdrop"
     plane.pass_index = 0
+    drawn["z"] = z
 
     mat = bpy.data.materials.new("Backdrop")
     mat.use_nodes = True
@@ -331,8 +342,13 @@ def setup_camera(cfg, layout_cfg, res, rng: random.Random, top_z: float = 0.0):
 # realistic than floating exactly level with the rim.
 JIG_LIFT = 0.0006          # metres
 
+# Clearance between the plate's underside and the backdrop. Small enough that
+# the plate still reads as resting on the surface, large enough that the two
+# are never coplanar (see the JIG_LIFT note above for what coplanar costs).
+JIG_BACKDROP_GAP = 0.002   # metres
 
-def build_jig(pockets, layout_cfg, rng: random.Random):
+
+def build_jig(pockets, rng: random.Random):
     """
     Blue 3-D-printed fixture plate with a recess per pocket.
 
@@ -344,16 +360,39 @@ def build_jig(pockets, layout_cfg, rng: random.Random):
     `layout.plan_jig` leaves `layout_cfg.jig_wall` of plate material between
     adjacent pockets, so the cutters are never coplanar with each other and each
     recess stays a separate walled trough.
+
+    The plate is sized to the bounding box of the pockets it was GIVEN, not to
+    `layout_cfg.area`. Sizing it to the area produced a plate of 0.82-0.86m
+    against a camera ortho_scale of 0.816-0.88m, so the plate filled the frame
+    and hid the backdrop in every jig scene - even one holding a single small
+    part. Following the packed block instead leaves real backdrop visible
+    around the fixture, which is what the reference photos look like.
+
+    Returns (plate, drawn); `drawn["backdrop_z"]` is where the caller must put
+    the backdrop plane, BELOW the plate, so that looking into a pocket shows
+    the pocket floor instead of the ground plane.
     """
-    area_w, area_h = layout_cfg.area
-    thickness = rng.uniform(0.010, 0.018)
     margin = rng.uniform(0.010, 0.030)
+    deepest = max(pk.depth for pk in pockets)
+    # A pocket floor sits at JIG_LIFT - depth and the plate's underside at
+    # JIG_LIFT - thickness, so a plate thinner than its deepest pocket is
+    # punched clean through and the "recess" becomes a hole. jig_depth
+    # (6-12mm) and this range (10-18mm) overlap, so this is not hypothetical.
+    thickness = max(rng.uniform(0.010, 0.018), deepest + 0.004)
+
+    x0 = min(pk.x - pk.w / 2 for pk in pockets)
+    x1 = max(pk.x + pk.w / 2 for pk in pockets)
+    y0 = min(pk.y - pk.h / 2 for pk in pockets)
+    y1 = max(pk.y + pk.h / 2 for pk in pockets)
+    plate_w = (x1 - x0) + 2 * margin
+    plate_h = (y1 - y0) + 2 * margin
+    plate_cx, plate_cy = (x0 + x1) / 2, (y0 + y1) / 2
 
     bpy.ops.mesh.primitive_cube_add(
-        size=1, location=(0, 0, JIG_LIFT - thickness / 2))
+        size=1, location=(plate_cx, plate_cy, JIG_LIFT - thickness / 2))
     plate = bpy.context.active_object
     plate.name = "JigPlate"
-    plate.scale = (area_w + 2 * margin, area_h + 2 * margin, thickness)
+    plate.scale = (plate_w, plate_h, thickness)
     bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
     plate.pass_index = 0
 
@@ -378,6 +417,9 @@ def build_jig(pockets, layout_cfg, rng: random.Random):
         bpy.data.objects.remove(c, do_unlink=True)
 
     drawn = {"thickness": thickness, "margin": margin, "lift": JIG_LIFT,
+             "w": plate_w, "h": plate_h, "cx": plate_cx, "cy": plate_cy,
+             "underside_z": JIG_LIFT - thickness,
+             "backdrop_z": JIG_LIFT - thickness - JIG_BACKDROP_GAP,
              "color": [rng.uniform(0.02, 0.06), rng.uniform(0.06, 0.16),
                        rng.uniform(0.35, 0.62)],
              "roughness": rng.uniform(0.45, 0.75),
