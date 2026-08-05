@@ -50,7 +50,15 @@ def parse_args(cfg):
     p.add_argument("--sweep", choices=["lighting", "backdrop"], default=None,
                    help="render ONE fixed scene once per entry in that axis")
     p.add_argument("--save-masks", action="store_true")
-    p.add_argument("--visibility", action="store_true")
+    p.add_argument("--visibility", action="store_true",
+                   help="measure each instance's unoccluded area (one extra "
+                        "index render per instance, up to ~32 per sample). "
+                        "CURRENTLY YIELDS NO SIGNAL: both layout solvers "
+                        "guarantee AABB non-overlap so no labelled instance "
+                        "can occlude another, and merge_group_boxes does not "
+                        "compute visibility for merged boxes (i.e. for any "
+                        "cartridge). Only useful once overlapping layouts "
+                        "exist.")
     p.add_argument("--resume", action="store_true")
     p.add_argument("--no-render", action="store_true")
     p.add_argument("--save-blend", default=None)
@@ -155,6 +163,11 @@ def main():
         cfg.render.device = a.device
     if a.variant:
         VARIANTS[:] = [v for v in VARIANTS if v.name == a.variant]
+    if a.visibility:
+        print("[warn] --visibility costs one extra index render per instance "
+              "and currently yields no signal: the layout solvers guarantee "
+              "non-overlap so every labelled instance measures 1.0, and "
+              "merged boxes (every cartridge) get no visible_fraction at all.")
 
     ids = class_ids()
     root = os.path.abspath(a.out)

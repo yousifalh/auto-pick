@@ -37,6 +37,17 @@ camera:
 filter:
   min_px: 80
   min_side: 6
+  # INERT under the current pipeline - it is a threshold with nothing to
+  # threshold, kept because the machinery around it is correct and would start
+  # working the moment overlapping layouts exist. Two independent reasons:
+  #  * a visible_fraction is only computed when generate3d is run with
+  #    --visibility, and both layout solvers (layout.plan and layout.plan_jig)
+  #    guarantee exact AABB non-overlap, so no LABELLED instance can occlude
+  #    another. The only occluders in a scene - jig plate, PCB, backdrop -
+  #    carry pass_index 0. Batteries therefore always measure exactly 1.0.
+  #  * annotate.merge_group_boxes hard-codes visible_fraction = None on every
+  #    merged box, and every `cartridge` is merged, so this never applies to a
+  #    cartridge at all.
   min_visibility: 0.25
   drop_truncated: false
 

@@ -338,8 +338,22 @@ def render_index_map(cfg, mask_dir: str, stem: str) -> np.ndarray:
 def isolated_areas(cfg, mask_dir: str, objects_by_id):
     """
     True unoccluded silhouette area per instance, for a real visible-fraction.
-    Costs one cheap render per instance, so only enable it when parts can
-    actually occlude each other.
+    Costs one cheap render per instance - up to ~32 per sample.
+
+    CURRENTLY YIELDS NO SIGNAL, for two independent reasons, so `--visibility`
+    buys renders and nothing else:
+
+      * `layout.plan` and `layout.plan_jig` both guarantee exact AABB
+        non-overlap, so no LABELLED instance can occlude another. Everything
+        that can occlude - the jig plate, the PCB, the backdrop - carries
+        pass_index 0 and is not in `objects_by_id`, so every measured fraction
+        comes back exactly 1.0.
+      * `annotate.merge_group_boxes` hard-codes `visible_fraction = None` on
+        merged boxes, and every `cartridge` is merged, so the measurement never
+        reaches a cartridge annotation even in principle.
+
+    The function itself is correct; enable it once a layout mode that actually
+    piles parts on each other exists.
     """
     areas = {}
     all_objs = [o for objs in objects_by_id.values() for o in objs]

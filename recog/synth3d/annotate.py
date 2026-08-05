@@ -127,6 +127,11 @@ def merge_group_boxes(anns: List[dict], groups: Dict[int, str],
             "bbox_xywh": [x0, y0, x1 - x0, y1 - y0],
             "area": area,
             "truncated": any(m["truncated"] for m in members),
+            # Deliberately None, not a computed value: the members' fractions
+            # are over their own isolated silhouettes and do not compose into
+            # the group's. Consequence, documented in configs/synth3d.yaml:
+            # filter.min_visibility never applies to a merged box, which is
+            # every `cartridge`.
             "visible_fraction": None,
             "asset": members[0].get("asset"),
             "variant": members[0].get("variant"),
