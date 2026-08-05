@@ -25,11 +25,13 @@ auto-pick/
 │                     and small utilities (YAML config loader, logger)
 ├── recog/            Recognition module
 │   ├── model.py            Faster R-CNN + ResNet-34 FPN factory
-│   ├── dataset.py          Pascal VOC loader + BatteryCartridgeDataset
+│   ├── dataset.py          VOC + COCO loaders, VOC / real-photo datasets
 │   ├── augmentation.py     Albumentations pipeline + numpy fallback
 │   ├── training.py         Training loop (cosine LR, frozen BN, ckpts)
 │   ├── inference.py        FasterRCNNDetector + HeuristicDetector
 │   ├── evaluate.py         Pure-numpy VOC 11-point mAP + pose errors
+│   ├── eval_real.py        Held-out real-photo evaluation (mAP + overlays)
+│   ├── realtest/           7 annotated real photographs (COCO, committed)
 │   ├── synth_dataset.py    Procedural cv2 scene generator (demo / tests)
 │   ├── synth3d/            Blender synthetic-scene package (assets, layout,
 │   │                       materials, render, world, scene, annotate)
@@ -98,6 +100,16 @@ python -m recog.verify3d --data recog/dataset3d --n 16     # then LOOK at contac
 
 `--resume` makes a long run interruptible. `verify3d` runs in system Python because it needs Pillow, which Blender does not ship — that render/inspect split is why generation is two commands.
 
+## The real-photo held-out set
+
+Validation mAP on renders only says the detector learned the renderer. `recog/realtest/` is the set that answers the real question: seven photographs of the actual cells and cartridges (3024×4032, phone camera), annotated in CVAT and exported as COCO — 80 boxes, 60 battery and 20 cartridge. It is committed to the repository, never trained on, and never used to select a checkpoint.
+
+```bash
+python -m recog.eval_real --checkpoint recog/checkpoints/best.pt --save-overlays /tmp/real
+```
+
+The report gives per-class AP and mAP at IoU 0.50 and 0.75 (the same `recog.evaluate` 11-point protocol as the synthetic numbers), plus per-class GT and prediction counts and the confidence threshold used. `--save-overlays` writes ground truth and predictions onto each photo in different colours: a bare mAP cannot distinguish "found nothing" from "found everything at the wrong scale", and the overlays can.
+
 ## Other entry points
 
 Task | Command
@@ -108,6 +120,7 @@ Generate synthetic scenes | `python -m recog.synth_dataset --out recog/dataset -
 Sync synth3d config to Blender | `python -m recog.sync_config`
 Generate 3-D synthetic scenes (Blender) | `blender -b --python recog/generate3d.py -- --n 200 --out recog/dataset3d`
 Inspect generated boxes | `python -m recog.verify3d --data recog/dataset3d --n 12`
+Evaluate on the real photographs | `python -m recog.eval_real --checkpoint recog/checkpoints/best.pt`
 Sweep lighting presets | `blender -b --python recog/generate3d.py -- --sweep lighting --out recog/sweeps`
 Run the unit tests | `pytest -q`
 Run with coverage | `pytest -q --cov`

@@ -1,23 +1,34 @@
-"""Pascal-VOC dataset loader for the battery / cartridge recogniser.
+"""Dataset loaders for the battery / cartridge recogniser.
 
-The dataset speaks a small, well-defined dialect of VOC:
+Two annotation dialects are supported.
+
+**Pascal VOC** (:func:`parse_voc_xml`, :class:`BatteryCartridgeDataset`)
+— what the synthetic generators emit:
 
 * ``<filename>``, ``<size>/<width>``, ``<size>/<height>``
 * one or more ``<object>`` blocks with ``<name>`` and ``<bndbox>``
 
-Objects whose class label is not in :data:`CLASS_MAP` are silently
-skipped (so unknown / experimental labels don't explode the loader),
-and so are bounding boxes with a non-positive width or height — those
-are degenerate annotations that bite detector training in subtle
-ways if left in.
+**COCO** (:func:`parse_coco_json`, :class:`RealPhotoDataset`) — what
+CVAT exports, used for the held-out set of *real* photographs in
+``recog/realtest``. This is the set that answers the only question
+that matters about the synthetic pipeline: does a detector trained
+purely on renders work on photographs?
+
+Both readers are deliberately defensive in the same way. Objects
+whose class label is not in :data:`CLASS_MAP` are silently skipped
+(so unknown / experimental labels don't explode the loader), and so
+are bounding boxes with a non-positive width or height — those are
+degenerate annotations that bite detector training in subtle ways if
+left in.
 
 The module imports cleanly even when torch is not installed: the
-:class:`BatteryCartridgeDataset` falls back to returning
-``(numpy_image, {"boxes": [...], "labels": [...]})`` tuples, which is
-what the unit tests exercise in the CI container.
+datasets fall back to returning ``(numpy_image, {"boxes": [...],
+"labels": [...]})`` tuples, which is what the unit tests exercise in
+the CI container.
 """
 from __future__ import annotations
 
+import json
 import os
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -110,6 +121,98 @@ def parse_voc_xml(
         labels.append(class_map[name])
 
     return VocAnnotation(filename, width, height, boxes, labels)
+
+
+@dataclass(frozen=True)
+class CocoImageAnnotation:
+    """One image's worth of a parsed COCO ``instances_*.json``.
+
+    ``boxes`` are ``(x0, y0, x1, y1)`` floats with *exclusive* max
+    edges, matching :class:`common.types.BBox` and the VOC reader —
+    not COCO's on-disk ``[x, y, w, h]``.
+    """
+
+    image_id: int
+    file_name: str
+    width: int
+    height: int
+    boxes: List[Tuple[float, float, float, float]]
+    labels: List[int]
+
+
+def parse_coco_json(
+    path: str | Path,
+    class_map: Dict[str, int] = CLASS_MAP,
+) -> List[CocoImageAnnotation]:
+    """Parse a COCO detection JSON into one record per image.
+
+    Category names are matched against ``class_map``
+    **case-insensitively**, so CVAT's ``"Battery"`` / ``"Cartridge"``
+    line up with the project's lower-case :data:`CLASS_MAP` keys.
+
+    Categories whose name is unknown to ``class_map`` (and the
+    ``background`` pseudo-class) are skipped, along with every
+    annotation referring to them. Boxes with a non-positive width or
+    height are dropped, mirroring :func:`parse_voc_xml`.
+
+    Where a category name *is* known, its COCO ``id`` must equal
+    ``class_map[name]``. A re-export that renumbers the categories
+    would otherwise silently mislabel the whole set, so the mismatch
+    raises :class:`ValueError` instead.
+
+    Images are returned in the order they appear in the file, each
+    with its annotations in file order. Images with no annotations
+    are still returned, with empty ``boxes`` and ``labels``.
+    """
+    with open(path, "r", encoding="utf-8") as fh:
+        data = json.load(fh)
+
+    lower_map = {name.lower(): cid for name, cid in class_map.items()}
+
+    # category id → class id, for the categories we recognise.
+    cat_to_class: Dict[int, int] = {}
+    for cat in data.get("categories", []):
+        name = str(cat.get("name", "")).strip().lower()
+        if name not in lower_map or lower_map[name] == 0:
+            continue
+        cat_id = int(cat["id"])
+        expected = lower_map[name]
+        if cat_id != expected:
+            raise ValueError(
+                f"COCO category '{cat.get('name')}' has id {cat_id} but "
+                f"CLASS_MAP says {expected}. Re-export the annotations "
+                f"with matching ids, or pass an explicit class_map."
+            )
+        cat_to_class[cat_id] = expected
+
+    boxes_by_image: Dict[int, List[Tuple[float, float, float, float]]] = {}
+    labels_by_image: Dict[int, List[int]] = {}
+    for ann in data.get("annotations", []):
+        cls = cat_to_class.get(int(ann.get("category_id", -1)))
+        if cls is None:
+            continue
+        bbox = ann.get("bbox") or []
+        if len(bbox) != 4:
+            continue
+        x, y, w, h = (float(v) for v in bbox)
+        if w <= 0.0 or h <= 0.0:
+            continue
+        img_id = int(ann["image_id"])
+        boxes_by_image.setdefault(img_id, []).append((x, y, x + w, y + h))
+        labels_by_image.setdefault(img_id, []).append(cls)
+
+    records: List[CocoImageAnnotation] = []
+    for img in data.get("images", []):
+        img_id = int(img["id"])
+        records.append(CocoImageAnnotation(
+            image_id=img_id,
+            file_name=str(img.get("file_name", "")),
+            width=int(img.get("width", 0)),
+            height=int(img.get("height", 0)),
+            boxes=boxes_by_image.get(img_id, []),
+            labels=labels_by_image.get(img_id, []),
+        ))
+    return records
 
 
 # ------------------------------------------------------------- dataset ---
@@ -235,6 +338,83 @@ class BatteryCartridgeDataset(Dataset):
         return image, {"boxes": bboxes, "labels": labels, "image_id": [idx]}
 
 
+class RealPhotoDataset(Dataset):
+    """Held-out set of real photographs, annotated as COCO by CVAT.
+
+    Unlike :class:`BatteryCartridgeDataset` this is driven by a single
+    annotation *file* rather than a directory of per-image XML, but
+    the ``__getitem__`` contract is identical: a float32 CHW image in
+    ``[0, 1]`` plus a target dict with ``boxes``, ``labels`` and
+    ``image_id`` (and the same numpy fallback when torch is absent).
+
+    Parameters
+    ----------
+    img_dir:
+        Directory containing the photographs. Records are matched by
+        the annotation's ``file_name``.
+    ann_path:
+        Path to the COCO ``instances_*.json``.
+    transforms:
+        Optional Albumentations-style callable, as above.
+    class_map:
+        Mapping of class name to integer id. Defaults to
+        :data:`CLASS_MAP`.
+
+    Notes
+    -----
+    ``image_id`` carries the *COCO* image id, not the index into the
+    dataset, so predictions can be joined back to the annotation file.
+    Records whose image file is missing from ``img_dir`` are dropped
+    at construction time — a partial export should evaluate on what it
+    has rather than crash halfway through a run.
+    """
+
+    def __init__(
+        self,
+        img_dir: str,
+        ann_path: str,
+        transforms: Optional[Callable] = None,
+        class_map: Dict[str, int] = CLASS_MAP,
+    ) -> None:
+        self.img_dir = Path(img_dir)
+        self.ann_path = Path(ann_path)
+        self.transforms = transforms
+        self.class_map = class_map
+        self.records: List[CocoImageAnnotation] = [
+            r for r in parse_coco_json(self.ann_path, class_map)
+            if (self.img_dir / r.file_name).exists()
+        ]
+
+    # ---- Dataset protocol -------------------------------------------------
+
+    def __len__(self) -> int:
+        return len(self.records)
+
+    def __getitem__(self, idx: int):
+        rec = self.records[idx]
+        image = self._load_image(self.img_dir / rec.file_name)
+
+        bboxes = [list(b) for b in rec.boxes]
+        labels = list(rec.labels)
+
+        if self.transforms is not None:
+            out = self.transforms(
+                image=image, bboxes=bboxes, class_labels=labels,
+            )
+            image = out["image"]
+            bboxes = out["bboxes"]
+            labels = out["class_labels"]
+
+        return self._to_training_sample(image, bboxes, labels, rec.image_id)
+
+    # ---- Internals --------------------------------------------------------
+
+    # The loading / tensor-wrapping behaviour is identical to the VOC
+    # dataset's; borrow it rather than maintaining a second copy.
+    _load_image = BatteryCartridgeDataset._load_image
+    _to_training_sample = BatteryCartridgeDataset._to_training_sample
+
+
 def collate_fn(batch):
     """Object-detection-friendly collate: tuple-of-images, tuple-of-targets."""
     return tuple(zip(*batch))
@@ -244,7 +424,10 @@ __all__ = [
     "BatteryCartridgeDataset",
     "CLASS_MAP",
     "INV_CLASS_MAP",
+    "CocoImageAnnotation",
+    "RealPhotoDataset",
     "VocAnnotation",
     "collate_fn",
+    "parse_coco_json",
     "parse_voc_xml",
 ]
