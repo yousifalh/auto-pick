@@ -138,3 +138,55 @@ def test_every_variant_label_is_a_real_class():
             assert v.label in valid, v.name
         for cls in v.label_roles.values():
             assert cls in valid, v.name
+
+
+# ---------------------------------------------------------- catalog ----
+
+from recog.synth3d import catalog as CAT
+
+ASSETS = ROOT / "recog" / "synth3d" / "assets"
+
+
+def test_all_four_assets_present():
+    cat = CAT.load_catalog(str(ASSETS))
+    names = {a["name"] for a in cat["assets"]}
+    assert names == {"AnkerPowerCore10000", "AnkerPowerCore13000",
+                     "AnkerPowerCore20100", "AnkerPowerCore26800"}
+    assert cat["units"] == "m"
+
+
+def test_role_of_classifies_every_real_subpart_name():
+    """All 33 sub-part names from the real CAD must classify correctly."""
+    cat = CAT.load_catalog(str(ASSETS))
+    seen = 0
+    for asset in cat["assets"]:
+        for sp in asset["subparts"]:
+            role = CAT.role_of(sp["name"])
+            assert role == sp["role"], f"{sp['name']}: {role} != {sp['role']}"
+            assert role in ("cell", "case")
+            seen += 1
+    assert seen == 33, f"expected 33 sub-parts, catalogued {seen}"
+
+
+def test_cell_regex_matches_nx_incremented_names():
+    """NX renames instances; a literal 'Cell_18650' match misses these."""
+    for name in ("004695_A;1-Cell_18650", "004695_A;2-Cell_18651",
+                 "004695_A;3-Cell_18650_18652", "Cell_99999"):
+        assert CAT.role_of(name) == "cell", name
+
+
+def test_case_names_classify_as_case():
+    for name in ("004697_A;2-Case10000_top", "004697_A;1-Case26800_btm"):
+        assert CAT.role_of(name) == "case", name
+
+
+def test_unknown_subpart_falls_back_to_case():
+    assert CAT.role_of("something_unrecognised") == "case"
+
+
+def test_expected_cell_counts_per_asset():
+    """Cell count is the CAD's ground truth: 3 / 4 / 6 / 8."""
+    cat = CAT.load_catalog(str(ASSETS))
+    counts = {a["name"]: a["role_counts"].get("cell", 0) for a in cat["assets"]}
+    assert counts == {"AnkerPowerCore10000": 3, "AnkerPowerCore13000": 4,
+                      "AnkerPowerCore20100": 6, "AnkerPowerCore26800": 8}

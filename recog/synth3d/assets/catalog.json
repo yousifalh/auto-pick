@@ -1,0 +1,439 @@
+{
+  "units": "m",
+  "note": "glTF geometry is in metres; extents_mm are millimetres",
+  "tol_linear_mm": 0.05,
+  "tol_angular": 0.3,
+  "assets": [
+    {
+      "extents_mm": [
+        62.9,
+        90.9,
+        22.2
+      ],
+      "triangles": 20790,
+      "subparts": [
+        {
+          "name": "004696_A;2-Case10000_btm",
+          "role": "case",
+          "extents_mm": [
+            59.02,
+            90.9,
+            18.32
+          ],
+          "triangles": 712,
+          "volume_mm3": null
+        },
+        {
+          "name": "004696_A;2-Case10000_btm_1",
+          "role": "case",
+          "extents_mm": [
+            62.9,
+            90.9,
+            11.1
+          ],
+          "triangles": 1180,
+          "volume_mm3": null
+        },
+        {
+          "name": "004697_A;2-Case10000_top",
+          "role": "case",
+          "extents_mm": [
+            62.9,
+            90.9,
+            11.1
+          ],
+          "triangles": 1180,
+          "volume_mm3": null
+        },
+        {
+          "name": "004695_A;1-Cell_18650",
+          "role": "cell",
+          "extents_mm": [
+            18.3,
+            18.3,
+            65.0
+          ],
+          "triangles": 5906,
+          "volume_mm3": null
+        },
+        {
+          "name": "004695_A;1-Cell_18650_18652",
+          "role": "cell",
+          "extents_mm": [
+            18.3,
+            18.3,
+            65.0
+          ],
+          "triangles": 5906,
+          "volume_mm3": null
+        },
+        {
+          "name": "004695_A;1-Cell_18651",
+          "role": "cell",
+          "extents_mm": [
+            18.3,
+            18.3,
+            65.0
+          ],
+          "triangles": 5906,
+          "volume_mm3": null
+        }
+      ],
+      "role_counts": {
+        "cell": 3,
+        "case": 3
+      },
+      "name": "AnkerPowerCore10000",
+      "source": "004694_A_1-AnkerPowerCore10000.stp",
+      "file": "AnkerPowerCore10000.glb"
+    },
+    {
+      "extents_mm": [
+        80.7,
+        97.0,
+        22.2
+      ],
+      "triangles": 26696,
+      "subparts": [
+        {
+          "name": "004703_A;2-Case13000_btm",
+          "role": "case",
+          "extents_mm": [
+            76.82,
+            97.0,
+            18.32
+          ],
+          "triangles": 712,
+          "volume_mm3": null
+        },
+        {
+          "name": "004703_A;2-Case13000_btm_1",
+          "role": "case",
+          "extents_mm": [
+            80.7,
+            97.0,
+            11.1
+          ],
+          "triangles": 1180,
+          "volume_mm3": null
+        },
+        {
+          "name": "004704_A;2-Case13000_top",
+          "role": "case",
+          "extents_mm": [
+            80.7,
+            97.0,
+            11.1
+          ],
+          "triangles": 1180,
+          "volume_mm3": null
+        },
+        {
+          "name": "004695_A;1-Cell_18650",
+          "role": "cell",
+          "extents_mm": [
+            18.3,
+            18.3,
+            65.0
+          ],
+          "triangles": 5906,
+          "volume_mm3": null
+        },
+        {
+          "name": "004695_A;1-Cell_18650_18652",
+          "role": "cell",
+          "extents_mm": [
+            18.3,
+            18.3,
+            65.0
+          ],
+          "triangles": 5906,
+          "volume_mm3": null
+        },
+        {
+          "name": "004695_A;1-Cell_18650_18653",
+          "role": "cell",
+          "extents_mm": [
+            18.3,
+            18.3,
+            65.0
+          ],
+          "triangles": 5906,
+          "volume_mm3": null
+        },
+        {
+          "name": "004695_A;1-Cell_18651",
+          "role": "cell",
+          "extents_mm": [
+            18.3,
+            18.3,
+            65.0
+          ],
+          "triangles": 5906,
+          "volume_mm3": null
+        }
+      ],
+      "role_counts": {
+        "cell": 4,
+        "case": 3
+      },
+      "name": "AnkerPowerCore13000",
+      "source": "004702_A_2-AnkerPowerCore13000.stp",
+      "file": "AnkerPowerCore13000.glb"
+    },
+    {
+      "extents_mm": [
+        62.3,
+        167.8,
+        22.2
+      ],
+      "triangles": 38364,
+      "subparts": [
+        {
+          "name": "004706_A;2-Case20100_btm",
+          "role": "case",
+          "extents_mm": [
+            58.31,
+            167.8,
+            18.21
+          ],
+          "triangles": 712,
+          "volume_mm3": null
+        },
+        {
+          "name": "004706_A;2-Case20100_btm_1",
+          "role": "case",
+          "extents_mm": [
+            62.3,
+            167.8,
+            11.1
+          ],
+          "triangles": 1036,
+          "volume_mm3": null
+        },
+        {
+          "name": "004707_A;2-Case20100_top",
+          "role": "case",
+          "extents_mm": [
+            62.3,
+            167.8,
+            11.1
+          ],
+          "triangles": 1180,
+          "volume_mm3": null
+        },
+        {
+          "name": "004695_A;1-Cell_18650",
+          "role": "cell",
+          "extents_mm": [
+            18.3,
+            18.3,
+            65.0
+          ],
+          "triangles": 5906,
+          "volume_mm3": null
+        },
+        {
+          "name": "004695_A;1-Cell_18650_18652",
+          "role": "cell",
+          "extents_mm": [
+            18.3,
+            18.3,
+            65.0
+          ],
+          "triangles": 5906,
+          "volume_mm3": null
+        },
+        {
+          "name": "004695_A;1-Cell_18650_18653",
+          "role": "cell",
+          "extents_mm": [
+            18.3,
+            18.3,
+            65.0
+          ],
+          "triangles": 5906,
+          "volume_mm3": null
+        },
+        {
+          "name": "004695_A;1-Cell_18650_18654",
+          "role": "cell",
+          "extents_mm": [
+            18.3,
+            18.3,
+            65.0
+          ],
+          "triangles": 5906,
+          "volume_mm3": null
+        },
+        {
+          "name": "004695_A;1-Cell_18650_18655",
+          "role": "cell",
+          "extents_mm": [
+            18.3,
+            18.3,
+            65.0
+          ],
+          "triangles": 5906,
+          "volume_mm3": null
+        },
+        {
+          "name": "004695_A;1-Cell_18651",
+          "role": "cell",
+          "extents_mm": [
+            18.3,
+            18.3,
+            65.0
+          ],
+          "triangles": 5906,
+          "volume_mm3": null
+        }
+      ],
+      "role_counts": {
+        "cell": 6,
+        "case": 3
+      },
+      "name": "AnkerPowerCore20100",
+      "source": "004705_A_2-AnkerPowerCore20100.stp",
+      "file": "AnkerPowerCore20100.glb"
+    },
+    {
+      "extents_mm": [
+        81.7,
+        180.0,
+        22.2
+      ],
+      "triangles": 50304,
+      "subparts": [
+        {
+          "name": "004709_A;2-Case26800_btm",
+          "role": "case",
+          "extents_mm": [
+            76.77,
+            180.0,
+            17.32
+          ],
+          "triangles": 696,
+          "volume_mm3": null
+        },
+        {
+          "name": "004709_A;2-Case26800_btm_1",
+          "role": "case",
+          "extents_mm": [
+            81.7,
+            180.0,
+            11.1
+          ],
+          "triangles": 1180,
+          "volume_mm3": null
+        },
+        {
+          "name": "004710_A;2-Case26800_top",
+          "role": "case",
+          "extents_mm": [
+            81.7,
+            180.0,
+            11.1
+          ],
+          "triangles": 1180,
+          "volume_mm3": null
+        },
+        {
+          "name": "004695_A;1-Cell_18650",
+          "role": "cell",
+          "extents_mm": [
+            18.3,
+            18.3,
+            65.0
+          ],
+          "triangles": 5906,
+          "volume_mm3": null
+        },
+        {
+          "name": "004695_A;1-Cell_18650_18652",
+          "role": "cell",
+          "extents_mm": [
+            18.3,
+            18.3,
+            65.0
+          ],
+          "triangles": 5906,
+          "volume_mm3": null
+        },
+        {
+          "name": "004695_A;1-Cell_18650_18653",
+          "role": "cell",
+          "extents_mm": [
+            18.3,
+            18.3,
+            65.0
+          ],
+          "triangles": 5906,
+          "volume_mm3": null
+        },
+        {
+          "name": "004695_A;1-Cell_18650_18654",
+          "role": "cell",
+          "extents_mm": [
+            18.3,
+            18.3,
+            65.0
+          ],
+          "triangles": 5906,
+          "volume_mm3": null
+        },
+        {
+          "name": "004695_A;1-Cell_18650_18655",
+          "role": "cell",
+          "extents_mm": [
+            18.3,
+            18.3,
+            65.0
+          ],
+          "triangles": 5906,
+          "volume_mm3": null
+        },
+        {
+          "name": "004695_A;1-Cell_18650_18656",
+          "role": "cell",
+          "extents_mm": [
+            18.3,
+            18.3,
+            65.0
+          ],
+          "triangles": 5906,
+          "volume_mm3": null
+        },
+        {
+          "name": "004695_A;1-Cell_18650_18657",
+          "role": "cell",
+          "extents_mm": [
+            18.3,
+            18.3,
+            65.0
+          ],
+          "triangles": 5906,
+          "volume_mm3": null
+        },
+        {
+          "name": "004695_A;1-Cell_18651",
+          "role": "cell",
+          "extents_mm": [
+            18.3,
+            18.3,
+            65.0
+          ],
+          "triangles": 5906,
+          "volume_mm3": null
+        }
+      ],
+      "role_counts": {
+        "cell": 8,
+        "case": 3
+      },
+      "name": "AnkerPowerCore26800",
+      "source": "004708_A_2-AnkerPowerCore26800.stp",
+      "file": "AnkerPowerCore26800.glb"
+    }
+  ]
+}
