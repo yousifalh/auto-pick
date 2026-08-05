@@ -401,11 +401,16 @@ def test_box_edges_are_exclusive():
 
 
 def test_no_annotation_has_zero_area():
-    rng = np.random.default_rng(0)
-    ids = rng.integers(0, 4, size=(64, 64)).astype(np.int32)
-    meta = {i: _meta() for i in (1, 2, 3)}
-    cfg = C.FilterCfg(min_px=1, min_side=1)
+    """min_side=0 deliberately disables the side filter, so a degenerate box
+    can only be kept out by the +1 exclusive-edge arithmetic itself - not by
+    a filter that would coincidentally reject it first."""
+    ids = np.zeros((64, 64), dtype=np.int32)
+    ids[10, 10] = 1              # 1x1 instance
+    ids[30, 5:15] = 2            # 1-row instance: 10 px wide, 1 px tall
+    meta = {1: _meta(), 2: _meta()}
+    cfg = C.FilterCfg(min_px=1, min_side=0)
     anns, _ = A.boxes_from_mask(ids, meta, C.class_ids(), cfg)
+    assert len(anns) == 2
     for a in anns:
         x0, y0, x1, y1 = a["bbox_xyxy"]
         assert x1 > x0 and y1 > y0
@@ -450,6 +455,28 @@ def test_small_instances_are_dropped_with_a_reason():
     assert dropped[0]["reason"].startswith("visible_px<")
 
 
+def test_thin_sliver_is_dropped_for_short_side_not_low_area():
+    """A large-area sliver must still be rejected on its SHORT side. Guards
+    against min(w, h) being swapped for max(w, h): under max(), a 100x2
+    sliver would pass and ship a 2px-tall box - exactly what a real
+    min_side=6 exists to prevent."""
+    ids = np.zeros((10, 100), dtype=np.int32)
+    ids[0:2, :] = 1                          # 200 px, but only 2 px tall
+    cfg = C.FilterCfg(min_px=80, min_side=6)
+    anns, dropped = A.boxes_from_mask(ids, {1: _meta()}, C.class_ids(), cfg)
+    assert anns == []
+    assert dropped[0]["reason"] == "side<6"
+
+
+def test_drop_truncated_flag_actually_drops():
+    ids = np.zeros((16, 16), dtype=np.int32)
+    ids[0:5, 3:9] = 1                        # touches y = 0
+    cfg = C.FilterCfg(min_px=1, min_side=1, drop_truncated=True)
+    anns, dropped = A.boxes_from_mask(ids, {1: _meta()}, C.class_ids(), cfg)
+    assert anns == []
+    assert dropped[0]["reason"] == "truncated"
+
+
 def test_merge_collapses_an_assembly_into_one_box():
     ids = np.zeros((40, 40), dtype=np.int32)
     ids[5:15, 5:15] = 1                      # shell top
@@ -466,6 +493,67 @@ def test_merge_collapses_an_assembly_into_one_box():
     assert merged[0]["area"] == 200          # union of silhouettes, not box area
 
 
+def test_merge_preserves_loose_annotations_in_a_mixed_scene():
+    """A realistic scene mixes grouped instances (assembled shells) with
+    loose ones (cells_only batteries). Guards against `out = list(loose)`
+    being reduced to `out = []`, which would silently delete every loose
+    label - e.g. every battery - from the image."""
+    ids = np.zeros((60, 60), dtype=np.int32)
+    ids[5:15, 5:15] = 1                      # shell top (grouped)
+    ids[20:30, 20:30] = 2                    # shell bottom (grouped)
+    ids[40:50, 40:50] = 3                    # loose battery cell (ungrouped)
+    meta = {1: _meta(**{"class": "cartridge"}),
+            2: _meta(**{"class": "cartridge"}),
+            3: _meta()}                      # class "battery" by default
+    cfg = C.FilterCfg(min_px=1, min_side=1)
+    anns, _ = A.boxes_from_mask(ids, meta, C.class_ids(), cfg)
+    merged = A.merge_group_boxes(anns, {1: "item0", 2: "item0"},
+                                 C.class_ids(), cfg)
+    assert sorted(a["class"] for a in merged) == ["battery", "cartridge"]
+
+
+def test_merged_box_relabels_to_the_assembly_class():
+    """Relabelling the assembly is the whole point of merging: check class
+    and category_id directly rather than only the geometry."""
+    ids = np.zeros((40, 40), dtype=np.int32)
+    ids[5:15, 5:15] = 1
+    ids[20:30, 20:30] = 2
+    meta = {1: _meta(**{"class": "cartridge"}), 2: _meta(**{"class": "cartridge"})}
+    cfg = C.FilterCfg(min_px=1, min_side=1)
+    anns, _ = A.boxes_from_mask(ids, meta, C.class_ids(), cfg)
+    merged = A.merge_group_boxes(anns, {1: "item0", 2: "item0"},
+                                 C.class_ids(), cfg)
+    assert merged[0]["class"] == "cartridge"
+    assert merged[0]["category_id"] == C.class_ids()["cartridge"]
+
+
+def test_merged_box_below_min_px_is_dropped():
+    ids = np.zeros((40, 40), dtype=np.int32)
+    ids[5:8, 5:8] = 1                        # 9 px
+    ids[20:23, 20:23] = 2                    # 9 px -> merged area 18
+    meta = {1: _meta(**{"class": "cartridge"}), 2: _meta(**{"class": "cartridge"})}
+    cfg = C.FilterCfg(min_px=1, min_side=1)  # each individual box passes
+    anns, _ = A.boxes_from_mask(ids, meta, C.class_ids(), cfg)
+    merge_cfg = C.FilterCfg(min_px=50, min_side=1)  # merged area 18 < 50
+    merged = A.merge_group_boxes(anns, {1: "item0", 2: "item0"},
+                                 C.class_ids(), merge_cfg)
+    assert merged == []
+
+
+def test_merged_truncated_is_any_not_all():
+    """One truncated member is enough to flag the merged box - guards
+    against any() being weakened to all()."""
+    ids = np.zeros((40, 40), dtype=np.int32)
+    ids[0:5, 5:15] = 1                       # touches y = 0 -> truncated
+    ids[20:30, 20:30] = 2                    # interior -> not truncated
+    meta = {1: _meta(**{"class": "cartridge"}), 2: _meta(**{"class": "cartridge"})}
+    cfg = C.FilterCfg(min_px=1, min_side=1)
+    anns, _ = A.boxes_from_mask(ids, meta, C.class_ids(), cfg)
+    merged = A.merge_group_boxes(anns, {1: "item0", 2: "item0"},
+                                 C.class_ids(), cfg)
+    assert merged[0]["truncated"] is True
+
+
 def test_unmapped_class_is_dropped():
     ids = np.zeros((16, 16), dtype=np.int32)
     ids[2:10, 2:10] = 1
@@ -474,6 +562,28 @@ def test_unmapped_class_is_dropped():
         ids, {1: _meta(**{"class": "widget"})}, C.class_ids(), cfg)
     assert anns == []
     assert dropped[0]["reason"] == "unmapped"
+
+
+def test_visible_fraction_is_visible_over_full_area():
+    """Guards against the ratio being accidentally inverted to full/visible."""
+    ids = np.zeros((20, 20), dtype=np.int32)
+    ids[0:10, 0:10] = 1                      # 100 visible px
+    cfg = C.FilterCfg(min_px=1, min_side=1, min_visibility=0.0)
+    anns, _ = A.boxes_from_mask(ids, {1: _meta()}, C.class_ids(), cfg,
+                                full_areas={1: 200})
+    assert anns[0]["visible_fraction"] == pytest.approx(0.5)
+
+
+def test_low_visibility_instance_is_dropped():
+    """A cell mostly hidden under a shell (assembled / open_case variants)
+    must be dropped once visible_fraction falls below min_visibility."""
+    ids = np.zeros((20, 20), dtype=np.int32)
+    ids[0:10, 0:10] = 1                      # 100 visible px of a 1000 px whole
+    cfg = C.FilterCfg(min_px=1, min_side=1, min_visibility=0.25)
+    anns, dropped = A.boxes_from_mask(ids, {1: _meta()}, C.class_ids(), cfg,
+                                      full_areas={1: 1000})
+    assert anns == []
+    assert dropped[0]["reason"] == "visibility<0.25"
 
 
 # ------------------------------------------------------- VOC output ----

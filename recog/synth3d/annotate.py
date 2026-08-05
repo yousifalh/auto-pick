@@ -141,10 +141,17 @@ def write_voc_xml(path: str, filename: str, width: int, height: int,
     """
     Write one Pascal-VOC annotation file.
 
-    Coordinates are written as integers because parse_voc_xml casts through
-    int(); a float there would raise. Boxes keep their exclusive max edges,
-    so a 1-pixel object stays a 1x1 box and never degenerates to zero area
-    (which makes FasterRCNN's regression loss go NaN).
+    Coordinates are written through int(), which truncates rather than
+    raises: a caller that hands this float bbox coordinates (e.g.
+    [1.0, 1.9, 4.9, 4.1]) gets back a silently shrunk box ([1, 1, 4, 4]),
+    not an error - so callers must keep boxes integer-valued themselves
+    (boxes_from_mask always does). Width and height are the fields that
+    matter for round-tripping: parse_voc_xml casts THEM through int(),
+    which does raise on a float string such as "80.0"; its bndbox fields
+    use float() and would silently accept either. Boxes keep their
+    exclusive max edges, so a 1-pixel object stays a 1x1 box and never
+    degenerates to zero area (which makes FasterRCNN's regression loss go
+    NaN).
     """
     root = ET.Element("annotation")
     ET.SubElement(root, "filename").text = filename
