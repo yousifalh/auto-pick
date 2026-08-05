@@ -138,7 +138,12 @@ def main():
         xml = os.path.join(root, "annotations", stem + ".xml")
         meta_path = os.path.join(root, "meta", stem + ".json")
 
-        if a.resume and os.path.exists(meta_path) and os.path.exists(xml):
+        # The image must exist too, or a --no-render pass followed by a
+        # --resume run leaves annotations with no pixels: the dataset lists
+        # images/, so len(dataset) would be 0 while manifest.json claimed a
+        # full image count. Under --no-render there is no PNG to demand.
+        if (a.resume and os.path.exists(meta_path) and os.path.exists(xml)
+                and (a.no_render or os.path.exists(png))):
             with open(meta_path) as f:
                 meta = json.load(f)
         else:
