@@ -264,6 +264,22 @@ def train(cfg: Dict[str, Any]) -> None:
             )
             log.info("New best mAP@0.5=%.4f saved", best_map)
 
+        # Always keep the latest epoch as well. On the synthetic dataset the
+        # validation mAP saturates at 1.0 within two epochs, after which
+        # ``map50 > best_map`` is never true again — so without this, every
+        # subsequent epoch trains and is then discarded, and the model you
+        # actually end up with is whichever early epoch happened to peak.
+        # Held-out real-photo performance keeps changing long after the
+        # synthetic metric stops moving, so the last epoch must be recoverable.
+        torch.save(
+            {
+                "model": model.state_dict(),
+                "epoch": epoch,
+                "metrics": metrics,
+            },
+            ckpt_dir / "last.pt",
+        )
+
 
 # ----------------------------------------------------------- CLI ----
 
