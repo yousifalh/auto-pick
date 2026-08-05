@@ -1,0 +1,12 @@
+# This project is LF-only. The machine's global core.autocrlf=true otherwise
+# rewrites whole files on edit, turning a small append into a churned diff.
+* text=auto eol=lf
+
+# Never touch binaries.
+*.glb binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.pdf binary
+*.exr binary
+*.blend binary
