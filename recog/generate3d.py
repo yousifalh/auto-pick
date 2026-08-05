@@ -18,6 +18,7 @@ import argparse
 import json
 import math
 import os
+import re
 import statistics
 import sys
 
@@ -55,6 +56,49 @@ def parse_args(cfg):
     p.add_argument("--save-blend", default=None)
     p.add_argument("--config", default=None)
     return p.parse_args(argv)
+
+
+def _anchor_range(path: str = None):
+    """
+    (smallest, largest) anchor size in pixels, read from the recognition config.
+
+    torchvision's AnchorGenerator sizes are sqrt(anchor area), so this is
+    directly comparable to sqrt(box area) - NOT to a box diagonal.
+    `recog/model.py` appends `base_scales[-1] * 2` as the P6 level, so the real
+    upper bound is twice the largest configured scale.
+
+    Returns None if the file is missing or the value cannot be read. This feeds
+    a warning; a warning must never stop a 2000-frame render. Blender's bundled
+    Python has no PyYAML, hence the line-scan fallback.
+    """
+    path = path or os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "configs", "recognition.yaml")
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return None
+
+    scales = None
+    try:
+        import yaml
+        scales = ((yaml.safe_load(text) or {}).get("model") or {}).get(
+            "anchor_scales")
+    except Exception:
+        scales = None
+    if not scales:
+        m = re.search(r"^\s*anchor_scales:\s*\[([^\]]*)\]", text, re.M)
+        if not m:
+            return None
+        scales = [v for v in m.group(1).split(",") if v.strip()]
+    try:
+        vals = sorted(float(s) for s in scales)
+    except (TypeError, ValueError):
+        return None
+    if not vals:
+        return None
+    return vals[0], vals[-1] * 2.0
 
 
 def _dirs(root, save_masks):
@@ -210,11 +254,16 @@ def main():
                      "mean": round(statistics.fmean(hs), 1) if hs else 0},
     }
     if ws:
-        diags = sorted(math.hypot(w, h) for w, h in zip(ws, hs))
-        stats["box_diag_px"] = {
-            "p05": round(diags[int(0.05 * (len(diags) - 1))], 1),
-            "p50": round(diags[len(diags) // 2], 1),
-            "p95": round(diags[int(0.95 * (len(diags) - 1))], 1)}
+        def _pcts(vals):
+            v = sorted(vals)
+            return {"p05": round(v[int(0.05 * (len(v) - 1))], 1),
+                    "p50": round(v[len(v) // 2], 1),
+                    "p95": round(v[int(0.95 * (len(v) - 1))], 1)}
+
+        stats["box_diag_px"] = _pcts(math.hypot(w, h) for w, h in zip(ws, hs))
+        # sqrt(area) is the quantity anchor_scales is expressed in.
+        stats["box_sqrt_area_px"] = _pcts(
+            math.sqrt(w * h) for w, h in zip(ws, hs))
 
     with open(os.path.join(root, "manifest.json"), "w") as f:
         json.dump({"classes": CLASSES, "class_to_id": ids,
@@ -229,14 +278,40 @@ def main():
         pass
 
     print(json.dumps(stats, indent=2))
-    if stats.get("box_diag_px"):
-        d = stats["box_diag_px"]
-        print(f"\nAnchor check: FPN defaults cover 32-512px diagonals; "
-              f"yours are p05={d['p05']} p50={d['p50']} p95={d['p95']}")
-        if d["p95"] > 480:
-            print("  WARNING: p95 near the top of the anchor range. Enlarge "
-                  "layout.area or widen anchor_scales in configs/recognition.yaml")
+    _anchor_check(stats)
     print(f"[done] {root}")
+
+
+def _anchor_check(stats):
+    """
+    Warn when the rendered box sizes fall off EITHER end of the configured
+    anchor range. The previous version hard-coded "32-512px" and only warned
+    about boxes being too large, so it could not detect the inverted failure
+    where anchors are far smaller than the boxes - which is exactly what
+    happened when this dataset replaced the cv2 one.
+    """
+    s = stats.get("box_sqrt_area_px")
+    if not s:
+        return
+    rng = _anchor_range()
+    if rng is None:
+        print("\nAnchor check: skipped - could not read model.anchor_scales "
+              "from configs/recognition.yaml")
+        return
+    lo, hi = rng
+    print(f"\nAnchor check: configs/recognition.yaml covers "
+          f"{lo:g}-{hi:g}px sqrt(area) (anchor_scales, plus the x2 P6 level "
+          f"recog/model.py appends); your boxes are "
+          f"p05={s['p05']} p50={s['p50']} p95={s['p95']}")
+    if s["p05"] < lo:
+        print(f"  WARNING: p05={s['p05']} is BELOW the smallest anchor "
+              f"({lo:g}px) - those boxes have no anchor that can match them. "
+              f"Lower anchor_scales in configs/recognition.yaml, or shrink "
+              f"layout.area so the parts fill more of the frame.")
+    if s["p95"] > hi:
+        print(f"  WARNING: p95={s['p95']} is ABOVE the largest anchor "
+              f"({hi:g}px). Widen anchor_scales in configs/recognition.yaml, "
+              f"or enlarge layout.area.")
 
 
 if __name__ == "__main__":

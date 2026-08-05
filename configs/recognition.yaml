@@ -3,8 +3,15 @@ model:
   name: faster_rcnn
   backbone: resnet34_fpn
   num_classes: 3  # background, battery, cartridge
-  anchor_ratios: [0.33, 0.5, 1.0, 1.5, 2.0]
-  anchor_scales: [4, 8, 16, 32]
+  # Sized for the Blender dataset's measured boxes at 1280x720: sqrt(area) is
+  # 50-57 px for batteries and 112-185 px for cartridges, and an 18650 cell is
+  # ~3.55:1. recog/model.py appends base_scales[-1]*2 as the P6 level, so the
+  # covered range is 56-320 px. The old [4, 8, 16, 32] / max ratio 2.0 were
+  # tuned for recog/synth_dataset.py's much smaller cv2 primitives and left
+  # 20% of boxes below 0.5 best-IoU (cartridge median 0.21); these give a
+  # minimum best-IoU of 0.57 with nothing below 0.5.
+  anchor_ratios: [0.28, 0.5, 1.0, 2.0, 3.5]
+  anchor_scales: [56, 80, 112, 160]
   roi_output_size: 7
   nms_iou: 0.4
   confidence_threshold: 0.70
