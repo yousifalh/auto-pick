@@ -1,0 +1,37 @@
+# Planning module configuration
+battery:
+  # 18650 cylindrical cell
+  diameter_mm: 18.5
+  length_mm: 65.0
+  # For 21700 override in runtime: diameter=21, length=70
+
+cartridge:
+  # Image-plane green-channel mask params
+  green_channel_thresh: otsu
+  morph_close_ksize: 5
+  morph_open_ksize: 3
+  safety_margin_px: 5
+  pcb_exclusion_required: true
+
+occupancy_grid:
+  resolution_mm_per_cell: 1.5
+  dtype: uint8  # 0 = free, 1 = forbidden (PCB), 2 = planned, 3 = placed
+
+packing:
+  algorithm: ffdh
+  rotation_allowed: [0, 90]
+  deterministic: true
+  worst_case_bound: 1.7
+  max_ms_budget: 50
+
+queue:
+  fill_order: row_major  # top-left → bottom-right
+  assignment: nearest_available
+
+camera:
+  # Pinhole calibration (mm per px). Replace with real intrinsics when available.
+  mm_per_px_x: 0.38
+  mm_per_px_y: 0.38
+  origin_offset_x_mm: 0.0
+  origin_offset_y_mm: 0.0
+  workspace_bounds_mm: {x_min: -350, x_max: 350, y_min: -350, y_max: 350}

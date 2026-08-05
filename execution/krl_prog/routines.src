@@ -1,0 +1,101 @@
+; KUKA KRL 3.1 routines for the pick-and-place pipeline.
+; Invoked via EthernetKRL commands described in ../protocol.py.
+;
+; All commands are packetised (16 bytes binary + CRC-16) and received
+; on the TCP channel configured in laptop-comm.xml.
+
+DEF MoveBetweenPositions(pos1 :IN, pos2 :IN)
+   DECL E6POS pos1
+   DECL E6POS pos2
+
+   ; Move to first position
+   PTP pos1
+   WAIT SEC 1
+
+   ; Move to second position
+   PTP pos2
+   WAIT SEC 1
+END
+
+
+; Simple PTP move used by OpCode.MOVE_TO. pos is the commanded Cartesian
+; pose (we copy the current orientation).
+DEF SimpleMove(pos :IN, vel :IN, acc :IN, wait_time :IN)
+   DECL E6POS pos
+   DECL REAL vel
+   DECL REAL acc
+   DECL REAL wait_time
+
+   $VEL.CP = vel
+   $ACC.CP = acc
+
+   PTP pos
+   WAIT SEC wait_time
+END
+
+
+; Vacuum gripper control — maps directly from OpCode.VACUUM_ON/OFF.
+;   digital_out  : digital channel for on/off
+;   analog_out   : analog channel for vacuum level (0-100 %)
+;   vacuum_on    : 0 = off, 1 = on
+;   vacuum_level : 0..100 percentage
+DEF VacuumControl(digital_out :IN, analog_out :IN, vacuum_on :IN, vacuum_level :IN)
+   DECL INT digital_out
+   DECL INT analog_out
+   DECL BOOL vacuum_on
+   DECL INT vacuum_level
+
+   $OUT[digital_out] = vacuum_on
+   $ANOUT[analog_out] = vacuum_level
+END
+
+
+; Canonical PICK_AND_PLACE subroutine — OpCode.PICK_AND_PLACE.
+;   pick_pos   : Cartesian pose of the battery to grasp
+;   place_pos  : Cartesian pose of the cell to place into
+;   vacuum_pct : gripper vacuum level (0..100)
+;
+; Sequence (PPR §5.4):
+;   approach ▸ grasp ▸ transport ▸ insert ▸ retract
+;
+DEF PickAndPlace(pick_pos :IN, place_pos :IN, vacuum_pct :IN)
+   DECL E6POS pick_pos
+   DECL E6POS place_pos
+   DECL INT vacuum_pct
+   DECL E6POS approach_pos
+   DECL E6POS transport_pos
+
+   $VEL.CP = 0.150        ; 150 mm/s default — within the R5 safety cap
+   $ACC.CP = 0.500
+
+   ; 1. Approach — 60 mm above the target
+   approach_pos = pick_pos
+   approach_pos.Z = pick_pos.Z + 60
+   PTP approach_pos
+   LIN pick_pos
+
+   ; 2. Grasp
+   VacuumControl(1, 1, TRUE, vacuum_pct)
+   WAIT SEC 0.05
+   IF $IN[10] == FALSE THEN    ; vacuum pressure sensor
+      RETURN 2                 ; PICK_FAILED
+   ENDIF
+
+   ; 3. Transport — retract then move to place XY at safe height
+   LIN approach_pos
+   transport_pos = place_pos
+   transport_pos.Z = place_pos.Z + 80
+   PTP transport_pos
+
+   ; 4. Insert (LIN for controlled descent)
+   LIN place_pos
+
+   ; 5. Release
+   VacuumControl(1, 1, FALSE, 0)
+   WAIT SEC 0.03
+
+   ; 6. Retract
+   LIN transport_pos
+
+   RETURN 1                    ; SUCCESS
+END

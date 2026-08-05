@@ -1,0 +1,4 @@
+ heur class= bat  AP@0.5=0.4463  n_dets=44  n_gt=105
+ heur class=cart  AP@0.5=0.5121  n_dets=20  n_gt=29
+frcnn class= bat  AP@0.5=0.9053  n_dets=537  n_gt=105
+frcnn class=cart  AP@0.5=0.8419  n_dets=90  n_gt=29

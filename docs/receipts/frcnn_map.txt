@@ -1,0 +1,8 @@
+val size: 15
+gt per class: {2: 29, 1: 105}
+mAP@0.50: 0.7643
+AP_battery@0.50: 0.7896
+AP_cartridge@0.50: 0.7390
+mAP@0.75: 0.3051
+AP_battery@0.75: 0.3573
+AP_cartridge@0.75: 0.2530

@@ -1,0 +1,36 @@
+[project]
+name = "auto-pick"
+version = "0.2.0"
+description = "Autonomous recognition, pick and place for Li-ion batteries"
+authors = [{name = "Yousif Al-Haidary"}]
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "opencv-python>=4.8",
+    "pillow>=10.0",
+    "pyyaml>=6.0",
+    "albumentations>=1.4",
+]
+
+[project.optional-dependencies]
+train = ["torch>=2.0", "torchvision>=0.15", "tensorboard"]
+test = ["pytest", "pytest-cov"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --tb=short"
+
+[tool.coverage.run]
+branch = true
+source = ["recog", "plan", "execution", "common"]
+# model.py and training.py require optional torch/torchvision (not in the
+# default test env — see `pip install .[train]`). synth_dataset.py is a
+# dev-only data generator. bin-packing.py is a legacy stub superseded by
+# bin_packing.py.
+omit = [
+    "*/tests/*",
+    "*/synth_dataset.py",
+    "*/recog/model.py",
+    "*/recog/training.py",
+    "*/plan/bin-packing.py",
+]

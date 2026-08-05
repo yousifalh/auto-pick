@@ -1,0 +1,42 @@
+# Byte-compiled / caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+pytest-cache-files-*/
+.ruff_cache/
+.mypy_cache/
+
+# Coverage
+.coverage
+.coverage.*
+htmlcov/
+
+# Virtualenvs
+.venv/
+venv/
+env/
+
+# Packaging
+*.egg-info/
+build/
+dist/
+
+# Model checkpoints and training runs
+recog/checkpoints/
+recog/runs/
+
+# Generated datasets (reproducible from a seed; do not version)
+recog/dataset/
+recog/dataset3d/
+recog/dev3d/
+recog/sweeps/
+*.blend
+*.blend1
+
+# Subagent-driven-development scratch
+.superpowers/
+
+# OS
+Thumbs.db
+.DS_Store

@@ -1,0 +1,25 @@
+<EthernetKRL>
+  <Config>
+    <IP>172.31.1.147</IP>
+    <Port>54600</Port>
+    <Type>Server</Type>
+  </Config>
+
+  <Send>
+    <XML>
+      <Element Tag="RobotStatus">
+        <Element Tag="X" Type="REAL"/>
+        <Element Tag="Y" Type="REAL"/>
+        <Element Tag="Z" Type="REAL"/>
+      </Element>
+    </XML>
+  </Send>
+
+  <Receive>
+    <XML>
+      <Element Tag="Command">
+        <Element Tag="Target" Type="INT"/>
+      </Element>
+    </XML>
+  </Receive>
+</EthernetKRL>

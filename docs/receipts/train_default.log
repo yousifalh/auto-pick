@@ -1,0 +1,25 @@
+/sessions/zen-vigilant-allen/.local/lib/python3.10/site-packages/albumentations/core/validation.py:114: UserWarning: ShiftScaleRotate is a special case of Affine transform. Please use Affine transform instead.
+  original_init(self, **validated_kwargs)
+train=85 val=15
+epoch=0 loss=1.0007 mAP50=0.2392 mAP75=0.0130 142.8s
+epoch=1 loss=0.7631 mAP50=0.5397 mAP75=0.0643 124.6s
+epoch=2 loss=0.7229 mAP50=0.7402 mAP75=0.3011 116.1s
+epoch=3 loss=0.6782 mAP50=0.7231 mAP75=0.2197 115.8s
+epoch=4 loss=0.6636 mAP50=0.8139 mAP75=0.4383 114.3s
+epoch=5 loss=0.5602 mAP50=0.8325 mAP75=0.4568 117.2s
+epoch=6 loss=0.5292 mAP50=0.8498 mAP75=0.4332 115.1s
+epoch=7 loss=0.5351 mAP50=0.8126 mAP75=0.5298 113.6s
+epoch=8 loss=0.5213 mAP50=0.7976 mAP75=0.4820 114.6s
+epoch=9 loss=0.4590 mAP50=0.8550 mAP75=0.4617 116.7s
+epoch=10 loss=0.4421 mAP50=0.8707 mAP75=0.5703 121.0s
+epoch=11 loss=0.4063 mAP50=0.8582 mAP75=0.5428 125.4s
+epoch=12 loss=0.4351 mAP50=0.8689 mAP75=0.5168 114.1s
+epoch=13 loss=0.3767 mAP50=0.8489 mAP75=0.5601 113.4s
+epoch=14 loss=0.3876 mAP50=0.8736 mAP75=0.5831 117.1s
+ablation: torchvision DEFAULT anchors (no custom k-means)
+epochs: 15  best mAP@0.5: 0.8736
+final mAP@0.5: 0.8736
+final AP_battery@0.5: 0.9053
+final AP_cartridge@0.5: 0.8419
+final mAP@0.75: 0.5831
+

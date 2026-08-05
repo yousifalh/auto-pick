@@ -1,0 +1,38 @@
+Faster R-CNN training run - 2026-04-20
+=======================================
+dataset: 100 synthetic images (85 train / 15 val, seed 0 split)
+backbone: ResNet-34 + FPN (from scratch, no COCO pretrain; sandbox has no
+          network access to torchvision weight server)
+input resize: min 320 x max 512
+optimiser: SGD, momentum 0.9, wd 5e-4
+learning rate: 3e-3, cosine anneal, 100-step linear warmup
+epochs: 15   batch size: 1   grad clip: 5.0
+eval score threshold: 0.05 (to expose full PR curve to mean_ap)
+wall time: ~31 min on 2 CPU threads (~124 s/epoch)
+
+Best checkpoint: epoch 11 -> recog/checkpoints/best.pt (147 MB)
+
+Best checkpoint - clean per-class evaluation on held-out val split
+(15 images, 105 battery + 29 cartridge ground-truth boxes):
+  mAP@0.50           : 0.7643
+  AP_battery @0.50   : 0.7896
+  AP_cartridge @0.50 : 0.7390
+  mAP@0.75           : 0.3051
+  AP_battery @0.75   : 0.3573
+  AP_cartridge @0.75 : 0.2530
+
+Comparison vs heuristic baseline (from /tmp/meas/heur_map.txt):
+  Heuristic mAP@0.50 : 0.397 ->  Faster R-CNN 0.764  (+0.37)
+  Heuristic mAP@0.75 : 0.387 ->  Faster R-CNN 0.305  (-0.08)
+
+Notes:
+  - The +0.37 jump at IoU=0.5 is the headline result; Faster R-CNN crosses
+    the heuristic baseline at epoch 2 and peaks at 0.7643 at epoch 11.
+  - At IoU=0.75 the heuristic wins because its green-channel colour mask
+    yields pixel-accurate boxes whereas the under-trained Faster R-CNN
+    box regressor still has noticeable residual error.
+  - Reaching the 0.90 PPR target requires COCO pretraining + more data +
+    full 60-epoch GPU schedule - priority 1 in FDR_v2 §13.2.
+
+Full per-epoch training curve: train_curve.csv
+Raw stdout/stderr:             train.log

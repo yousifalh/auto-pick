@@ -1,0 +1,45 @@
+........................................................................ [ 70%]
+..............................                                           [100%]
+=============================== warnings summary ===============================
+tests/test_augmentation.py::test_train_transform_returns_expected_keys
+tests/test_augmentation.py::test_train_transform_image_dtype_preserved
+  /sessions/zen-vigilant-allen/.local/lib/python3.10/site-packages/albumentations/core/validation.py:114: UserWarning: ShiftScaleRotate is a special case of Affine transform. Please use Affine transform instead.
+    original_init(self, **validated_kwargs)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+================================ tests coverage ================================
+_______________ coverage: platform linux, python 3.10.12-final-0 _______________
+
+Name                            Stmts   Miss Branch BrPart  Cover
+-----------------------------------------------------------------
+common/__init__.py                  2      0      0      0   100%
+common/config.py                   29      3     10      2    82%
+common/logging.py                  16      0      2      0   100%
+common/types.py                   102      9      6      1    89%
+execution/__init__.py               0      0      0      0   100%
+execution/execution.py             98     17     14      6    79%
+execution/mock_kuka_server.py     133     27     26      3    79%
+execution/protocol.py              64      0     16      0   100%
+plan/__init__.py                    0      0      0      0   100%
+plan/bin_packing.py                90     15     30      1    83%
+plan/placement_area.py             96      6     14      2    93%
+plan/planner.py                    98      5     20      5    92%
+plan/scene.py                     111      1     20      1    98%
+recog/__init__.py                   0      0      0      0   100%
+recog/augmentation.py              34      2      8      4    86%
+recog/dataset.py                   94     23     24      4    70%
+recog/evaluate.py                  86      1     28      1    98%
+recog/inference.py                 89     26     20      4    67%
+-----------------------------------------------------------------
+TOTAL                            1142    135    238     34    86%
+102 passed, 2 warnings in 4.78s
+
+===============================================================================
+Post-rewrite end-to-end smoke test (2026-04-20):
+  python main.py --config configs/demo.yaml
+Summary: {'cycles': 10, 'placed': 10, 'pick_failed': 0, 'place_failed': 0,
+          'empty_queue': 0}
+Perception: 3.0-6.2 ms/frame (HeuristicDetector on synthetic images).
+Planning:   1.8-7.8 ms/frame (FFDH + placement-area extraction).
+Execution:  10/10 successful pick-and-place cycles against the mock KUKA.
+===============================================================================

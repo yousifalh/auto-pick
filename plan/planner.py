@@ -1,0 +1,280 @@
+"""Top-level planning orchestrator.
+
+Takes a fresh :class:`common.types.Snapshot`, updates the digital
+twin, extracts the valid placement area for any cartridge that
+doesn't yet have one, runs FFDH on each cartridge, and emits a
+deterministic FIFO queue of :class:`common.types.PickPlacePose`
+items for the executor.
+
+Cycle-time rules (PPR §5.3):
+
+* Row-major fill order (top-left → bottom-right) inside each cartridge.
+* Nearest-available-battery assignment to minimise transport distance.
+* Cells marked ``FORBIDDEN``, ``PLACED`` or ``PLANNED`` are skipped.
+* The queue never contains more picks than available batteries.
+
+After the executor reports back, :meth:`Planner.confirm_placement`
+flips each PLANNED cell to PLACED on success, or reverts it to FREE
+on failure so a future cycle can retry.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
+
+import numpy as np
+
+from common.types import PickPlacePose, Snapshot, WorkspacePoint
+from plan.bin_packing import Item, PackResult, first_fit_decreasing
+from plan.placement_area import PlacementAreaExtractor
+from plan.scene import (
+    Battery,
+    Cartridge,
+    CellState,
+    EnvironmentModel,
+    WorkspaceBounds,
+)
+
+
+# ------------------------------------------------------ configuration --
+
+@dataclass
+class PlannerConfig:
+    """Knobs loaded from ``configs/planning.yaml``."""
+
+    battery_width_mm: float = 18.5
+    battery_length_mm: float = 65.0
+    mm_per_px: float = 0.38
+    origin_offset_x_mm: float = 0.0
+    origin_offset_y_mm: float = 0.0
+    pick_approach_height_mm: float = 60.0
+    place_insert_height_mm: float = 2.0
+    allow_rotation: bool = True
+
+    @classmethod
+    def from_dict(cls, cfg: Dict) -> "PlannerConfig":
+        battery = cfg.get("battery", {}) or {}
+        camera = cfg.get("camera", {}) or {}
+        motion = cfg.get("motion", {}) or {}
+        return cls(
+            battery_width_mm=float(battery.get("diameter_mm", 18.5)),
+            battery_length_mm=float(battery.get("length_mm", 65.0)),
+            mm_per_px=float(camera.get("mm_per_px_x", 0.38)),
+            origin_offset_x_mm=float(camera.get("origin_offset_x_mm", 0.0)),
+            origin_offset_y_mm=float(camera.get("origin_offset_y_mm", 0.0)),
+            pick_approach_height_mm=float(
+                motion.get("approach_height_mm", 60.0),
+            ),
+            place_insert_height_mm=float(motion.get("insert_height_mm", 2.0)),
+            allow_rotation=True,
+        )
+
+
+# ---------------------------------------------------------- planner ---
+
+class Planner:
+    """Stateful planner that owns the digital twin."""
+
+    def __init__(
+        self,
+        planner_cfg: PlannerConfig,
+        placement_extractor: PlacementAreaExtractor,
+        workspace: WorkspaceBounds,
+    ) -> None:
+        self.cfg = planner_cfg
+        self.extractor = placement_extractor
+        self.env = EnvironmentModel(workspace=workspace)
+
+    # ---- main cycle -----------------------------------------------------
+
+    def cycle(
+        self,
+        snapshot: Snapshot,
+        image_rgb: Optional[np.ndarray],
+    ) -> List[PickPlacePose]:
+        """Run one planning cycle and return a freshly built queue."""
+        self.env.update_from_snapshot(snapshot)
+
+        if image_rgb is not None:
+            self._ensure_placement_areas(image_rgb)
+
+        queue: List[PickPlacePose] = []
+        available: List[Battery] = list(self.env.available_batteries())
+
+        for ctg in sorted(self.env.cartridges.values(), key=lambda c: c.id):
+            if ctg.placeable_rectangle is None or ctg.occupancy is None:
+                continue
+
+            pack = self._pack_cartridge(ctg)
+
+            # Row-major fill: sort packed placements by (y, x).
+            for p in sorted(pack.placements, key=lambda x: (x.y, x.x)):
+                if not available:
+                    return queue
+
+                queue.append(self._build_pose(ctg, p, available))
+
+        return queue
+
+    # ---- placement-area extraction --------------------------------------
+
+    def _ensure_placement_areas(self, image_rgb: np.ndarray) -> None:
+        """Fill in the placement rectangle / occupancy for new cartridges."""
+        for ctg in self.env.cartridges.values():
+            if ctg.placeable_rectangle is not None:
+                continue
+            try:
+                pa = self.extractor.extract(image_rgb, ctg.bbox)
+            except Exception:
+                # Leave unplanned this cycle — it'll retry next frame.
+                continue
+            ctg.placeable_rectangle = pa.rectangle
+            ctg.occupancy = pa.occupancy
+            ctg.pcb_mask = pa.pcb_mask
+
+    # ---- FFDH wrapper ---------------------------------------------------
+
+    def _pack_cartridge(self, ctg: Cartridge) -> PackResult:
+        pr = ctg.placeable_rectangle
+        strip_w_mm = pr.width * self.cfg.mm_per_px
+        strip_h_mm = pr.height * self.cfg.mm_per_px
+
+        # Estimate an upper bound on how many items might fit, with 2x
+        # slack so FFDH has enough candidates to saturate the strip.
+        n_est = max(
+            4,
+            int((strip_w_mm * strip_h_mm)
+                / (self.cfg.battery_width_mm * self.cfg.battery_length_mm))
+            * 2,
+        )
+        items = [
+            Item(
+                id=i,
+                width=self.cfg.battery_width_mm,
+                height=self.cfg.battery_length_mm,
+            )
+            for i in range(n_est)
+        ]
+
+        forbidden = ctg.occupancy.mask_of(
+            CellState.FORBIDDEN, CellState.PLANNED, CellState.PLACED,
+        )
+        return first_fit_decreasing(
+            items, strip_w_mm, strip_h_mm,
+            allow_rotation=self.cfg.allow_rotation,
+            forbidden_mask=forbidden,
+            mm_per_cell=ctg.occupancy.resolution_mm,
+        )
+
+    # ---- pose construction ---------------------------------------------
+
+    def _build_pose(
+        self,
+        ctg: Cartridge,
+        placement,
+        available: List[Battery],
+    ) -> PickPlacePose:
+        """Turn one FFDH placement into a :class:`PickPlacePose`."""
+        # Target place point (workspace mm).
+        cx_mm = placement.x + placement.width / 2
+        cy_mm = placement.y + placement.height / 2
+        target_x, target_y = self._cell_to_workspace(ctg, cx_mm, cy_mm)
+
+        # Choose the nearest battery and consume it.
+        bat = self._nearest_battery(available, ctg, placement)
+        available.remove(bat)
+        bat.assigned_to_pose = True
+
+        pick_x, pick_y = self._image_to_workspace(bat.bbox.cx, bat.bbox.cy)
+        row, col = self._xy_mm_to_cell(ctg, placement.x, placement.y)
+        ctg.mark_cell(row, col, CellState.PLANNED)
+
+        return PickPlacePose(
+            pick=WorkspacePoint(
+                x_mm=pick_x,
+                y_mm=pick_y,
+                z_mm=self.cfg.pick_approach_height_mm,
+            ),
+            place=WorkspacePoint(
+                x_mm=target_x,
+                y_mm=target_y,
+                z_mm=self.cfg.place_insert_height_mm,
+            ),
+            cartridge_id=ctg.id,
+            grid_row=row,
+            grid_col=col,
+            battery_detection_id=bat.id,
+        )
+
+    # ---- geometry helpers ----------------------------------------------
+
+    def _nearest_battery(
+        self,
+        available: List[Battery],
+        ctg: Cartridge,
+        placement,
+    ) -> Battery:
+        """Pick the battery nearest to the placement target (squared px)."""
+        tx = (
+            ctg.placeable_rectangle.xmin
+            + (placement.x + placement.width / 2) / self.cfg.mm_per_px
+        )
+        ty = (
+            ctg.placeable_rectangle.ymin
+            + (placement.y + placement.height / 2) / self.cfg.mm_per_px
+        )
+        return min(
+            available,
+            key=lambda b: (b.bbox.cx - tx) ** 2 + (b.bbox.cy - ty) ** 2,
+        )
+
+    def _image_to_workspace(
+        self, px: float, py: float,
+    ) -> Tuple[float, float]:
+        """Map camera pixel → workspace mm using the calibration."""
+        return (
+            px * self.cfg.mm_per_px + self.cfg.origin_offset_x_mm,
+            py * self.cfg.mm_per_px + self.cfg.origin_offset_y_mm,
+        )
+
+    def _cell_to_workspace(
+        self, ctg: Cartridge, x_mm: float, y_mm: float,
+    ) -> Tuple[float, float]:
+        """Cartridge-local mm → workspace mm."""
+        pr = ctg.placeable_rectangle
+        return (
+            pr.xmin * self.cfg.mm_per_px + x_mm + self.cfg.origin_offset_x_mm,
+            pr.ymin * self.cfg.mm_per_px + y_mm + self.cfg.origin_offset_y_mm,
+        )
+
+    def _xy_mm_to_cell(
+        self, ctg: Cartridge, x_mm: float, y_mm: float,
+    ) -> Tuple[int, int]:
+        """Strip mm → grid (row, col), clipped to grid bounds."""
+        res = ctg.occupancy.resolution_mm
+        row = max(0, min(ctg.occupancy.rows - 1, int(y_mm / res)))
+        col = max(0, min(ctg.occupancy.cols - 1, int(x_mm / res)))
+        return row, col
+
+    # ---- execution feedback --------------------------------------------
+
+    def confirm_placement(
+        self,
+        cartridge_id: int,
+        row: int,
+        col: int,
+        success: bool,
+    ) -> None:
+        """Update the occupancy grid in response to an execution result."""
+        if cartridge_id not in self.env.cartridges:
+            return
+        ctg = self.env.cartridge(cartridge_id)
+        if success:
+            ctg.mark_cell(row, col, CellState.PLACED)
+            return
+        # Revert PLANNED → FREE so the next cycle can retry this cell.
+        if ctg.occupancy.get(row, col) == CellState.PLANNED:
+            ctg.mark_cell(row, col, CellState.FREE)
+
+
+__all__ = ["Planner", "PlannerConfig"]

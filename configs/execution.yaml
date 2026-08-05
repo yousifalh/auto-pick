@@ -1,0 +1,28 @@
+# Execution module configuration
+kuka:
+  host: 172.31.1.147
+  port: 54600
+  protocol: ethernet_krl_3_1
+  command_length_bytes: 16
+  crc_polynomial: 0xA001   # CRC-16/MODBUS
+  handshake_timeout_ms: 2000
+  command_timeout_ms: 5000
+  heartbeat_interval_ms: 50
+  max_retries: 3
+  stop_category: 0  # IEC 60204 Cat-0 immediate stop on fatal error
+
+motion:
+  approach_height_mm: 60.0
+  grasp_height_mm: 5.0
+  transport_height_mm: 80.0
+  insert_height_mm: 2.0
+  default_velocity_mm_s: 150.0
+  safety_max_velocity_mm_s: 250.0
+  vacuum_level_percent: 80
+
+simulation:
+  # Used by mock_kuka_server.py
+  listen_host: 127.0.0.1
+  listen_port: 54600
+  simulated_move_time_ms_per_100mm: 180
+  drop_probability: 0.02

@@ -1,0 +1,6 @@
+[No git history available — project was developed outside a versioned
+workspace in this session. In the assessed submission, `git log
+--oneline` is expected to show the sprint-by-sprint progression
+referenced in FDR §12.1: scaffolding, per-module commits,
+digital-twin rewrite, mock server, test-driven hardening, and
+report.]

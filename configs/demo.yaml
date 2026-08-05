@@ -1,0 +1,11 @@
+# End-to-end demo config (software-only)
+recognition: configs/recognition.yaml
+planning: configs/planning.yaml
+execution: configs/execution.yaml
+
+mode:
+  source: synthetic        # synthetic | camera | mock
+  robot: mock              # mock | real
+  max_cycles: 10
+  log_level: INFO
+  camera_device: 0
