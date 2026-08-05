@@ -26,6 +26,10 @@ dist/
 recog/checkpoints/
 recog/runs/
 
+# Source CAD: large, and recog/synth3d/assets/ holds the converted result
+cad/*
+!cad/README.md
+
 # Generated datasets (reproducible from a seed; do not version)
 recog/dataset/
 recog/dataset3d/
