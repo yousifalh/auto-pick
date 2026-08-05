@@ -9,7 +9,23 @@ render:
   denoise: true
   device: GPU               # OPTIX on the RTX 3060; falls back to CPU
   view_transform: AgX
-  exposure: -1.5
+  # MEASURED, over 30 scenes covering all 5 backdrops x 3 lighting presets
+  # (see .superpowers/sdd/2026-08-05-blender-synthetic-dataset/tuning-report.md).
+  # exposure is applied by the view transform, not by Cycles, so one render can
+  # be written out at many exposures and the sweep below is exact rather than
+  # sampled:
+  #
+  #   EV     obj px >0.98   frame >0.98   backdrop spread   boxes under 0.05
+  #   -1.5      6.1%           2.5%           0.39               21.2%
+  #   -2.5      0.9%           0.7%           0.48               15.8%
+  #   -3.5      0.04%          0.00%          0.53               15.4%
+  #   -4.5      0.01%          0.00%          0.54               17.5%
+  #
+  # Below -3.5 nothing more is won: clipping is already gone, the spread has
+  # flattened, and the low-contrast fraction turns back UP because the dark end
+  # starts colliding instead (conveyor_belt against cell_black/shell_black).
+  # -3.5 is that turning point.
+  exposure: -3.5
   max_bounces: 12
   clamp_indirect: 10.0
   film_transparent: false
@@ -66,51 +82,69 @@ role_materials:
 
 # Ranges are [low, high], sampled per instance, so no two renders share a
 # surface. Colours are [[r,g,b] low, [r,g,b] high] in linear space.
+#
+# `luma_ref` is the MEASURED display-referred luminance a part of this preset
+# renders at, under `render.exposure`, as the median over the part's own mask
+# pixels across 30 scenes spanning all 5 backdrops and all 3 lighting presets.
+# It is not derivable from `color`: shell_navy's albedo (0.084 luma) is barely
+# twice cell_black's (0.040) yet it renders more than twice as bright (0.589 vs
+# 0.249), because a flat shell facing an overhead softbox is dominated by its
+# clearcoat sheen while a cylinder's median pixel has curved away from the
+# light. materials.for_role uses these to keep a part off a backdrop it would
+# disappear into; re-measure them if exposure, lighting or the colours move.
 materials:
   shell_white:
     color: [[0.68, 0.68, 0.67], [0.86, 0.86, 0.84]]
+    luma_ref: 0.788
     metallic: [0.0, 0.10]
     roughness: [0.30, 0.55]
     coat: [0.15, 0.55]
     wear: [0.05, 0.30]
   shell_black:
     color: [[0.015, 0.015, 0.018], [0.055, 0.055, 0.06]]
+    luma_ref: 0.436
     metallic: [0.0, 0.15]
     roughness: [0.28, 0.60]
     coat: [0.15, 0.60]
     wear: [0.05, 0.40]
   shell_navy:
     color: [[0.03, 0.05, 0.13], [0.07, 0.11, 0.24]]
+    luma_ref: 0.589
     metallic: [0.0, 0.12]
     roughness: [0.30, 0.55]
     coat: [0.15, 0.55]
     wear: [0.05, 0.30]
   shell_alu:
     color: [[0.55, 0.56, 0.58], [0.74, 0.75, 0.77]]
+    luma_ref: 0.835
     metallic: [0.85, 1.0]
     roughness: [0.20, 0.45]
     coat: [0.0, 0.0]
     wear: [0.10, 0.45]
   cell_green:
     color: [[0.06, 0.30, 0.07], [0.14, 0.42, 0.13]]
+    luma_ref: 0.54
     metallic: [0.05, 0.25]
     roughness: [0.28, 0.48]
     coat: [0.20, 0.60]
     wear: [0.05, 0.35]
   cell_blue:
     color: [[0.04, 0.12, 0.38], [0.10, 0.22, 0.55]]
+    luma_ref: 0.467
     metallic: [0.05, 0.25]
     roughness: [0.26, 0.46]
     coat: [0.20, 0.60]
     wear: [0.05, 0.35]
   cell_black:
     color: [[0.02, 0.02, 0.024], [0.06, 0.06, 0.065]]
+    luma_ref: 0.249
     metallic: [0.0, 0.20]
     roughness: [0.32, 0.58]
     coat: [0.10, 0.50]
     wear: [0.05, 0.40]
   cell_nickel:
     color: [[0.62, 0.63, 0.65], [0.80, 0.81, 0.83]]
+    luma_ref: 0.428
     metallic: [0.95, 1.0]
     roughness: [0.12, 0.35]
     coat: [0.0, 0.0]
@@ -118,22 +152,44 @@ materials:
   # Purple and grey wraps are both visible in the real photos (IMG_4426).
   cell_purple:
     color: [[0.26, 0.16, 0.42], [0.42, 0.28, 0.62]]
+    luma_ref: 0.544
     metallic: [0.05, 0.25]
     roughness: [0.28, 0.50]
     coat: [0.20, 0.60]
     wear: [0.05, 0.35]
   cell_grey:
     color: [[0.38, 0.38, 0.40], [0.58, 0.58, 0.60]]
+    luma_ref: 0.655
     metallic: [0.05, 0.30]
     roughness: [0.30, 0.55]
     coat: [0.10, 0.50]
     wear: [0.05, 0.40]
 
 # "image": path to a texture, or null to use the procedural generator.
+#
+# `color` is the two ends of the procedural texture's colour ramp, in LINEAR
+# space - the surface's albedo range. It used to be a hard-coded palette inside
+# world.py, which made the single most important property of a backdrop the one
+# thing you could not see or change from the config.
+#
+# `luma_ref` is the MEASURED display-referred luminance a part standing on this
+# backdrop has to compete with, under `render.exposure` above: the median over
+# the ring of pixels immediately outside each labelled box. That ring is mostly
+# backdrop but occasionally a neighbouring part, which is deliberate - it is
+# what the object actually has to stand out from. Whole-frame background
+# medians run higher (concrete 0.64, paper 0.66, brushed_metal 0.83, fabric
+# 0.41, conveyor_belt 0.32) because the ring includes contact shadow.
+#
+# It is what the material draw is kept away from (see materials.MIN_LUMA_DELTA).
+# It is a measurement, not an authored value, so re-measure it if the exposure,
+# the lighting presets or these colours change materially. The procedure is in
+# .superpowers/sdd/2026-08-05-blender-synthetic-dataset/tuning-report.md.
 backdrops:
   concrete:
     image: null
     proc: concrete
+    color: [[0.22, 0.22, 0.215], [0.46, 0.455, 0.44]]
+    luma_ref: 0.458
     uv_scale: [1.5, 4.0]
     brightness: [-0.06, 0.06]
     roughness: [0.55, 0.85]
@@ -141,20 +197,37 @@ backdrops:
   brushed_metal:
     image: null
     proc: brushed
+    color: [[0.30, 0.305, 0.31], [0.52, 0.525, 0.535]]
+    luma_ref: 0.815
     uv_scale: [2.0, 6.0]
     brightness: [-0.04, 0.08]
     roughness: [0.35, 0.55]
     bump: [0.02, 0.10]
+  # Authored as dark navy cloth and rendering as mid-grey: at the old exposure
+  # it measured 0.488, three hundredths from concrete's 0.458, so two of the
+  # five backdrops were the same tone and the axis carried no variety. Darkened
+  # to what the name says it is, which also moves it out of the middle of the
+  # cell colours (0.43-0.66), where it was responsible for 21 of the 37
+  # low-contrast boxes on its own.
   fabric:
     image: null
     proc: fabric
+    color: [[0.05, 0.06, 0.08], [0.12, 0.135, 0.165]]
+    luma_ref: 0.433
     uv_scale: [6.0, 18.0]
     brightness: [-0.05, 0.05]
     roughness: [0.70, 0.95]
     bump: [0.10, 0.35]
+  # Kraft rather than bleached white. At 0.76-0.90 albedo this sat directly on
+  # top of shell_white (0.68-0.86) and shell_alu (0.55-0.77) - the two most
+  # realistic case colours - so a white shell on paper was correctly labelled
+  # and invisible. Darkening it is what lets those two shells still be drawn
+  # here at all instead of being excluded by the contrast rule below.
   paper:
     image: null
     proc: paper
+    color: [[0.44, 0.42, 0.37], [0.54, 0.51, 0.45]]
+    luma_ref: 0.689
     uv_scale: [1.0, 3.0]
     brightness: [-0.03, 0.10]
     roughness: [0.60, 0.90]
@@ -162,6 +235,8 @@ backdrops:
   conveyor_belt:
     image: null
     proc: belt
+    color: [[0.035, 0.035, 0.038], [0.115, 0.115, 0.12]]
+    luma_ref: 0.233
     uv_scale: [3.0, 8.0]
     brightness: [-0.08, 0.02]
     roughness: [0.50, 0.80]

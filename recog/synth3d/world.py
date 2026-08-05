@@ -50,8 +50,25 @@ def kelvin_to_rgb(k: float):
 #  backdrop
 # --------------------------------------------------------------------------- #
 
-def _procedural(nt, kind: str, rng: random.Random):
-    """Returns (colour_socket, height_socket, mapping_node)."""
+# Fallback albedo ramp per procedural kind, used only when the backdrop has no
+# `color` in the config. The authored values live in configs/synth3d.yaml so
+# that the single property that decides whether a part is visible against its
+# background is visible - and tunable - from the config.
+_FALLBACK_PALETTE = {
+    "concrete": ((0.22, 0.22, 0.215), (0.46, 0.455, 0.44)),
+    "brushed": ((0.30, 0.305, 0.31), (0.52, 0.525, 0.535)),
+    "fabric": ((0.10, 0.12, 0.16), (0.24, 0.27, 0.33)),
+    "paper": ((0.76, 0.75, 0.72), (0.90, 0.89, 0.86)),
+    "belt": ((0.035, 0.035, 0.038), (0.115, 0.115, 0.12)),
+}
+
+
+def _procedural(nt, kind: str, rng: random.Random, color=None):
+    """Returns (colour_socket, height_socket, mapping_node).
+
+    `color` is [[r,g,b] low, [r,g,b] high] in LINEAR space, from the
+    backdrop's config entry; None falls back to `_FALLBACK_PALETTE`.
+    """
     coord = nt.nodes.new("ShaderNodeTexCoord")
     mapping = nt.nodes.new("ShaderNodeMapping")
     nt.links.new(coord.outputs["Object"], mapping.inputs["Vector"])
@@ -69,15 +86,10 @@ def _procedural(nt, kind: str, rng: random.Random):
     nt.links.new(mapping.outputs["Vector"], tex.inputs["Vector"])
 
     ramp = nt.nodes.new("ShaderNodeValToRGB")
-    palette = {
-        "concrete": ((0.22, 0.22, 0.215, 1), (0.46, 0.455, 0.44, 1)),
-        "brushed": ((0.30, 0.305, 0.31, 1), (0.52, 0.525, 0.535, 1)),
-        "fabric": ((0.10, 0.12, 0.16, 1), (0.24, 0.27, 0.33, 1)),
-        "paper": ((0.76, 0.75, 0.72, 1), (0.90, 0.89, 0.86, 1)),
-        "belt": ((0.035, 0.035, 0.038, 1), (0.115, 0.115, 0.12, 1)),
-    }.get(kind, ((0.2, 0.2, 0.2, 1), (0.5, 0.5, 0.5, 1)))
-    ramp.color_ramp.elements[0].color = palette[0]
-    ramp.color_ramp.elements[1].color = palette[1]
+    lo, hi = (color if color else
+              _FALLBACK_PALETTE.get(kind, ((0.2, 0.2, 0.2), (0.5, 0.5, 0.5))))
+    ramp.color_ramp.elements[0].color = tuple(lo)[:3] + (1.0,)
+    ramp.color_ramp.elements[1].color = tuple(hi)[:3] + (1.0,)
     if kind == "concrete":
         ramp.color_ramp.elements[0].position = 0.30
         ramp.color_ramp.elements[1].position = 0.72
@@ -102,6 +114,7 @@ def build_backdrop(name: str, rng: random.Random, cfg, size: float = 3.0,
     spec = cfg.backdrops[name]
     drawn = {
         "backdrop": name,
+        "luma_ref": spec.get("luma_ref"),
         "uv_scale": rng_range(rng, spec["uv_scale"]),
         "brightness": rng_range(rng, spec["brightness"]),
         "roughness": rng_range(rng, spec["roughness"]),
@@ -131,7 +144,8 @@ def build_backdrop(name: str, rng: random.Random, cfg, size: float = 3.0,
         nt.links.new(mapping.outputs["Vector"], img.inputs["Vector"])
         color_out = height_out = img.outputs["Color"]
     else:
-        color_out, height_out, mapping = _procedural(nt, spec["proc"], rng)
+        color_out, height_out, mapping = _procedural(nt, spec["proc"], rng,
+                                                     spec.get("color"))
 
     mapping.inputs["Scale"].default_value = tuple(
         v * drawn["uv_scale"] for v in mapping.inputs["Scale"].default_value)

@@ -9,7 +9,7 @@
     "denoise": true,
     "device": "GPU",
     "view_transform": "AgX",
-    "exposure": -1.5,
+    "exposure": -3.5,
     "max_bounces": 12,
     "clamp_indirect": 10.0,
     "film_transparent": false,
@@ -104,6 +104,7 @@
           0.84
         ]
       ],
+      "luma_ref": 0.788,
       "metallic": [
         0.0,
         0.1
@@ -134,6 +135,7 @@
           0.06
         ]
       ],
+      "luma_ref": 0.436,
       "metallic": [
         0.0,
         0.15
@@ -164,6 +166,7 @@
           0.24
         ]
       ],
+      "luma_ref": 0.589,
       "metallic": [
         0.0,
         0.12
@@ -194,6 +197,7 @@
           0.77
         ]
       ],
+      "luma_ref": 0.835,
       "metallic": [
         0.85,
         1.0
@@ -224,6 +228,7 @@
           0.13
         ]
       ],
+      "luma_ref": 0.54,
       "metallic": [
         0.05,
         0.25
@@ -254,6 +259,7 @@
           0.55
         ]
       ],
+      "luma_ref": 0.467,
       "metallic": [
         0.05,
         0.25
@@ -284,6 +290,7 @@
           0.065
         ]
       ],
+      "luma_ref": 0.249,
       "metallic": [
         0.0,
         0.2
@@ -314,6 +321,7 @@
           0.83
         ]
       ],
+      "luma_ref": 0.428,
       "metallic": [
         0.95,
         1.0
@@ -344,6 +352,7 @@
           0.62
         ]
       ],
+      "luma_ref": 0.544,
       "metallic": [
         0.05,
         0.25
@@ -374,6 +383,7 @@
           0.6
         ]
       ],
+      "luma_ref": 0.655,
       "metallic": [
         0.05,
         0.3
@@ -396,6 +406,19 @@
     "concrete": {
       "image": null,
       "proc": "concrete",
+      "color": [
+        [
+          0.22,
+          0.22,
+          0.215
+        ],
+        [
+          0.46,
+          0.455,
+          0.44
+        ]
+      ],
+      "luma_ref": 0.458,
       "uv_scale": [
         1.5,
         4.0
@@ -416,6 +439,19 @@
     "brushed_metal": {
       "image": null,
       "proc": "brushed",
+      "color": [
+        [
+          0.3,
+          0.305,
+          0.31
+        ],
+        [
+          0.52,
+          0.525,
+          0.535
+        ]
+      ],
+      "luma_ref": 0.815,
       "uv_scale": [
         2.0,
         6.0
@@ -436,6 +472,19 @@
     "fabric": {
       "image": null,
       "proc": "fabric",
+      "color": [
+        [
+          0.05,
+          0.06,
+          0.08
+        ],
+        [
+          0.12,
+          0.135,
+          0.165
+        ]
+      ],
+      "luma_ref": 0.433,
       "uv_scale": [
         6.0,
         18.0
@@ -456,6 +505,19 @@
     "paper": {
       "image": null,
       "proc": "paper",
+      "color": [
+        [
+          0.44,
+          0.42,
+          0.37
+        ],
+        [
+          0.54,
+          0.51,
+          0.45
+        ]
+      ],
+      "luma_ref": 0.689,
       "uv_scale": [
         1.0,
         3.0
@@ -476,6 +538,19 @@
     "conveyor_belt": {
       "image": null,
       "proc": "belt",
+      "color": [
+        [
+          0.035,
+          0.035,
+          0.038
+        ],
+        [
+          0.115,
+          0.115,
+          0.12
+        ]
+      ],
+      "luma_ref": 0.233,
       "uv_scale": [
         3.0,
         8.0

@@ -145,10 +145,18 @@ def build(params: dict, rng: random.Random, library: A.AssetLibrary,
         return {}, {}, meta
 
     # ---- materials, drawn per instance ----------------------------------- #
+    # Drawn JOINTLY with the backdrop, not independently: a preset that renders
+    # within materials.MIN_LUMA_DELTA of this backdrop is dropped from the draw,
+    # because a correctly labelled object that cannot be told from what is
+    # behind it teaches the detector to hallucinate. The backdrop plane itself
+    # is built much further down (it has to be, so a jig scene can sink it below
+    # the plate), but which backdrop it will be is already known here.
+    backdrop_luma = (cfg.backdrops.get(params["backdrop"]) or {}).get("luma_ref")
+    meta["backdrop_luma_ref"] = backdrop_luma
     for item in items:
         for obj in item.objects:
             role = role_of(obj.name)
-            mat, drawn = M.for_role(role, rng, cfg)
+            mat, drawn = M.for_role(role, rng, cfg, avoid_luma=backdrop_luma)
             M.apply_to_object(obj, mat)
             meta["materials"].append(dict(object=obj.name, role=role, **{
                 k: (list(v) if isinstance(v, tuple) else v)

@@ -73,6 +73,39 @@ def test_load_config_from_yaml():
     assert cfg.lighting["overcast_softbox"]["kind"] == "camera_softbox"
 
 
+def test_every_material_and_backdrop_has_a_measured_luma_ref():
+    """The contrast rule silently stops applying to anything unmeasured.
+
+    materials.for_role keeps a part off a backdrop it would disappear into by
+    comparing the two `luma_ref` values. A preset with no `luma_ref` opts out
+    of that check entirely - deliberately, since guessing from the albedo gets
+    it wrong by up to a factor of two - so adding a preset without measuring it
+    would quietly reintroduce invisible objects. This is the reminder.
+    """
+    cfg = C.load_config()
+    for name, spec in cfg.materials.items():
+        assert isinstance(spec.get("luma_ref"), (int, float)), (
+            f"material preset {name!r} has no measured luma_ref; see the "
+            f"comment above `materials:` in configs/synth3d.yaml")
+    for name, spec in cfg.backdrops.items():
+        assert isinstance(spec.get("luma_ref"), (int, float)), (
+            f"backdrop {name!r} has no measured luma_ref")
+    # Both sides are display-referred luminance, so they share a scale.
+    for name, spec in list(cfg.materials.items()) + list(cfg.backdrops.items()):
+        assert 0.0 <= spec["luma_ref"] <= 1.0, name
+
+
+def test_every_backdrop_carries_its_own_albedo_range():
+    """The palette used to be hard-coded in world.py, where it could not be
+    tuned or even seen from the config."""
+    cfg = C.load_config()
+    for name, spec in cfg.backdrops.items():
+        lo, hi = spec["color"]
+        assert len(lo) == 3 and len(hi) == 3, name
+        assert all(0.0 <= c <= 1.0 for c in lo + hi), name
+        assert all(h >= l for l, h in zip(lo, hi)), name
+
+
 def test_layout_area_matches_render_aspect():
     """A square area under a 16:9 render wastes ~44% of every frame."""
     cfg = C.load_config()

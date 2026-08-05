@@ -2,6 +2,13 @@
 
 Presets are not module globals here: they come from the loaded config
 (`config.load_config()`), so `build` and `for_role` take a `cfg` argument.
+
+`for_role` draws the preset JOINTLY with the backdrop rather than
+independently. Drawing them independently produced correctly labelled boxes
+that a human cannot see: measured over 30 scenes, 15% of boxes differed from
+their immediate surround by less than 0.05 display luminance, and the fifth
+percentile was 0.018 - objects that are, to a detector, background wearing a
+box. That teaches it to hallucinate. See `MIN_LUMA_DELTA`.
 """
 
 from __future__ import annotations
@@ -10,6 +17,26 @@ import random
 from typing import Tuple
 
 import bpy
+
+
+# Minimum separation, in display-referred luminance, between a material preset
+# and the backdrop it will be seen against. Both sides come from `luma_ref` in
+# configs/synth3d.yaml, which is MEASURED from renders rather than derived from
+# the albedo - albedo does not predict the rendered value here, and not by a
+# little. shell_navy (albedo 0.084) renders at 0.589 while cell_black (albedo
+# 0.040) renders at 0.257: the clearcoat sheen on a flat shell facing an
+# overhead softbox dominates its own base colour, and a cylinder's median pixel
+# is dimmer than a flat top face of the same material. Any formula from albedo,
+# metallic and coat got those two backwards, so the table is measured.
+#
+# 0.10 is chosen by measuring both ends of the trade. It takes the fraction of
+# boxes within 0.05 luminance of their surround from 9.6% to 5.4% while leaving
+# every (backdrop, role) combination at least two presets to draw from. 0.12
+# scored no better (5.8%) and costs the `cell` role on fabric two of its four
+# remaining presets; by 0.15 the `case` role on paper is down to shell_black
+# alone, which swaps one bias (invisible objects) for a worse one (the backdrop
+# predicting the object's colour).
+MIN_LUMA_DELTA = 0.10
 
 
 def set_input(node, name, value) -> bool:
@@ -96,7 +123,51 @@ def apply_to_object(obj, mat):
         slot.material = mat
 
 
-def for_role(role: str, rng: random.Random, cfg):
-    """Draw a material appropriate to a sub-part role."""
+def preset_luma(preset_name: str, cfg):
+    """Measured display luminance of a preset, or None if unmeasured.
+
+    Returning None rather than guessing is deliberate: a preset added to the
+    config without a `luma_ref` must not silently be treated as though it sat
+    at some derived luminance, because an albedo-derived number here would be
+    wrong by up to a factor of two (see MIN_LUMA_DELTA) and would exclude the
+    wrong presets rather than the colliding ones. An unmeasured preset simply
+    stops participating in the rule.
+    """
+    return (cfg.materials.get(preset_name) or {}).get("luma_ref")
+
+
+def eligible_presets(presets, cfg, avoid_luma, min_delta=None):
+    """The presets far enough from `avoid_luma` to be visible against it.
+
+    Falls back, in order:
+      * no `avoid_luma` (backdrop unmeasured)  -> every preset, unchanged;
+      * presets with no `luma_ref`             -> always kept, they opt out;
+      * nothing far enough                     -> the single farthest one,
+        because a scene still has to be built and the best available contrast
+        is strictly better than a uniform draw.
+    """
+    if avoid_luma is None or len(presets) < 2:
+        return list(presets)
+    delta = MIN_LUMA_DELTA if min_delta is None else min_delta
+
+    def gap(p):
+        ref = preset_luma(p, cfg)
+        return None if ref is None else abs(ref - avoid_luma)
+
+    far = [p for p in presets if gap(p) is None or gap(p) >= delta]
+    if far:
+        return far
+    return [max(presets, key=lambda p: gap(p) or 0.0)]
+
+
+def for_role(role: str, rng: random.Random, cfg, avoid_luma=None,
+             min_delta=None):
+    """Draw a material appropriate to a sub-part role.
+
+    `avoid_luma` is the backdrop's measured luminance; presets that would
+    render within MIN_LUMA_DELTA of it are dropped from the draw. Exactly one
+    rng draw is consumed either way, so a seed still reproduces a scene.
+    """
     presets = cfg.role_materials.get(role) or cfg.role_materials["case"]
-    return build(rng.choice(presets), rng, cfg)
+    return build(rng.choice(eligible_presets(presets, cfg, avoid_luma,
+                                             min_delta)), rng, cfg)
