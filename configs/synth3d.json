@@ -1,0 +1,606 @@
+{
+  "render": {
+    "res": [
+      1280,
+      720
+    ],
+    "samples": 192,
+    "adaptive_threshold": 0.01,
+    "denoise": true,
+    "device": "GPU",
+    "view_transform": "AgX",
+    "exposure": 0.0,
+    "max_bounces": 12,
+    "clamp_indirect": 10.0,
+    "film_transparent": false,
+    "persistent_data": true
+  },
+  "layout": {
+    "area": [
+      0.8,
+      0.45
+    ],
+    "mode": "scatter",
+    "pad": 0.008,
+    "max_tries": 500,
+    "jitter_deg": 2.0,
+    "allow_90s": true,
+    "jig_clearance": 0.004,
+    "jig_jitter_deg": 1.0,
+    "jig_depth": [
+      0.006,
+      0.012
+    ]
+  },
+  "camera": {
+    "ortho": true,
+    "height": 0.9,
+    "margin_range": [
+      1.02,
+      1.1
+    ],
+    "shift_range": [
+      -0.006,
+      0.006
+    ],
+    "focal": 50.0
+  },
+  "filter": {
+    "min_px": 80,
+    "min_side": 6,
+    "min_visibility": 0.25,
+    "drop_truncated": false
+  },
+  "param_space": {
+    "n_assemblies": [
+      1,
+      4
+    ],
+    "layout_mode": {
+      "scatter": 0.7,
+      "jig": 0.3
+    },
+    "backdrop": [
+      "concrete",
+      "brushed_metal",
+      "fabric",
+      "paper",
+      "conveyor_belt"
+    ],
+    "lighting": [
+      "overcast_softbox",
+      "harsh_inspection",
+      "warm_indoor"
+    ]
+  },
+  "role_materials": {
+    "case": [
+      "shell_white",
+      "shell_black",
+      "shell_navy",
+      "shell_alu"
+    ],
+    "cell": [
+      "cell_green",
+      "cell_blue",
+      "cell_black",
+      "cell_nickel",
+      "cell_purple",
+      "cell_grey"
+    ]
+  },
+  "materials": {
+    "shell_white": {
+      "color": [
+        [
+          0.68,
+          0.68,
+          0.67
+        ],
+        [
+          0.86,
+          0.86,
+          0.84
+        ]
+      ],
+      "metallic": [
+        0.0,
+        0.1
+      ],
+      "roughness": [
+        0.3,
+        0.55
+      ],
+      "coat": [
+        0.15,
+        0.55
+      ],
+      "wear": [
+        0.05,
+        0.3
+      ]
+    },
+    "shell_black": {
+      "color": [
+        [
+          0.015,
+          0.015,
+          0.018
+        ],
+        [
+          0.055,
+          0.055,
+          0.06
+        ]
+      ],
+      "metallic": [
+        0.0,
+        0.15
+      ],
+      "roughness": [
+        0.28,
+        0.6
+      ],
+      "coat": [
+        0.15,
+        0.6
+      ],
+      "wear": [
+        0.05,
+        0.4
+      ]
+    },
+    "shell_navy": {
+      "color": [
+        [
+          0.03,
+          0.05,
+          0.13
+        ],
+        [
+          0.07,
+          0.11,
+          0.24
+        ]
+      ],
+      "metallic": [
+        0.0,
+        0.12
+      ],
+      "roughness": [
+        0.3,
+        0.55
+      ],
+      "coat": [
+        0.15,
+        0.55
+      ],
+      "wear": [
+        0.05,
+        0.3
+      ]
+    },
+    "shell_alu": {
+      "color": [
+        [
+          0.55,
+          0.56,
+          0.58
+        ],
+        [
+          0.74,
+          0.75,
+          0.77
+        ]
+      ],
+      "metallic": [
+        0.85,
+        1.0
+      ],
+      "roughness": [
+        0.2,
+        0.45
+      ],
+      "coat": [
+        0.0,
+        0.0
+      ],
+      "wear": [
+        0.1,
+        0.45
+      ]
+    },
+    "cell_green": {
+      "color": [
+        [
+          0.06,
+          0.3,
+          0.07
+        ],
+        [
+          0.14,
+          0.42,
+          0.13
+        ]
+      ],
+      "metallic": [
+        0.05,
+        0.25
+      ],
+      "roughness": [
+        0.28,
+        0.48
+      ],
+      "coat": [
+        0.2,
+        0.6
+      ],
+      "wear": [
+        0.05,
+        0.35
+      ]
+    },
+    "cell_blue": {
+      "color": [
+        [
+          0.04,
+          0.12,
+          0.38
+        ],
+        [
+          0.1,
+          0.22,
+          0.55
+        ]
+      ],
+      "metallic": [
+        0.05,
+        0.25
+      ],
+      "roughness": [
+        0.26,
+        0.46
+      ],
+      "coat": [
+        0.2,
+        0.6
+      ],
+      "wear": [
+        0.05,
+        0.35
+      ]
+    },
+    "cell_black": {
+      "color": [
+        [
+          0.02,
+          0.02,
+          0.024
+        ],
+        [
+          0.06,
+          0.06,
+          0.065
+        ]
+      ],
+      "metallic": [
+        0.0,
+        0.2
+      ],
+      "roughness": [
+        0.32,
+        0.58
+      ],
+      "coat": [
+        0.1,
+        0.5
+      ],
+      "wear": [
+        0.05,
+        0.4
+      ]
+    },
+    "cell_nickel": {
+      "color": [
+        [
+          0.62,
+          0.63,
+          0.65
+        ],
+        [
+          0.8,
+          0.81,
+          0.83
+        ]
+      ],
+      "metallic": [
+        0.95,
+        1.0
+      ],
+      "roughness": [
+        0.12,
+        0.35
+      ],
+      "coat": [
+        0.0,
+        0.0
+      ],
+      "wear": [
+        0.05,
+        0.45
+      ]
+    },
+    "cell_purple": {
+      "color": [
+        [
+          0.26,
+          0.16,
+          0.42
+        ],
+        [
+          0.42,
+          0.28,
+          0.62
+        ]
+      ],
+      "metallic": [
+        0.05,
+        0.25
+      ],
+      "roughness": [
+        0.28,
+        0.5
+      ],
+      "coat": [
+        0.2,
+        0.6
+      ],
+      "wear": [
+        0.05,
+        0.35
+      ]
+    },
+    "cell_grey": {
+      "color": [
+        [
+          0.38,
+          0.38,
+          0.4
+        ],
+        [
+          0.58,
+          0.58,
+          0.6
+        ]
+      ],
+      "metallic": [
+        0.05,
+        0.3
+      ],
+      "roughness": [
+        0.3,
+        0.55
+      ],
+      "coat": [
+        0.1,
+        0.5
+      ],
+      "wear": [
+        0.05,
+        0.4
+      ]
+    }
+  },
+  "backdrops": {
+    "concrete": {
+      "image": null,
+      "proc": "concrete",
+      "uv_scale": [
+        1.5,
+        4.0
+      ],
+      "brightness": [
+        -0.06,
+        0.06
+      ],
+      "roughness": [
+        0.55,
+        0.85
+      ],
+      "bump": [
+        0.05,
+        0.25
+      ]
+    },
+    "brushed_metal": {
+      "image": null,
+      "proc": "brushed",
+      "uv_scale": [
+        2.0,
+        6.0
+      ],
+      "brightness": [
+        -0.04,
+        0.08
+      ],
+      "roughness": [
+        0.15,
+        0.4
+      ],
+      "bump": [
+        0.02,
+        0.1
+      ]
+    },
+    "fabric": {
+      "image": null,
+      "proc": "fabric",
+      "uv_scale": [
+        6.0,
+        18.0
+      ],
+      "brightness": [
+        -0.05,
+        0.05
+      ],
+      "roughness": [
+        0.7,
+        0.95
+      ],
+      "bump": [
+        0.1,
+        0.35
+      ]
+    },
+    "paper": {
+      "image": null,
+      "proc": "paper",
+      "uv_scale": [
+        1.0,
+        3.0
+      ],
+      "brightness": [
+        -0.03,
+        0.1
+      ],
+      "roughness": [
+        0.6,
+        0.9
+      ],
+      "bump": [
+        0.01,
+        0.08
+      ]
+    },
+    "conveyor_belt": {
+      "image": null,
+      "proc": "belt",
+      "uv_scale": [
+        3.0,
+        8.0
+      ],
+      "brightness": [
+        -0.08,
+        0.02
+      ],
+      "roughness": [
+        0.5,
+        0.8
+      ],
+      "bump": [
+        0.15,
+        0.45
+      ]
+    }
+  },
+  "lighting": {
+    "overcast_softbox": {
+      "kind": "camera_softbox",
+      "energy": [
+        120.0,
+        260.0
+      ],
+      "size": [
+        0.9,
+        1.6
+      ],
+      "kelvin": [
+        5600,
+        6800
+      ],
+      "offset": [
+        0.0,
+        0.1
+      ],
+      "world_strength": [
+        0.25,
+        0.55
+      ],
+      "world_kelvin": [
+        6000,
+        8000
+      ],
+      "hdri": null,
+      "hdri_strength": [
+        0,
+        0
+      ],
+      "hdri_rotation": [
+        0,
+        0
+      ]
+    },
+    "harsh_inspection": {
+      "kind": "camera_softbox",
+      "energy": [
+        400.0,
+        750.0
+      ],
+      "size": [
+        0.1,
+        0.25
+      ],
+      "kelvin": [
+        5000,
+        6000
+      ],
+      "offset": [
+        0.0,
+        0.05
+      ],
+      "world_strength": [
+        0.02,
+        0.12
+      ],
+      "world_kelvin": [
+        5500,
+        7000
+      ],
+      "hdri": null,
+      "hdri_strength": [
+        0,
+        0
+      ],
+      "hdri_rotation": [
+        0,
+        0
+      ]
+    },
+    "warm_indoor": {
+      "kind": "camera_softbox",
+      "energy": [
+        140.0,
+        300.0
+      ],
+      "size": [
+        0.4,
+        0.9
+      ],
+      "kelvin": [
+        2900,
+        3800
+      ],
+      "offset": [
+        0.05,
+        0.22
+      ],
+      "world_strength": [
+        0.15,
+        0.4
+      ],
+      "world_kelvin": [
+        3200,
+        4500
+      ],
+      "hdri": null,
+      "hdri_strength": [
+        0,
+        0
+      ],
+      "hdri_rotation": [
+        0,
+        0
+      ]
+    }
+  }
+}
