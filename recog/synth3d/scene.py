@@ -1,0 +1,241 @@
+"""
+recog.synth3d.scene - orchestration. Requires bpy.
+
+Draws a parameter set, builds the scene from the other modules, and hands back
+the metadata needed to annotate it. This is the only module that knows the
+whole pipeline; everything below it is independently testable.
+
+Two invariants are enforced here rather than downstream, because downstream
+cannot detect either failure:
+
+  1. Every non-zero pass_index in the scene has an `id_meta` entry.
+     `annotate.boxes_from_mask` silently skips an id it has no metadata for and
+     does NOT record it in `dropped`, so a visible object with no entry would
+     train as background with no audit trail at all.
+
+  2. Every merge group is class-homogeneous.
+     `annotate.merge_group_boxes` adopts `members[0]["class"]` for the whole
+     merged box without validating it, so a mixed-class group would silently
+     mislabel the result.
+
+Both are construction invariants of assets.py's Items, not data variance, so
+violating either is a code bug and is raised rather than warned about.
+"""
+
+from __future__ import annotations
+
+import random
+from typing import Dict, List, Tuple
+
+import bpy
+
+from . import assets as A
+from . import layout as L
+from . import materials as M
+from . import world as W
+from .catalog import role_of
+from .config import Config, VARIANTS, Variant
+
+
+def reset_scene():
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    for coll in (bpy.data.objects, bpy.data.meshes, bpy.data.materials,
+                 bpy.data.lights, bpy.data.cameras, bpy.data.images,
+                 bpy.data.worlds, bpy.data.node_groups, bpy.data.collections):
+        for item in list(coll):
+            try:
+                coll.remove(item)
+            except Exception:
+                pass
+
+
+def pick_variant(rng: random.Random) -> Variant:
+    total = sum(v.weight for v in VARIANTS)
+    r = rng.uniform(0, total)
+    acc = 0.0
+    for v in VARIANTS:
+        acc += v.weight
+        if r <= acc:
+            return v
+    return VARIANTS[-1]
+
+
+def sample_params(rng: random.Random, cfg, overrides: dict = None) -> dict:
+    """
+    Draw one scene's parameters from `cfg.param_space`.
+
+    Every draw happens whether or not an override will replace it, so a scene
+    forced to a particular layout mode still consumes the rng identically to
+    the unforced one - that is what keeps seeds comparable across runs.
+    """
+    ps = cfg.param_space
+    modes = ps["layout_mode"]
+    total = sum(modes.values())
+    r, acc, chosen = rng.uniform(0, total), 0.0, list(modes)[-1]
+    for name, weight in modes.items():
+        acc += weight
+        if r <= acc:
+            chosen = name
+            break
+    p = {
+        "n_assemblies": rng.randint(*ps["n_assemblies"]),
+        "backdrop": rng.choice(ps["backdrop"]),
+        "lighting": rng.choice(ps["lighting"]),
+        "layout_mode": chosen,
+    }
+    if overrides:
+        p.update({k: v for k, v in overrides.items() if v is not None})
+    return p
+
+
+def scene_generator(n: int, seed: int, cfg, overrides: dict = None):
+    """Yields (index, params, rng). Same seed + index => identical scene."""
+    for i in range(n):
+        rng = random.Random((seed * 1_000_003) ^ (i + 1))
+        yield i, sample_params(rng, cfg, overrides), rng
+
+
+def _check_group_homogeneous(item: A.Item, gid: str):
+    """See invariant 2 in the module docstring."""
+    classes = {item.labels.get(o.name) for o in item.objects}
+    if len(classes) > 1:
+        raise ValueError(
+            f"merge group {gid} ({item.asset}/{item.variant}) mixes classes "
+            f"{sorted(str(c) for c in classes)}; annotate.merge_group_boxes "
+            f"would adopt one of them for the whole merged box and silently "
+            f"mislabel it")
+
+
+def _check_id_meta_covers_scene(id_meta: Dict[int, dict]):
+    """See invariant 1 in the module docstring."""
+    orphans = sorted(
+        (o.pass_index, o.name) for o in bpy.data.objects
+        if o.pass_index and o.pass_index not in id_meta)
+    if orphans:
+        raise ValueError(
+            f"objects carry a non-zero pass_index with no id_meta entry: "
+            f"{orphans}. annotate.boxes_from_mask would drop them from the "
+            f"mask without recording them, so they would train as background.")
+
+
+def build(params: dict, rng: random.Random, library: A.AssetLibrary,
+          cfg: Config) -> Tuple[Dict[int, dict], Dict[int, str], dict]:
+    """
+    Construct a complete scene.
+
+    Returns:
+        id_meta   pass_index -> {"class", "asset", "variant", "role"}
+        groups    pass_index -> group key, for merging an assembly's sub-part
+                  boxes into a single box
+        meta      everything drawn, for the sidecar JSON
+    """
+    reset_scene()
+    library._templates.clear()          # templates lived in the wiped scene
+
+    names = library.names()
+    meta = {"params": dict(params), "items": [], "materials": []}
+
+    # ---- instantiate assemblies ------------------------------------------ #
+    items: List[A.Item] = []
+    for _ in range(params["n_assemblies"]):
+        asset = rng.choice(names)
+        variant = pick_variant(rng)
+        items.extend(library.instantiate(asset, variant, rng))
+    if not items:
+        return {}, {}, meta
+
+    # ---- materials, drawn per instance ----------------------------------- #
+    for item in items:
+        for obj in item.objects:
+            role = role_of(obj.name)
+            mat, drawn = M.for_role(role, rng, cfg)
+            M.apply_to_object(obj, mat)
+            meta["materials"].append(dict(object=obj.name, role=role, **{
+                k: (list(v) if isinstance(v, tuple) else v)
+                for k, v in drawn.items()}))
+
+    # ---- placement -------------------------------------------------------- #
+    pockets: List[L.Pocket] = []
+    if params.get("layout_mode") == "jig":
+        placements, pockets = L.plan_jig([it.footprint for it in items],
+                                         cfg.layout, rng)
+    else:
+        placements = L.plan([it.footprint for it in items], cfg.layout, rng)
+
+    kept: List[A.Item] = []
+    for item, plc in zip(items, placements):
+        if plc is None:                              # did not fit; discard
+            for o in item.objects:
+                bpy.data.objects.remove(o, do_unlink=True)
+            continue
+        A.place_item(item, plc, rng)
+        kept.append(item)
+        meta["items"].append({"asset": item.asset, "variant": item.variant,
+                              "objects": [o.name for o in item.objects],
+                              "merge": item.merge,
+                              "placement": plc.as_dict()})
+    items = kept
+    if not items:
+        return {}, {}, meta
+
+    # ---- unlabelled scene geometry ---------------------------------------- #
+    # Both carry pass_index 0, so they never produce an annotation but do
+    # occlude correctly. Built BEFORE pass indices are assigned so the
+    # "for o in bpy.data.objects: o.pass_index = 0" reset covers them even if a
+    # future edit forgets to set it explicitly.
+    #
+    # `pockets` is non-empty only in jig mode, and only for items that actually
+    # got packed - it is parallel to the non-None placements, which is exactly
+    # the set of items that survived the loop above.
+    if pockets:
+        _, jig_meta = W.build_jig(pockets, cfg.layout, rng)
+        meta["jig"] = jig_meta
+
+    for item in items:
+        if item.variant == "open_case" and any(
+                role_of(o.name) == "case" for o in item.objects):
+            lo, hi = A.group_bbox(item.objects)
+            _, pcb_meta = W.build_pcb((lo.x, lo.y, hi.x, hi.y), hi.z, rng)
+            meta.setdefault("pcbs", []).append(pcb_meta)
+
+    # ---- pass indices ----------------------------------------------------- #
+    for o in bpy.data.objects:
+        o.pass_index = 0
+    id_meta: Dict[int, dict] = {}
+    groups: Dict[int, str] = {}
+    objects_by_id: Dict[int, list] = {}
+    pid = 0
+    for gi, item in enumerate(items):
+        gid = f"item{gi}"
+        if item.merge:
+            _check_group_homogeneous(item, gid)
+        for obj in item.objects:
+            pid += 1
+            obj.pass_index = pid
+            id_meta[pid] = {"class": item.labels.get(obj.name),
+                            "asset": item.asset, "variant": item.variant,
+                            "role": role_of(obj.name)}
+            objects_by_id[pid] = [obj]
+            if item.merge:
+                groups[pid] = gid
+
+    # ---- backdrop, camera, lighting --------------------------------------- #
+    plane_size = max(cfg.layout.area) * 6.0
+    _, bd = W.build_backdrop(params["backdrop"], rng, cfg, size=plane_size)
+    meta["backdrop"] = bd
+
+    all_objs = [o for it in items for o in it.objects]
+    _, top = A.group_bbox(all_objs)
+    cam, cam_meta = W.setup_camera(cfg.camera, cfg.layout, cfg.render.res,
+                                   rng, top_z=top.z)
+    meta["camera"] = cam_meta
+    meta["lighting"] = W.setup_lighting(params["lighting"], rng, cam.location,
+                                        cfg)
+    meta["objects_by_id"] = {k: [o.name for o in v]
+                             for k, v in objects_by_id.items()}
+
+    # The backdrop is created after the reset loop above and sets its own
+    # pass_index to 0; this is the belt-and-braces check that nothing else did.
+    _check_id_meta_covers_scene(id_meta)
+
+    return id_meta, groups, meta
