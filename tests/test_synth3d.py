@@ -718,3 +718,362 @@ def test_jig_placements_are_spread_across_the_plate_not_pinned_to_the_top():
     assert top_left / n < 0.6, (
         f"top-left quadrant holds {top_left}/{n} = {top_left / n:.3f} of "
         f"placements - still corner-biased")
+
+
+# ------------------------------------------------------- CAD import ----
+#
+# recog.convert_cad is the entry point for getting new CAD into the asset
+# library. Its two safety mechanisms are tested independently, because that
+# is how they are meant to work: the unit parser is best-effort, and the
+# plausibility guard is what actually stops a mis-scaled asset reaching a
+# dataset.
+#
+# Nothing here converts a real STEP file - the fixtures are hand-written
+# headers. cascadio is a native dependency and tessellation is slow, so the
+# one test that would need it is skipped when it is absent.
+
+import copy
+import importlib.util
+import os
+
+from recog import convert_cad as CC
+
+
+def _step(*unit_entities: str, context: str = "#18,#19,#20") -> str:
+    """A minimal STEP file carrying only the entities the parser reads."""
+    body = "\n".join(unit_entities)
+    return (
+        "ISO-10303-21;\n"
+        "HEADER;\n"
+        "FILE_NAME('part.stp','2026-01-01T00:00:00',(''),(''),'x','x','x');\n"
+        "FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));\n"
+        "ENDSEC;\n"
+        "DATA;\n"
+        "#5= (GEOMETRIC_REPRESENTATION_CONTEXT(3)"
+        "GLOBAL_UNIT_ASSIGNED_CONTEXT((" + context + "))"
+        "REPRESENTATION_CONTEXT('NONE','WORKSPACE'));\n"
+        + body + "\n"
+        "#19= (NAMED_UNIT(*)PLANE_ANGLE_UNIT()SI_UNIT($,.RADIAN.));\n"
+        "#20= (NAMED_UNIT(*)SOLID_ANGLE_UNIT()SI_UNIT($,.STERADIAN.));\n"
+        "ENDSEC;\n"
+        "END-ISO-10303-21;\n"
+    )
+
+
+# NX / ST-Developer emit the SI form directly, as the four committed Anker
+# assemblies do.
+_SI_MM = "#18= (NAMED_UNIT(*)LENGTH_UNIT()SI_UNIT(.MILLI.,.METRE.));"
+
+# SolidWorks / Fusion / ACIS translators emit CONVERSION_BASED_UNIT, with
+# generous whitespace and the factor held one reference away. This is the
+# shape of the real Lug.stp header.
+_CONV_MM = (
+    "#18 = ( CONVERSION_BASED_UNIT( 'MILLIMETRE', #28 ) LENGTH_UNIT( ) "
+    "NAMED_UNIT( * ) );\n"
+    "#28 = LENGTH_MEASURE_WITH_UNIT( LENGTH_MEASURE( 1.000000000000000 ), "
+    "#45 );\n"
+    "#45 = ( LENGTH_UNIT( ) NAMED_UNIT( * ) SI_UNIT( .MILLI., .METRE. ) );"
+)
+
+
+def test_unit_parser_reads_the_si_declaration():
+    unit = CC.parse_step_length_unit(_step(_SI_MM))
+    assert unit.metres == pytest.approx(0.001)
+    assert unit.label == "MILLIMETRE"
+    assert unit.encoding == "SI_UNIT"
+
+
+def test_unit_parser_reads_the_conversion_based_declaration():
+    """The other real encoding: same unit, completely different syntax."""
+    unit = CC.parse_step_length_unit(_step(_CONV_MM))
+    assert unit.metres == pytest.approx(0.001)
+    assert unit.label == "MILLIMETRE"
+    assert unit.encoding == "CONVERSION_BASED_UNIT"
+
+
+def test_both_encodings_of_millimetre_agree():
+    """A mm file must scale identically whichever way it says 'mm'."""
+    si = CC.parse_step_length_unit(_step(_SI_MM))
+    conv = CC.parse_step_length_unit(_step(_CONV_MM))
+    assert si.metres == pytest.approx(conv.metres)
+
+
+def test_unit_parser_reads_bare_metres():
+    unit = CC.parse_step_length_unit(
+        _step("#18= (NAMED_UNIT(*)LENGTH_UNIT()SI_UNIT($,.METRE.));"))
+    assert unit.metres == pytest.approx(1.0)
+    assert unit.label == "METRE"
+
+
+def test_unit_parser_reads_centimetres():
+    unit = CC.parse_step_length_unit(
+        _step("#18= (NAMED_UNIT(*)LENGTH_UNIT()SI_UNIT(.CENTI.,.METRE.));"))
+    assert unit.metres == pytest.approx(0.01)
+
+
+def test_unit_parser_applies_the_conversion_factor_not_just_the_base():
+    """INCH is 25.4 MILLIMETRE; ignoring the factor mis-scales by 25x."""
+    unit = CC.parse_step_length_unit(_step(
+        "#18 = ( CONVERSION_BASED_UNIT( 'INCH', #28 ) LENGTH_UNIT( ) "
+        "NAMED_UNIT( * ) );\n"
+        "#28 = LENGTH_MEASURE_WITH_UNIT( LENGTH_MEASURE( 25.4 ), #45 );\n"
+        "#45 = ( LENGTH_UNIT( ) NAMED_UNIT( * ) SI_UNIT( .MILLI., .METRE. ) );"))
+    assert unit.metres == pytest.approx(0.0254)
+    assert unit.label == "INCH"
+
+
+def test_unit_parser_handles_a_conversion_factor_against_metres():
+    unit = CC.parse_step_length_unit(_step(
+        "#18 = ( CONVERSION_BASED_UNIT( 'MILLIMETRE', #28 ) LENGTH_UNIT( ) "
+        "NAMED_UNIT( * ) );\n"
+        "#28 = LENGTH_MEASURE_WITH_UNIT( LENGTH_MEASURE( 1.0E-03 ), #45 );\n"
+        "#45 = ( LENGTH_UNIT( ) NAMED_UNIT( * ) SI_UNIT( $, .METRE. ) );"))
+    assert unit.metres == pytest.approx(0.001)
+
+
+def test_unit_parser_reads_entities_split_across_lines():
+    """NX wraps long entities; the parser must not be line-oriented."""
+    unit = CC.parse_step_length_unit(_step(
+        "#18= (NAMED_UNIT(*)\n  LENGTH_UNIT()\n  SI_UNIT(.MILLI.,.METRE.));"))
+    assert unit.metres == pytest.approx(0.001)
+
+
+def test_unit_parser_ignores_semicolons_inside_strings():
+    """A ';' in a part name must not terminate the entity early."""
+    text = _step(_SI_MM).replace(
+        "DATA;", "DATA;\n#99=PRODUCT('a;b','name;with;semis','',(#5));")
+    assert CC.parse_step_length_unit(text).metres == pytest.approx(0.001)
+
+
+def test_unit_parser_ignores_comments():
+    text = _step("/* a comment with SI_UNIT(.KILO.,.METRE.) inside */\n"
+                 + _SI_MM)
+    assert CC.parse_step_length_unit(text).metres == pytest.approx(0.001)
+
+
+def test_unit_parser_refuses_a_file_with_no_length_unit():
+    """Guessing here would silently mis-scale a whole dataset."""
+    with pytest.raises(CC.UnitError):
+        CC.parse_step_length_unit(_step(
+            "#18= (NAMED_UNIT(*)MASS_UNIT()SI_UNIT(.KILO.,.GRAM.));"))
+
+
+def test_unit_parser_refuses_conflicting_declarations():
+    text = _step(
+        _SI_MM + "\n"
+        "#21= (NAMED_UNIT(*)LENGTH_UNIT()SI_UNIT($,.METRE.));",
+        context="#18,#19,#20,#21")
+    with pytest.raises(CC.UnitError, match="conflicting"):
+        CC.parse_step_length_unit(text)
+
+
+def test_unit_parser_rejects_a_non_step_file():
+    with pytest.raises(CC.UnitError):
+        CC.parse_step_length_unit("this is not a STEP file at all")
+
+
+def test_unit_parser_falls_back_when_there_is_no_global_context():
+    """Some translators omit GLOBAL_UNIT_ASSIGNED_CONTEXT; scan everything."""
+    text = ("ISO-10303-21;\nDATA;\n" + _SI_MM
+            + "\nENDSEC;\nEND-ISO-10303-21;\n")
+    assert CC.parse_step_length_unit(text).metres == pytest.approx(0.001)
+
+
+# ------------------------------------------------- plausibility guard ----
+
+def test_guard_rejects_a_part_scaled_1000x_too_small():
+    """The real Lug.stp failure: 125x50x20mm imported as 0.12x0.05x0.02mm."""
+    reason = CC.implausible([0.12, 0.05, 0.02])
+    assert reason and "below" in reason
+
+
+def test_guard_rejects_a_part_scaled_1000x_too_large():
+    reason = CC.implausible([125000.0, 50000.0, 20000.0])
+    assert reason and "above" in reason
+
+
+def test_guard_accepts_a_real_cell_and_a_real_power_bank():
+    assert CC.implausible([18.3, 18.3, 65.0]) is None       # 18650 cell
+    assert CC.implausible([81.7, 180.0, 22.2]) is None      # PowerCore 26800
+
+
+def test_guard_accepts_a_thin_jig_plate():
+    """Guards the largest extent only - a 6mm-thick plate is legitimate."""
+    assert CC.implausible([400.0, 300.0, 6.0]) is None
+
+
+def test_guard_rejects_zero_sized_geometry():
+    assert CC.implausible([0.0, 0.0, 0.0]) is not None
+
+
+def test_guard_range_is_configurable():
+    assert CC.implausible([600.0, 10.0, 10.0]) is not None
+    assert CC.implausible([600.0, 10.0, 10.0], max_mm=1000.0) is None
+
+
+def test_guard_suggests_the_unit_that_would_fix_the_scale():
+    """The Lug case: declared mm, actually authored in metres."""
+    declared = CC.LengthUnit(0.001, "MILLIMETRE", "CONVERSION_BASED_UNIT")
+    assert "m" in CC.suggest_units([0.12, 0.05, 0.02], declared)
+
+
+def test_guard_suggests_nothing_when_the_unit_is_unknown():
+    assert CC.suggest_units([0.12, 0.05, 0.02], None) == []
+
+
+# ------------------------------------------------------ role fallback ----
+
+def test_unmatched_subparts_flags_names_no_rule_matches():
+    """Silently classing everything as 'case' yields no 'battery' labels."""
+    subparts = [{"name": "Cell_18650"}, {"name": "Case10000_top"},
+                {"name": "SOLID_BODY_1"}, {"name": "Extrude3"}]
+    assert CC.unmatched_subparts(subparts) == ["SOLID_BODY_1", "Extrude3"]
+
+
+def test_unmatched_subparts_is_empty_for_the_real_anker_names():
+    subparts = [{"name": "004695_A;1-Cell_18650"},
+                {"name": "004697_A;2-Case10000_top"},
+                {"name": "004696_A;2-Case10000_btm"}]
+    assert CC.unmatched_subparts(subparts) == []
+
+
+def test_unmatched_subparts_distinguishes_fallback_from_a_real_case_match():
+    """role_of cannot: its fallback role is 'case', which rules also produce."""
+    from recog.synth3d.catalog import role_of
+    assert role_of("Case10000_top") == role_of("SOLID_BODY_1") == "case"
+    assert CC.unmatched_subparts([{"name": "SOLID_BODY_1"}]) == ["SOLID_BODY_1"]
+    assert CC.unmatched_subparts([{"name": "Case10000_top"}]) == []
+
+
+# ---------------------------------------------------- catalog merging ----
+
+def _fake_asset(name, extents=(50.0, 60.0, 20.0)):
+    return {"name": name, "file": name + ".glb", "source": name + ".stp",
+            "extents_mm": list(extents), "triangles": 100,
+            "subparts": [], "role_counts": {"case": 1}}
+
+
+def test_merge_appends_without_dropping_existing_assets():
+    existing = {"units": "m", "assets": [_fake_asset("A"), _fake_asset("B")]}
+    merged = CC.merge_catalog(existing, [_fake_asset("C")], 0.05, 0.3)
+    assert [a["name"] for a in merged["assets"]] == ["A", "B", "C"]
+
+
+def test_merge_replaces_in_place_rather_than_duplicating():
+    existing = {"units": "m",
+                "assets": [_fake_asset("A"), _fake_asset("B"), _fake_asset("C")]}
+    updated = _fake_asset("B", extents=(11.0, 12.0, 13.0))
+    merged = CC.merge_catalog(existing, [updated], 0.05, 0.3)
+
+    names = [a["name"] for a in merged["assets"]]
+    assert names == ["A", "B", "C"], "re-import must not duplicate or reorder"
+    assert merged["assets"][1]["extents_mm"] == [11.0, 12.0, 13.0]
+
+
+def test_merge_leaves_untouched_entries_byte_identical():
+    existing = {"units": "m", "assets": [_fake_asset("A"), _fake_asset("B")]}
+    before = copy.deepcopy(existing)
+    merged = CC.merge_catalog(existing, [_fake_asset("C")], 0.05, 0.3)
+    for i in (0, 1):
+        assert json.dumps(merged["assets"][i], sort_keys=True) == \
+            json.dumps(before["assets"][i], sort_keys=True)
+
+
+def test_merge_preserves_unknown_top_level_keys():
+    existing = {"units": "m", "note": "hand-written", "tol_linear_mm": 0.02,
+                "assets": [_fake_asset("A")]}
+    merged = CC.merge_catalog(existing, [_fake_asset("B")], 0.05, 0.3)
+    assert merged["note"] == "hand-written"
+    assert merged["tol_linear_mm"] == 0.02, "must not silently retune existing"
+
+
+def test_merge_creates_a_catalog_when_none_exists():
+    merged = CC.merge_catalog(None, [_fake_asset("A")], 0.05, 0.3)
+    assert merged["units"] == "m"
+    assert merged["tol_linear_mm"] == 0.05
+    assert [a["name"] for a in merged["assets"]] == ["A"]
+
+
+def test_merge_does_not_mutate_the_catalog_it_was_given():
+    existing = {"units": "m", "assets": [_fake_asset("A")]}
+    CC.merge_catalog(existing, [_fake_asset("B")], 0.05, 0.3)
+    assert [a["name"] for a in existing["assets"]] == ["A"]
+
+
+def test_importing_preserves_the_four_committed_anker_assets(tmp_path):
+    """
+    The end-to-end merge invariant, run against the real committed catalog.
+
+    The dataset in flight depends on these four entries; an import that
+    perturbed any of them would silently change every future render.
+    """
+    real = json.loads(
+        (ROOT / "recog" / "synth3d" / "assets" / "catalog.json").read_text())
+    original = copy.deepcopy(real["assets"])
+    assert len(original) == 4
+
+    out = tmp_path / "assets"
+    out.mkdir()
+    (out / "catalog.json").write_text(json.dumps(real, indent=2))
+
+    loaded = CC.load_existing_catalog(str(out))
+    merged = CC.merge_catalog(loaded, [_fake_asset("JigFixture")], 0.05, 0.3)
+    (out / "catalog.json").write_text(json.dumps(merged, indent=2))
+
+    after = json.loads((out / "catalog.json").read_text())
+    assert [a["name"] for a in after["assets"]] == \
+        [a["name"] for a in original] + ["JigFixture"]
+    for old, new in zip(original, after["assets"]):
+        assert json.dumps(old, sort_keys=True) == json.dumps(new, sort_keys=True)
+
+    # ...and the real catalog on disk is still what it was.
+    on_disk = json.loads(
+        (ROOT / "recog" / "synth3d" / "assets" / "catalog.json").read_text())
+    assert on_disk["assets"] == original
+
+
+def test_load_existing_catalog_returns_none_for_a_fresh_directory(tmp_path):
+    assert CC.load_existing_catalog(str(tmp_path)) is None
+
+
+# ---------------------------------------------------- name derivation ----
+
+def test_asset_name_strips_the_part_number_prefix():
+    """Must reproduce the names already in the committed catalog."""
+    assert CC.asset_name_for("004708_A_2-AnkerPowerCore26800.stp") == \
+        "AnkerPowerCore26800"
+
+
+def test_asset_name_passes_through_a_plain_filename():
+    assert CC.asset_name_for("Lug.stp") == "Lug"
+    assert CC.asset_name_for("JigFixture.step") == "JigFixture"
+
+
+def test_asset_name_ignores_the_directory():
+    assert CC.asset_name_for(os.path.join("cad", "Lug.stp")) == "Lug"
+
+
+# ----------------------------------------------------------- CLI args ----
+
+def test_cli_rejects_scale_together_with_assume_unit():
+    with pytest.raises(SystemExit):
+        CC.parse_args(["--src", "cad", "--assume-unit", "m", "--scale", "1000"])
+
+
+def test_cli_defaults_point_at_the_committed_asset_directory():
+    args = CC.parse_args(["--src", "cad"])
+    assert Path(args.out) == Path("recog/synth3d/assets")
+    assert args.force is False
+
+
+def test_assume_unit_choices_cover_the_units_the_parser_reports():
+    assert set(CC.KNOWN_UNITS) == {"m", "cm", "mm", "in"}
+    assert CC.KNOWN_UNITS["in"] == pytest.approx(0.0254)
+
+
+@pytest.mark.skipif(importlib.util.find_spec("cascadio") is None,
+                    reason="cascadio is not installed")
+def test_convert_step_is_importable_when_cascadio_is_present():
+    """Smoke-check only - tessellating a real STEP file is far too slow here."""
+    from recog.synth3d.catalog import convert_step
+    assert callable(convert_step)

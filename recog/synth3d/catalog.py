@@ -6,16 +6,19 @@ does not have). Blender cannot read STEP at all, so this is a required
 preprocessing step; the catalog it writes is the only thing the Blender side
 reads about the CAD.
 
-There is NO command-line entry point - `build_catalog` is the whole interface.
-The committed assets under recog/synth3d/assets/ were built with it, and it
-only needs re-running when the CAD changes:
+These are the primitives. The command-line entry point is recog.convert_cad,
+which is what you should actually run to import CAD:
 
     pip install cascadio trimesh
-    python -c "from recog.synth3d.catalog import build_catalog; \
-               build_catalog('cad/', 'recog/synth3d/assets')"
+    python -m recog.convert_cad --src cad/ --out recog/synth3d/assets/
 
-That converts every .stp/.step in the source directory to .glb and writes
-assets/catalog.json beside them.
+It wraps `convert_step`/`inspect_glb` with the things a bare `build_catalog`
+call does not do: it MERGES into the existing catalog instead of clobbering
+it, reads each file's declared length unit, and refuses to write an entry
+whose extents are implausible for this domain. Prefer it.
+
+`build_catalog` below converts every .stp/.step in the source directory and
+REWRITES assets/catalog.json from scratch, dropping anything already in it.
 """
 
 from __future__ import annotations
