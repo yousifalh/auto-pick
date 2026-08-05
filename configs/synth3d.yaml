@@ -9,7 +9,7 @@ render:
   denoise: true
   device: GPU               # OPTIX on the RTX 3060; falls back to CPU
   view_transform: AgX
-  exposure: 0.0
+  exposure: -1.5
   max_bounces: 12
   clamp_indirect: 10.0
   film_transparent: false
@@ -132,7 +132,7 @@ backdrops:
     proc: brushed
     uv_scale: [2.0, 6.0]
     brightness: [-0.04, 0.08]
-    roughness: [0.15, 0.40]
+    roughness: [0.35, 0.55]
     bump: [0.02, 0.10]
   fabric:
     image: null
@@ -170,7 +170,7 @@ lighting:
     hdri_rotation: [0, 0]
   harsh_inspection:
     kind: camera_softbox
-    energy: [400.0, 750.0]
+    energy: [80.0, 150.0]
     size: [0.10, 0.25]
     kelvin: [5000, 6000]
     offset: [0.0, 0.05]

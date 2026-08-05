@@ -9,7 +9,7 @@
     "denoise": true,
     "device": "GPU",
     "view_transform": "AgX",
-    "exposure": 0.0,
+    "exposure": -1.5,
     "max_bounces": 12,
     "clamp_indirect": 10.0,
     "film_transparent": false,
@@ -425,8 +425,8 @@
         0.08
       ],
       "roughness": [
-        0.15,
-        0.4
+        0.35,
+        0.55
       ],
       "bump": [
         0.02,
@@ -534,8 +534,8 @@
     "harsh_inspection": {
       "kind": "camera_softbox",
       "energy": [
-        400.0,
-        750.0
+        80.0,
+        150.0
       ],
       "size": [
         0.1,
