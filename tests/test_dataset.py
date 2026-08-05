@@ -303,3 +303,130 @@ def test_real_photo_dataset_roundtrip(tmp_path: Path):
         assert img.ndim == 3 and img.shape[0] == 3
         assert str(img.dtype) == "torch.float32"
         assert 0.0 <= float(img.min()) and float(img.max()) <= 1.0
+
+
+# ---------- eval_real: under-annotated images ------------------------------
+#
+# IMG_4428.jpg carries zero boxes in the CVAT export while the photograph
+# itself is full of cells, shells and a PCB. With no ground truth to match,
+# every correct detection on it scores as a false positive, so including it
+# depresses precision - and therefore AP - for the whole set while looking
+# exactly like a weak detector. eval_real excludes zero-GT images by default
+# and says so in the report.
+
+def _records_with_an_empty_image(tmp_path: Path):
+    doc = _coco_doc(
+        images=[
+            {"id": 1, "width": 3024, "height": 4032, "file_name": "full.jpg"},
+            {"id": 2, "width": 3024, "height": 4032, "file_name": "empty.jpg"},
+        ],
+        annotations=[
+            _ann(1, 1, 1, (10.0, 20.0, 30.0, 40.0)),
+            _ann(2, 1, 2, (100.0, 120.0, 300.0, 230.0)),
+        ],
+    )
+    return parse_coco_json(_write_coco(tmp_path, doc))
+
+
+def test_partition_records_excludes_zero_gt_images(tmp_path: Path):
+    from recog.eval_real import partition_records
+
+    recs = _records_with_an_empty_image(tmp_path)
+    assert [len(r.boxes) for r in recs] == [2, 0]
+
+    scored, excluded = partition_records(recs)
+    assert [r.file_name for r in scored] == ["full.jpg"]
+    assert [r.file_name for r in excluded] == ["empty.jpg"]
+
+    # --include-empty puts it back, and nothing is reported as excluded.
+    scored, excluded = partition_records(recs, include_empty=True)
+    assert [r.file_name for r in scored] == ["full.jpg", "empty.jpg"]
+    assert excluded == []
+
+
+def test_zero_gt_image_is_named_in_the_report(tmp_path: Path):
+    """The exclusion must be visible to a reader who only sees the summary."""
+    from recog.eval_real import (
+        build_image_rows, format_report, partition_records, summarise,
+    )
+
+    recs = _records_with_an_empty_image(tmp_path)
+    scored, excluded = partition_records(recs)
+
+    # The unlabelled image attracts predictions - that is the evidence it is
+    # under-annotated rather than empty.
+    preds = {
+        1: [((10.0, 20.0, 40.0, 60.0), CLASS_MAP["battery"], 0.9)],
+        2: [((0.0, 0.0, 50.0, 50.0), CLASS_MAP["battery"], 0.8),
+            ((60.0, 60.0, 90.0, 90.0), CLASS_MAP["cartridge"], 0.75)],
+    }
+    rows = build_image_rows(scored, excluded, preds)
+    by_name = {r.file_name: r for r in rows}
+    assert by_name["empty.jpg"].scored is False
+    assert by_name["empty.jpg"].n_gt == 0
+    assert by_name["empty.jpg"].n_pred == 2
+    assert by_name["empty.jpg"].ap is None
+    assert by_name["full.jpg"].scored is True
+    assert by_name["full.jpg"].ap is not None
+
+    gts = {r.image_id: list(zip(r.boxes, r.labels)) for r in scored}
+    scored_preds = {r.image_id: preds[r.image_id] for r in scored}
+    text = format_report(
+        summarise(gts, scored_preds),
+        {CLASS_MAP["battery"]: 1, CLASS_MAP["cartridge"]: 1},
+        {CLASS_MAP["battery"]: 1, CLASS_MAP["cartridge"]: 0},
+        n_images=len(scored),
+        confidence=0.7,
+        detector_name="Stub",
+        checkpoint=None,
+        config_path=None,
+        elapsed_s=1.0,
+        rows=rows,
+        n_found=len(recs),
+    )
+    assert "empty.jpg" in text
+    assert "EXCLUDED" in text
+    assert "--include-empty" in text
+    # The scored-of-found count is stated, both up top and under the table.
+    assert "1 of 2 scored" in text
+    assert "over 1 of the 2 annotated image(s) found" in text
+
+
+def test_report_flags_images_with_far_more_predictions_than_boxes(tmp_path: Path):
+    """IMG_4435-shaped case: one box on a tray full of parts."""
+    from recog.eval_real import build_image_rows, format_report, summarise
+
+    doc = _coco_doc(
+        images=[{"id": 5, "width": 3024, "height": 4032,
+                 "file_name": "partial.jpg"}],
+        annotations=[_ann(1, 5, 1, (10.0, 20.0, 30.0, 40.0))],
+    )
+    recs = parse_coco_json(_write_coco(tmp_path, doc))
+    preds = {5: [((float(i), 0.0, float(i) + 20.0, 20.0),
+                  CLASS_MAP["battery"], 0.9) for i in range(19)]}
+
+    rows = build_image_rows(recs, [], preds)
+    assert "under-annotated" in rows[0].note
+
+    gts = {5: list(zip(recs[0].boxes, recs[0].labels))}
+    text = format_report(
+        summarise(gts, preds),
+        {CLASS_MAP["battery"]: 1, CLASS_MAP["cartridge"]: 0},
+        {CLASS_MAP["battery"]: 19, CLASS_MAP["cartridge"]: 0},
+        n_images=1, confidence=0.7, detector_name="Stub", checkpoint=None,
+        config_path=None, elapsed_s=1.0, rows=rows, n_found=1,
+    )
+    assert "POSSIBLY UNDER-ANNOTATED" in text
+    assert "19.0x" in text
+
+
+def test_per_image_ap_uses_only_the_classes_present(tmp_path: Path):
+    """A photo of loose cells must not be capped at 0.5 for having no cartridge."""
+    from recog.eval_real import per_image_ap
+
+    box = (10.0, 20.0, 40.0, 60.0)
+    gts = [(box, CLASS_MAP["battery"])]
+    assert per_image_ap(gts, [(box, CLASS_MAP["battery"], 0.9)]) == pytest.approx(1.0)
+    assert per_image_ap(gts, []) == 0.0
+    # No ground truth at all: no score exists for that image.
+    assert per_image_ap([], [(box, CLASS_MAP["battery"], 0.9)]) is None

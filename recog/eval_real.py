@@ -17,12 +17,24 @@ figures.
 tell you whether a bad score means "found nothing", "found everything
 at the wrong scale", or "confused the two classes"; the overlays can,
 at a glance.
+
+Not every photo in the export is scorable. ``IMG_4428.jpg`` carries
+*zero* boxes in the CVAT export while the photograph itself is full
+of cells, shells and a PCB — a labelling gap, not an empty scene.
+Scoring it turns every correct detection into a false positive, which
+drags precision (and therefore AP) down for the whole set with no way
+to see it in the headline number. Images with no ground truth are
+therefore excluded by default, loudly: the report names them, says
+how many predictions each one attracted, and states the scored count
+against the found count on the summary line. ``--include-empty``
+scores them anyway. See :func:`partition_records`.
 """
 from __future__ import annotations
 
 import argparse
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -50,7 +62,27 @@ EVAL_CLASSES: Tuple[Tuple[str, int], ...] = (
 PRED_COLOUR = (255, 92, 40)
 GT_COLOUR = (40, 190, 255)
 
+# An image whose prediction count exceeds its ground-truth count by more
+# than this is flagged as *possibly* under-annotated. It is a heuristic and
+# it is deliberately loose: a genuinely bad detector over-fires too, so this
+# names the image and leaves the judgement to whoever reads the report.
+# IMG_4435 carries a single box for a photo of a full tray, which is what
+# this exists to surface.
+OVER_PREDICTION_FACTOR = 3.0
+
 Box = Tuple[float, float, float, float]
+
+
+@dataclass
+class ImageRow:
+    """One line of the per-image table."""
+
+    file_name: str
+    n_gt: int
+    n_pred: int
+    ap: Optional[float]          # None when the image was not scored
+    scored: bool
+    note: str = ""
 
 
 # ------------------------------------------------------------ loading ----
@@ -181,6 +213,81 @@ def summarise(
     }
 
 
+def partition_records(records: Sequence, include_empty: bool = False):
+    """Split ``records`` into (scored, excluded_for_zero_ground_truth).
+
+    An image with no ground-truth boxes contributes no true positives
+    and no recall — only false positives. Every correct detection on
+    such an image *lowers* precision, so including one under-annotated
+    photo depresses AP for the whole set while looking, in the summary,
+    exactly like a weak detector.
+
+    ``recog/realtest`` has one such image (``IMG_4428.jpg``, 0 boxes)
+    whose photograph is plainly full of objects. That is a gap in the
+    CVAT export, so it is excluded by default. ``include_empty=True``
+    restores the old behaviour of scoring everything.
+    """
+    if include_empty:
+        return list(records), []
+    scored = [r for r in records if r.boxes]
+    excluded = [r for r in records if not r.boxes]
+    return scored, excluded
+
+
+def per_image_ap(
+    gts: Sequence[Tuple[Box, int]],
+    preds: Sequence[Tuple[Box, int, float]],
+    iou_threshold: float = 0.5,
+) -> Optional[float]:
+    """AP for one image scored on its own, over the classes it contains.
+
+    Averaging over *present* classes rather than over both is what
+    makes the column readable: a photo of loose cells contains no
+    cartridge, and folding in a 0.0 for a class that cannot be found
+    would cap every such image at 0.5 for reasons that have nothing to
+    do with the detector.
+
+    These numbers do not average to the headline mAP — AP is computed
+    over a pooled, score-sorted detection list, which does not
+    decompose per image. They are a *contribution* indicator: which
+    images are carrying the score and which are dragging it down.
+    """
+    present = [cid for _name, cid in EVAL_CLASSES
+               if any(cls == cid for _b, cls in gts)]
+    if not present:
+        return None
+    res = mean_ap({0: list(gts)}, {0: list(preds)}, present, iou_threshold)
+    return float(res[f"mAP@{iou_threshold:.2f}"])
+
+
+def build_image_rows(
+    records: Sequence,
+    excluded: Sequence,
+    preds_by_image: Dict[int, List[Tuple[Box, int, float]]],
+    iou_threshold: float = 0.5,
+) -> List[ImageRow]:
+    """One :class:`ImageRow` per image, scored ones and excluded ones."""
+    rows: List[ImageRow] = []
+    excluded_ids = {r.image_id for r in excluded}
+    for rec in list(records) + list(excluded):
+        preds = preds_by_image.get(rec.image_id, [])
+        gts = list(zip(rec.boxes, rec.labels))
+        is_excluded = rec.image_id in excluded_ids
+        ap = None if is_excluded else per_image_ap(gts, preds, iou_threshold)
+        note = ""
+        if is_excluded:
+            note = "EXCLUDED: no ground-truth boxes"
+        elif not gts:
+            note = ("zero GT, scored anyway (--include-empty): every "
+                    "prediction here is a false positive")
+        elif len(preds) > OVER_PREDICTION_FACTOR * len(gts):
+            note = (f"possibly under-annotated: "
+                    f"{len(preds) / max(1, len(gts)):.1f}x more pred than GT")
+        rows.append(ImageRow(rec.file_name, len(gts), len(preds), ap,
+                             not is_excluded, note))
+    return rows
+
+
 def _counts(items, index: int) -> Dict[int, int]:
     """Count entries per class id, where the class id sits at ``index``."""
     out = {cid: 0 for _n, cid in EVAL_CLASSES}
@@ -203,21 +310,85 @@ def format_report(
     checkpoint: Optional[str],
     config_path: Optional[str],
     elapsed_s: float,
+    rows: Optional[Sequence[ImageRow]] = None,
+    n_found: Optional[int] = None,
+    per_image_iou: float = 0.5,
 ) -> str:
-    """Render the whole run as a plain-text block."""
+    """Render the whole run as a plain-text block.
+
+    ``rows`` drives the per-image table and the two notices; ``n_found``
+    is how many annotated images existed before any exclusion, so the
+    reader is told the scored count *against* the found count and cannot
+    mistake an exclusion for a smaller test set.
+    """
     thresholds = sorted(results)
+    rows = list(rows or [])
+    n_found = n_images if n_found is None else n_found
+    excluded = [r for r in rows if not r.scored]
+    suspect = [r for r in rows if r.scored and "under-annotated" in r.note]
+    n_inferred = len(rows) or n_images
+
     lines: List[str] = []
     lines.append("")
     lines.append("Real-photo held-out evaluation")
     lines.append(f"  detector    : {detector_name}")
     lines.append(f"  checkpoint  : {checkpoint or '(none)'}")
     lines.append(f"  config      : {config_path or '(none)'}")
-    lines.append(f"  images      : {n_images}")
+    scope = f"{n_images} of {n_found} scored"
+    if excluded:
+        scope += f"  ({len(excluded)} excluded: no ground-truth boxes)"
+    lines.append(f"  images      : {scope}")
     lines.append(f"  confidence  : {confidence:.2f}")
-    lines.append(f"  inference   : {elapsed_s:.1f} s total"
-                 f" ({elapsed_s / max(1, n_images):.2f} s/image)")
+    lines.append(f"  inference   : {elapsed_s:.1f} s over {n_inferred} image(s)"
+                 f" ({elapsed_s / max(1, n_inferred):.2f} s/image)")
     lines.append("")
 
+    # ---- per-image table -------------------------------------------------
+    if rows:
+        ap_head = "AP@" + format(per_image_iou, ".2f")
+        head = f"{'image':<20}{'GT':>5}{'pred':>7}{ap_head:>11}  note"
+        lines.append(head)
+        lines.append("-" * max(len(head), 62))
+        for r in rows:
+            ap = "-" if r.ap is None else f"{r.ap:.4f}"
+            lines.append(f"{r.file_name:<20}{r.n_gt:>5}{r.n_pred:>7}"
+                         f"{ap:>11}  {r.note}".rstrip())
+        lines.append("-" * max(len(head), 62))
+        lines.append("per-image AP scores each image alone over the classes it "
+                     "contains; it does")
+        lines.append("not average to the mAP below (AP is computed over one "
+                     "pooled ranking).")
+        lines.append("")
+
+    # ---- exclusion notice ------------------------------------------------
+    if excluded:
+        lines.append(f"EXCLUDED FROM THE SCORE - {len(excluded)} image(s) with "
+                     f"zero ground-truth boxes:")
+        for r in excluded:
+            lines.append(f"  {r.file_name}  0 GT, {r.n_pred} prediction(s)")
+        lines.append("  These are unlabelled in the source export, not empty "
+                     "scenes. With no GT to")
+        lines.append("  match, every prediction counts as a false positive, so "
+                     "scoring them lowers")
+        lines.append("  precision - and therefore AP - for the whole set. Pass "
+                     "--include-empty to")
+        lines.append("  score them anyway.")
+        lines.append("")
+
+    if suspect:
+        lines.append(f"POSSIBLY UNDER-ANNOTATED - predictions exceed ground "
+                     f"truth by more than {OVER_PREDICTION_FACTOR:g}x:")
+        for r in suspect:
+            lines.append(f"  {r.file_name}  {r.n_gt} GT vs {r.n_pred} "
+                         f"prediction(s)  "
+                         f"({r.n_pred / max(1, r.n_gt):.1f}x)")
+        lines.append("  Either the detector is over-firing or the image is "
+                     "partly labelled; the")
+        lines.append("  overlays (--save-overlays) are what tells the two "
+                     "apart.")
+        lines.append("")
+
+    # ---- headline table --------------------------------------------------
     head = f"{'class':<12}{'GT':>6}{'pred':>7}"
     for t in thresholds:
         head += f"{'AP@' + format(t, '.2f'):>11}"
@@ -237,6 +408,11 @@ def format_report(
     for t in thresholds:
         row += f"{results[t][f'mAP@{t:.2f}']:>11.4f}"
     lines.append(row)
+    lines.append("")
+    lines.append(f"mAP above is over {n_images} of the {n_found} annotated "
+                 f"image(s) found"
+                 + (f"; {len(excluded)} excluded (see above)."
+                    if excluded else "."))
     lines.append("")
     return "\n".join(lines)
 
@@ -336,6 +512,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--confidence", type=float, default=None,
                     help="score threshold (default: the config's "
                          "model.confidence_threshold, else 0.70)")
+    ap.add_argument("--include-empty", action="store_true",
+                    help="also score images with zero ground-truth boxes. "
+                         "They are excluded by default: with no GT to match, "
+                         "every prediction on them is a false positive, which "
+                         "depresses the AP of the whole set (recog/realtest's "
+                         "IMG_4428 is unlabelled, not empty).")
     ap.add_argument("--save-overlays", default=None, metavar="DIR",
                     help="write GT-vs-prediction overlay JPEGs to DIR")
     ap.add_argument("--quiet", action="store_true",
@@ -376,31 +558,50 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             f"error: no annotated images found under {img_dir}"
         )
 
+    scored, excluded = partition_records(records, args.include_empty)
+    if not scored:
+        raise SystemExit(
+            f"error: every one of the {len(records)} annotated image(s) under "
+            f"{img_dir} has zero ground-truth boxes, so there is nothing to "
+            f"score. That is a labelling problem in {ann_path}, not a "
+            f"detector result. Re-run with --include-empty to score them "
+            f"anyway (every prediction will be a false positive)."
+        )
+
     detector = build_detector(args.checkpoint, cfg)
 
     log = None if args.quiet else (lambda msg: print(msg, flush=True))
     if log is not None:
-        print(f"Scoring {len(records)} real photo(s) from {img_dir} ...",
-              flush=True)
+        note = (f" ({len(excluded)} of them excluded from the score: no "
+                f"ground-truth boxes)" if excluded else "")
+        print(f"Scoring {len(scored)} of {len(records)} real photo(s) from "
+              f"{img_dir}{note} ...", flush=True)
 
+    # Inference runs over the excluded images too. Their prediction count is
+    # the evidence that they are under-annotated rather than empty, and it is
+    # what the exclusion notice reports.
     preds_by_image, elapsed = collect_predictions(
-        detector, img_dir, records, confidence, log,
+        detector, img_dir, list(scored) + list(excluded), confidence, log,
     )
     gts_by_image: Dict[int, List[Tuple[Box, int]]] = {
-        r.image_id: list(zip(r.boxes, r.labels)) for r in records
+        r.image_id: list(zip(r.boxes, r.labels)) for r in scored
     }
+    scored_preds = {r.image_id: preds_by_image.get(r.image_id, [])
+                    for r in scored}
 
-    results = summarise(gts_by_image, preds_by_image)
+    results = summarise(gts_by_image, scored_preds)
     print(format_report(
         results,
         _counts(gts_by_image, 1),
-        _counts(preds_by_image, 1),
-        n_images=len(records),
+        _counts(scored_preds, 1),
+        n_images=len(scored),
         confidence=confidence,
         detector_name=type(detector).__name__,
         checkpoint=args.checkpoint,
         config_path=args.config,
         elapsed_s=elapsed,
+        rows=build_image_rows(scored, excluded, preds_by_image),
+        n_found=len(records),
     ))
 
     if args.save_overlays:
@@ -412,11 +613,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 
 __all__ = [
+    "ImageRow",
     "build_arg_parser",
     "build_detector",
+    "build_image_rows",
     "collect_predictions",
     "format_report",
     "main",
+    "partition_records",
+    "per_image_ap",
     "save_overlays",
     "summarise",
 ]
