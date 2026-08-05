@@ -278,17 +278,22 @@ def main():
         pass
 
     print(json.dumps(stats, indent=2))
-    _anchor_check(stats)
+    _anchor_check(stats, cfg.render.res)
     print(f"[done] {root}")
 
 
-def _anchor_check(stats):
+def _anchor_check(stats, res):
     """
     Warn when the rendered box sizes fall off EITHER end of the configured
     anchor range. The previous version hard-coded "32-512px" and only warned
     about boxes being too large, so it could not detect the inverted failure
     where anchors are far smaller than the boxes - which is exactly what
     happened when this dataset replaced the cv2 one.
+
+    Box sizes are in RENDERED pixels, so a low-res dev run (--res 640 360)
+    reads about half what the same scene measures at the production 1280x720
+    and will trip the lower warning without anything being wrong. The
+    resolution is printed alongside for that reason.
     """
     s = stats.get("box_sqrt_area_px")
     if not s:
@@ -302,7 +307,8 @@ def _anchor_check(stats):
     print(f"\nAnchor check: configs/recognition.yaml covers "
           f"{lo:g}-{hi:g}px sqrt(area) (anchor_scales, plus the x2 P6 level "
           f"recog/model.py appends); your boxes are "
-          f"p05={s['p05']} p50={s['p50']} p95={s['p95']}")
+          f"p05={s['p05']} p50={s['p50']} p95={s['p95']} "
+          f"at the rendered {res[0]}x{res[1]}")
     if s["p05"] < lo:
         print(f"  WARNING: p05={s['p05']} is BELOW the smallest anchor "
               f"({lo:g}px) - those boxes have no anchor that can match them. "
