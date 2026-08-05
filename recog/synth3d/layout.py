@@ -176,8 +176,48 @@ def plan_jig(footprints: Sequence[Tuple[float, float]], cfg,
             x=cx, y=cy, w=w_m - wall, h=h_m - wall,
             depth=rng.uniform(*cfg.jig_depth))
 
+    if pockets_by_index:
+        dx, dy = _jig_centering_offset(pockets_by_index, W, H, rng)
+        for i, pk in pockets_by_index.items():
+            pockets_by_index[i] = Pocket(x=pk.x + dx, y=pk.y + dy,
+                                         w=pk.w, h=pk.h, depth=pk.depth)
+            placements[i].x += dx
+            placements[i].y += dy
+
     pockets = [pockets_by_index[i] for i in sorted(pockets_by_index)]
     return placements, pockets
+
+
+def _jig_centering_offset(pockets_by_index, W: float, H: float,
+                          rng: random.Random) -> Tuple[float, float]:
+    """
+    FFDH shelf-packs from the top-left corner, so an unmodified pack always
+    sits pinned in the top-left of the plate - a real fixture's parts are
+    spread across it. Compute the translation that recentres the packed
+    block's bounding box on the plate, plus a per-scene jitter so different
+    scenes do not all land on exactly the same offset.
+
+    The jitter is drawn from, and clamped to, the slack between the centred
+    block and the plate edges, so a jittered pocket can still never cross the
+    plate boundary - the "pockets stay inside the area" guarantee holds for
+    any jitter draw, not just in expectation.
+    """
+    xs0 = [pk.x - pk.w / 2 for pk in pockets_by_index.values()]
+    xs1 = [pk.x + pk.w / 2 for pk in pockets_by_index.values()]
+    ys0 = [pk.y - pk.h / 2 for pk in pockets_by_index.values()]
+    ys1 = [pk.y + pk.h / 2 for pk in pockets_by_index.values()]
+    lo_x, hi_x = min(xs0), max(xs1)
+    lo_y, hi_y = min(ys0), max(ys1)
+    bbox_cx, bbox_cy = (lo_x + hi_x) / 2, (lo_y + hi_y) / 2
+
+    # Half the room left over once the block is centred: how far the centred
+    # block can still move before a pocket would cross the plate edge.
+    slack_x = max(0.0, (W - (hi_x - lo_x)) / 2)
+    slack_y = max(0.0, (H - (hi_y - lo_y)) / 2)
+    jitter_x = min(slack_x, max(-slack_x, rng.uniform(-slack_x, slack_x)))
+    jitter_y = min(slack_y, max(-slack_y, rng.uniform(-slack_y, slack_y)))
+
+    return -bbox_cx + jitter_x, -bbox_cy + jitter_y
 
 
 def rows_in_pocket(n: int, cell_fp: Tuple[float, float], pocket: Pocket,

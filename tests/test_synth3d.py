@@ -627,3 +627,61 @@ def test_voc_writes_integers_not_floats(tmp_path):
     A.write_voc_xml(str(xml), "i.png", 20, 20, anns)
     text = xml.read_text(encoding="utf-8")
     assert "." not in text.split("<bndbox>")[1].split("</bndbox>")[0]
+
+
+# ------------------------------------------------- jig positional bias ----
+
+def test_jig_placements_are_spread_across_the_plate_not_pinned_to_the_top():
+    """
+    FFDH shelf-packing lays shelves from the top edge down and packs
+    left-to-right, so an unrecentred pack pins every part in the plate's
+    top-left corner. Before plan_jig recentred the packed block, this exact
+    100-seed sweep put 100% of placements in the top half (mean y=+0.152m,
+    std=0.020m against a 0.45m-tall plate) and 100% in the top-left quadrant
+    - the whole jig subset would have placed every label in a thin band at
+    the top of the frame. plan_jig now centres the packed block's bounding
+    box on the plate (plus a clamped per-scene jitter), so placements should
+    spread across both halves instead.
+    """
+    cfg = C.load_config().layout
+    H = cfg.area[1]
+    fps = _real_footprints()
+
+    ys = []
+    top_left = 0
+    for seed in range(100):
+        rng = random.Random(seed)
+        chosen = [rng.choice(fps) for _ in range(rng.randint(1, 4))]
+        plcs, _ = L.plan_jig(chosen, cfg, rng)
+        for p in plcs:
+            if p is None:
+                continue
+            ys.append(p.y)
+            if p.y > 0 and p.x < 0:
+                top_left += 1
+
+    n = len(ys)
+    assert n > 100, f"only {n} placements sampled across 100 seeds"
+
+    mean_abs_y = sum(abs(y) for y in ys) / n
+    # Pre-fix this is ~0.152m (mean y, since every placement is positive);
+    # post-fix it measures ~0.073m. 0.45 * H/2 = 0.10125m sits clearly
+    # between the two, well inside the plate rather than pinned to an edge.
+    assert mean_abs_y < 0.45 * (H / 2), (
+        f"mean|y|={mean_abs_y:.4f} is pinned near the plate edge "
+        f"(H={H}, half-extent={H / 2})")
+
+    n_top = sum(1 for y in ys if y > 0)
+    n_bot = n - n_top
+    # Pre-fix: n_bot == 0 - the bottom half is never used at all.
+    assert n_top > 0 and n_bot > 0, (
+        f"placements only appear in one half of the plate: "
+        f"top={n_top} bottom={n_bot} (n={n})")
+    assert n_bot / n > 0.2, (
+        f"bottom half is only {n_bot}/{n} = {n_bot / n:.3f} of placements - "
+        f"still mostly pinned to the top")
+
+    # Pre-fix: top_left/n == 1.0 - every placement in one quadrant.
+    assert top_left / n < 0.6, (
+        f"top-left quadrant holds {top_left}/{n} = {top_left / n:.3f} of "
+        f"placements - still corner-biased")
