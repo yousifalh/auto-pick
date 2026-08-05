@@ -80,13 +80,23 @@ def test_unknown_top_level_key_is_rejected(tmp_path):
 
 
 def test_json_sidecar_is_used_when_yaml_unavailable(tmp_path, monkeypatch):
-    """Inside Blender there is no PyYAML, so the .json sidecar is the path."""
+    """Inside Blender there is no PyYAML, so the .json sidecar wins even when
+    a real, parseable .yaml file sits right next to it - not merely in the
+    case where no .yaml file exists at all. The two files carry different
+    render.res values, so the assertion can only pass if the sidecar (not
+    the decoy .yaml) was actually the one read."""
+    import os, time
     src = C.load_config()
+    y = tmp_path / "synth3d.yaml"
     j = tmp_path / "synth3d.json"
+    y.write_text("render: {res: [1, 1]}\n", encoding="utf-8")   # decoy value
     j.write_text(json.dumps(C.config_to_dict(src)), encoding="utf-8")
+    now = time.time()
+    os.utime(y, (now - 100, now - 100))
+    os.utime(j, (now, now))                                     # sidecar newer
     monkeypatch.setattr(C, "_HAVE_YAML", False)
-    cfg = C.load_config(tmp_path / "synth3d.yaml")
-    assert cfg.render.res == src.render.res
+    cfg = C.load_config(y)
+    assert cfg.render.res == src.render.res   # from JSON, not the (1, 1) decoy
     assert cfg.lighting.keys() == src.lighting.keys()
 
 
