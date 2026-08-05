@@ -121,6 +121,7 @@ class LayoutCfg:
     jig_clearance: float = 0.004
     jig_jitter_deg: float = 1.0
     jig_depth: Tuple[float, float] = (0.006, 0.012)
+    jig_wall: float = 0.003     # metres of plate material left between pockets
 
 
 @dataclass

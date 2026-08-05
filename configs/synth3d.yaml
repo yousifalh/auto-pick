@@ -25,6 +25,7 @@ layout:
   jig_clearance: 0.004      # metres of pocket margin around each part
   jig_jitter_deg: 1.0       # smaller than scatter: must stay inside the pocket
   jig_depth: [0.006, 0.012]
+  jig_wall: 0.003           # metres of plate material left between pockets
 
 camera:
   ortho: true

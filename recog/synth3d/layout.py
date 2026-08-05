@@ -142,10 +142,16 @@ def plan_jig(footprints: Sequence[Tuple[float, float]], cfg,
     W, H = cfg.area
     clear = cfg.jig_clearance
     jit = cfg.jig_jitter_deg
+    wall = cfg.jig_wall
 
-    # Inflate by clearance on all sides before packing, so pockets tile without
-    # touching. Convert to millimetres for common.packing.
-    items = [_PackItem(i, (fx + 2 * clear) * MM, (fy + 2 * clear) * MM)
+    # Inflate by clearance plus wall on all sides before packing, so packed
+    # cells tile without touching. The wall margin is trimmed back off the
+    # pocket below, leaving plate material between adjacent pockets - without
+    # it, packed cells (and therefore pockets) would abut with zero material,
+    # and Task 7's per-pocket boolean cutters would merge into one trough
+    # instead of leaving walled recesses. Convert to millimetres for
+    # common.packing.
+    items = [_PackItem(i, (fx + 2 * clear + wall) * MM, (fy + 2 * clear + wall) * MM)
              for i, (fx, fy) in enumerate(footprints)]
     res = first_fit_decreasing(items, W * MM, H * MM,
                                allow_rotation=cfg.allow_90s)
@@ -167,7 +173,7 @@ def plan_jig(footprints: Sequence[Tuple[float, float]], cfg,
             x=cx, y=cy, quarter=quarter,
             rot_deg=quarter * 90 + rng.uniform(-jit, jit))
         pockets_by_index[i] = Pocket(
-            x=cx, y=cy, w=w_m, h=h_m,
+            x=cx, y=cy, w=w_m - wall, h=h_m - wall,
             depth=rng.uniform(*cfg.jig_depth))
 
     pockets = [pockets_by_index[i] for i in sorted(pockets_by_index)]

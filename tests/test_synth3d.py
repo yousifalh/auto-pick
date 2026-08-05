@@ -215,13 +215,7 @@ def _aabb(fp, plc, cfg):
 
 
 def _overlap(a, b):
-    # eps tolerates float noise (~1e-16) from the packer's mm<->m, top-left
-    # <-> centre round-trip when two jig pockets sit exactly shelf-adjacent;
-    # it is ~1e9x smaller than any real footprint dimension, so a genuine
-    # overlap (mm-cm scale) still trips this.
-    eps = 1e-9
-    return not (a[2] <= b[0] + eps or b[2] <= a[0] + eps
-                or a[3] <= b[1] + eps or b[3] <= a[1] + eps)
+    return not (a[2] <= b[0] or b[2] <= a[0] or a[3] <= b[1] or b[3] <= a[1])
 
 
 def test_scatter_never_overlaps_over_300_scenes():
@@ -307,6 +301,22 @@ def test_jig_pockets_never_overlap():
         for i in range(len(boxes)):
             for j in range(i + 1, len(boxes)):
                 assert not _overlap(boxes[i], boxes[j]), f"seed {seed}"
+
+
+def test_jig_pockets_leave_a_wall_between_them():
+    """Flush pockets boolean-difference into one trough, not a fixture plate."""
+    cfg = C.load_config().layout
+    fps = _real_footprints()
+    for seed in range(200):
+        rng = random.Random(seed)
+        chosen = [rng.choice(fps) for _ in range(rng.randint(2, 4))]
+        _, pockets = L.plan_jig(chosen, cfg, rng)
+        for i in range(len(pockets)):
+            for j in range(i + 1, len(pockets)):
+                a, b = pockets[i], pockets[j]
+                gx = max((b.x - b.w/2) - (a.x + a.w/2), (a.x - a.w/2) - (b.x + b.w/2))
+                gy = max((b.y - b.h/2) - (a.y + a.h/2), (a.y - a.h/2) - (b.y + b.h/2))
+                assert max(gx, gy) >= cfg.jig_wall - 1e-9, f"seed {seed}"
 
 
 def test_jig_pockets_stay_inside_the_area():
