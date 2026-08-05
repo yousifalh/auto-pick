@@ -98,6 +98,12 @@ def build_fasterrcnn(cfg: Dict[str, Any]) -> "FasterRCNN":
         sampling_ratio=2,
     )
 
+    # NOTE: min_size/max_size are deliberately NOT set here. They feed
+    # GeneralizedRCNNTransform, which runs during TRAINING as well as
+    # inference, so changing them here would rescale the training renders and
+    # invalidate the anchor_scales tuned against them. Inference resolution is
+    # a genuine accuracy knob on real photos and is applied per-detector in
+    # recog/inference.py instead.
     return FasterRCNN(
         backbone,
         num_classes=num_classes,

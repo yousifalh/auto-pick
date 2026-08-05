@@ -15,6 +15,12 @@ model:
   roi_output_size: 7
   nms_iou: 0.4
   confidence_threshold: 0.70
+  # Real photos are 3024x4032; the detector trains on 1280x720 renders where a
+  # cell is ~28px wide. torchvision's default min_size=800 puts a real cell at
+  # ~52px and roughly halves accuracy. Measured on the real-photo set:
+  # 500 -> mAP@0.50 0.614 / @0.75 0.404;  800 -> 0.457 / 0.023;  1600 -> 0.000.
+  inference_min_size: 500
+  inference_max_size: 900
 
 dataset:
   img_dir: recog/dataset3d/images

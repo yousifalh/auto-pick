@@ -73,6 +73,34 @@ class FasterRCNNDetector(Detector):
         )
         self.model.eval()
 
+        # Inference resolution is a real accuracy knob, not a detail, and it
+        # is set here rather than in build_fasterrcnn because the same
+        # transform runs during training — changing it there would rescale the
+        # training renders and invalidate the tuned anchor_scales.
+        #
+        # The detector learns on 1280x720 renders where a cell is ~28px wide.
+        # A 3024x4032 phone photo at torchvision's default min_size=800 puts a
+        # real cell at ~52px, nearly 2x the trained scale, and accuracy falls
+        # off a cliff above that. Measured on the 6-image real-photo set:
+        #
+        #   min_size   mAP@0.50   mAP@0.75
+        #        500     0.6136     0.4040
+        #        640     0.6613     0.1912
+        #        800     0.4571     0.0227   <- torchvision default
+        #       1000     0.0770     0.0030
+        #       1600     0.0000     0.0000
+        #
+        # 500 puts a real cell at ~33px, closest to the trained scale, and
+        # gives by far the best localisation. Retune if the deployed camera's
+        # working distance puts parts at a different pixel size.
+        model_cfg = (cfg or {}).get("model", {})
+        self.model.transform.min_size = (
+            int(model_cfg.get("inference_min_size", 500)),
+        )
+        self.model.transform.max_size = int(
+            model_cfg.get("inference_max_size", 900),
+        )
+
         self.device = torch.device(
             "cuda" if torch.cuda.is_available() else "cpu",
         )
