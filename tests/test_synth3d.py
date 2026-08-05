@@ -34,12 +34,20 @@ def test_num_classes_with_background():
 
 # ------------------------------------------------------- bpy boundary ----
 
-# catalog.py, layout.py and annotate.py are added by later tasks (3-5); only
-# test modules that actually exist yet, so this file stays green at every
-# task boundary instead of erroring on files that haven't landed.
 _BPY_FREE_CANDIDATES = ["config", "catalog", "layout", "annotate"]
 _BPY_FREE_MODS = [m for m in _BPY_FREE_CANDIDATES
                    if (ROOT / "recog" / "synth3d" / f"{m}.py").is_file()]
+
+
+def test_every_bpy_free_module_is_actually_checked():
+    """The existence filter above was scaffolding from when these modules
+    landed one task at a time. All four exist now, so it must be a no-op:
+    without this assertion, renaming or moving a module would silently drop
+    it from the boundary check below and the parametrised test would still
+    pass, having tested one fewer file."""
+    assert _BPY_FREE_MODS == _BPY_FREE_CANDIDATES, (
+        f"these modules were skipped by the bpy-boundary check: "
+        f"{sorted(set(_BPY_FREE_CANDIDATES) - set(_BPY_FREE_MODS))}")
 
 
 @pytest.mark.parametrize("mod", _BPY_FREE_MODS)
@@ -365,14 +373,6 @@ def test_jig_returns_none_for_items_that_do_not_fit():
     plcs, pockets = L.plan_jig([(5.0, 5.0)], cfg, rng)
     assert plcs == [None]
     assert pockets == []
-
-
-def test_cluster_offsets_ring():
-    rng = random.Random(3)
-    offs = L.cluster_offsets(6, 0.03, rng)
-    assert len(offs) == 6
-    for dx, dy in offs:
-        assert 0.0 < (dx * dx + dy * dy) ** 0.5 < 0.03 * 1.5
 
 
 # --------------------------------------------------------- annotate ----

@@ -455,9 +455,11 @@ def build_pcb(bounds_xy, z: float, rng: random.Random):
     Green PCB with a few extruded components, for the open_case variant.
 
     The CAD has no PCB, but it is the most distinctive thing inside an opened
-    case in the real photos. UNLABELLED (pass_index 0) - it is scene content,
-    not a class, and it correctly shrinks the case's visible silhouette the way
-    a real board would.
+    case in the real photos. `z` is the shell's TOP, so the board is laid on
+    top of the shell rather than modelled inside it: from a bird's-eye camera
+    the two read the same, and this needs no interior geometry. UNLABELLED
+    (pass_index 0) - it is scene content, not a class, and it correctly
+    shrinks the case's visible silhouette the way a real board would.
     """
     x0, y0, x1, y1 = bounds_xy
     w = (x1 - x0) * rng.uniform(0.55, 0.80)

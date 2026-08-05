@@ -67,7 +67,6 @@ class Variant:
     keep_roles: Tuple[str, ...] = ("cell", "case")
     label: Optional[str] = None
     label_roles: Dict[str, str] = field(default_factory=dict)
-    explode: float = 0.0        # metres of separation for loose sub-parts
     weight: float = 1.0
 
 
@@ -81,13 +80,13 @@ VARIANTS: List[Variant] = [
     # Shell removed: loose 18650 cells, scattered individually. Matches the
     # top rows of cells in the real photos.
     Variant("cells_only", keep_roles=("cell",), label=None,
-            label_roles={"cell": "battery"}, explode=0.030, weight=2.0),
+            label_roles={"cell": "battery"}, weight=2.0),
 
     # Opened unit: shell present, cells visible beside it. Matches the middle
     # pockets of IMG_4426.
     Variant("open_case", keep_roles=("cell", "case"), label=None,
             label_roles={"cell": "battery", "case": "cartridge"},
-            explode=0.045, weight=1.0),
+            weight=1.0),
 ]
 
 

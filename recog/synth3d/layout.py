@@ -109,23 +109,6 @@ def plan(footprints: Sequence[Tuple[float, float]], cfg, rng: random.Random
     return result
 
 
-def cluster_offsets(n: int, spread: float, rng: random.Random
-                    ) -> List[Tuple[float, float]]:
-    """
-    Offsets for the sub-parts of an exploded assembly: a loose ring so cells
-    land near their case rather than scattered across the whole frame.
-    """
-    if n <= 0:
-        return []
-    out = []
-    base = rng.uniform(0, 2 * math.pi)
-    for k in range(n):
-        ang = base + 2 * math.pi * k / n + rng.uniform(-0.25, 0.25)
-        r = spread * rng.uniform(0.6, 1.25)
-        out.append((r * math.cos(ang), r * math.sin(ang)))
-    return out
-
-
 def plan_jig(footprints: Sequence[Tuple[float, float]], cfg,
              rng: random.Random
              ) -> Tuple[List[Optional[Placement]], List[Pocket]]:
@@ -218,26 +201,3 @@ def _jig_centering_offset(pockets_by_index, W: float, H: float,
     jitter_y = min(slack_y, max(-slack_y, rng.uniform(-slack_y, slack_y)))
 
     return -bbox_cx + jitter_x, -bbox_cy + jitter_y
-
-
-def rows_in_pocket(n: int, cell_fp: Tuple[float, float], pocket: Pocket,
-                   rng: random.Random) -> List[Placement]:
-    """
-    Lay n identical cells in regular rows inside one pocket.
-
-    Reproduces the top rows of the real photos, where seven cells sit in a
-    single tray recess rather than one recess each. Returns at most n
-    placements - fewer if the pocket cannot hold them all.
-    """
-    fx, fy = cell_fp
-    cols = max(1, int(pocket.w // fx))
-    rows = max(1, int(pocket.h // fy))
-    out: List[Placement] = []
-    for k in range(min(n, cols * rows)):
-        r, c = divmod(k, cols)
-        out.append(Placement(
-            x=pocket.x - pocket.w / 2 + fx * (c + 0.5),
-            y=pocket.y + pocket.h / 2 - fy * (r + 0.5),
-            quarter=0,
-            rot_deg=rng.uniform(-0.5, 0.5)))
-    return out

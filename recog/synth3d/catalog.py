@@ -6,8 +6,16 @@ does not have). Blender cannot read STEP at all, so this is a required
 preprocessing step; the catalog it writes is the only thing the Blender side
 reads about the CAD.
 
+There is NO command-line entry point - `build_catalog` is the whole interface.
+The committed assets under recog/synth3d/assets/ were built with it, and it
+only needs re-running when the CAD changes:
+
     pip install cascadio trimesh
-    python convert_cad.py --src cad/ --out assets/
+    python -c "from recog.synth3d.catalog import build_catalog; \
+               build_catalog('cad/', 'recog/synth3d/assets')"
+
+That converts every .stp/.step in the source directory to .glb and writes
+assets/catalog.json beside them.
 """
 
 from __future__ import annotations
@@ -15,7 +23,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import Dict, List
+from typing import List
 
 from .config import CLASS_RULES, ROLE_FALLBACK
 
@@ -45,7 +53,7 @@ def convert_step(src: str, dst: str, tol_linear: float = 0.05,
 
 
 def inspect_glb(path: str) -> dict:
-    """Measure an converted asset and classify its sub-parts."""
+    """Measure a converted asset and classify its sub-parts."""
     import trimesh
     scene = trimesh.load(path)
     geoms = scene.geometry if hasattr(scene, "geometry") else {"mesh": scene}

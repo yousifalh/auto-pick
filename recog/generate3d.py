@@ -118,7 +118,7 @@ def _dirs(root, save_masks):
     return tmp
 
 
-def run_sweep(a, cfg, library, ids, root, tmp):
+def run_sweep(a, cfg, library, root):
     """
     One fixed scene, rendered once per entry in the swept axis.
 
@@ -179,7 +179,7 @@ def main():
     print(f"assets: {library.names()}")
 
     if a.sweep:
-        run_sweep(a, cfg, library, ids, root, tmp)
+        run_sweep(a, cfg, library, root)
         return
 
     W, H = cfg.render.res

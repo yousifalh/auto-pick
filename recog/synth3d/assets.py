@@ -39,7 +39,6 @@ class Item:
     asset: str = ""
     variant: str = ""
     footprint: Tuple[float, float] = (0.0, 0.0)
-    local_offsets: Dict[str, Tuple[float, float]] = field(default_factory=dict)
 
 
 # --------------------------------------------------------------------------- #
@@ -212,13 +211,9 @@ class AssetLibrary:
             labels = {o.name: variant.label for o in objs}
             bpy.context.view_layer.update()
             lo, hi = group_bbox(objs)
-            centre = (lo + hi) / 2
             items.append(Item(objects=objs, labels=labels, merge=True,
                               asset=name, variant=variant.name,
-                              footprint=(hi.x - lo.x, hi.y - lo.y),
-                              local_offsets={o.name: (o.location.x - centre.x,
-                                                      o.location.y - centre.y)
-                                             for o in objs}))
+                              footprint=(hi.x - lo.x, hi.y - lo.y)))
             return items
 
         # exploded: each sub-part (or role group) becomes its own item
