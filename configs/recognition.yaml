@@ -39,15 +39,21 @@ augmentation:
   p_geometric: 0.5
 
 training:
-  epochs: 60
+  # 60 was tuned for the ~50-image cv2 synth set, where an epoch was 13 steps.
+  # The Blender set is 1000 images / 250 steps per epoch, so 25 epochs is
+  # ~6250 steps — a comparable amount of optimisation, not 20x more.
+  epochs: 25
   batch_size: 4
-  num_workers: 4
+  # 0, not 4: on Windows the dataloader uses spawn, and re-importing the
+  # worker process per batch costs more than the parallelism buys at this
+  # image size. Raise it on Linux.
+  num_workers: 0
   optimiser: sgd
   learning_rate: 0.005
   momentum: 0.9
   weight_decay: 0.0005
   lr_scheduler: cosine
-  frozen_bn_epochs: 20
+  frozen_bn_epochs: 8
   checkpoint_dir: recog/checkpoints
   log_dir: recog/runs
   pretrained: true
