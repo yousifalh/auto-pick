@@ -40,3 +40,4 @@ recog/sweeps/
 # OS
 Thumbs.db
 .DS_Store
+recog/realtest/overlays/
