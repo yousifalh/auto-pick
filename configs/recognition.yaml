@@ -49,7 +49,11 @@ training:
   # The Blender set is 1000 images / 250 steps per epoch, so 25 epochs is
   # ~6250 steps — a comparable amount of optimisation, not 20x more.
   epochs: 25
-  batch_size: 4
+  # 2, not 4: at 1280x720 with 5 aspect ratios x 5 FPN levels, batch 4 peaks
+  # near 6 GB and the RPN's filter_proposals then fails to find 256 MB
+  # contiguous on a 12 GB card - a fragmentation OOM one second into epoch 0,
+  # with 6.8 GB nominally free. Batch 2 peaks ~2.6 GB. Raise on a bigger card.
+  batch_size: 2
   # 0, not 4: on Windows the dataloader uses spawn, and re-importing the
   # worker process per batch costs more than the parallelism buys at this
   # image size. Raise it on Linux.
