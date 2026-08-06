@@ -110,6 +110,39 @@ def _anchor_range(path: str = None):
     return vals[0], vals[-1] * 2.0
 
 
+# The resolution filter.min_px is expressed at. It is a PIXEL count, so it
+# does not travel with --res; see _filter_res_check.
+_FILTER_TUNED_RES = (1280, 720)
+
+
+def _filter_res_check(cfg):
+    """
+    Warn when `--res` makes `filter.min_px` throw away legitimate parts.
+
+    min_px is a silhouette PIXEL count, so halving each side quarters every
+    part's area while the threshold stays put. That did not matter while it was
+    80 - nothing in the corpus came close - but it is now 500, chosen to floor
+    the box size against frame-truncation slivers at the production resolution.
+    MEASURED on a 48-scene 640x360 run, the same scenes yielded 365 boxes
+    before and 266 after, every loss recorded in `dropped` with its reason.
+    Production renders at 1280x720 and is unaffected (177 vs 185 boxes over 24
+    scenes), so this is a dev-run artefact and a warning rather than a rescale:
+    silently scaling the threshold would make a dev run disagree with
+    production about which parts exist, which is the harder bug to find.
+    """
+    W, H = cfg.render.res
+    rw, rh = _FILTER_TUNED_RES
+    ratio = (W * H) / float(rw * rh)
+    if ratio >= 0.9 or cfg.filter.min_px <= 0:
+        return
+    print(f"[warn] filter.min_px={cfg.filter.min_px} is expressed at "
+          f"{rw}x{rh}; at {W}x{H} a part covers {ratio:.2f}x the pixels, so "
+          f"this behaves like a threshold of {cfg.filter.min_px / ratio:.0f} "
+          f"there and will drop parts a production run keeps. Every loss is "
+          f"in each scene's `dropped` list and in manifest "
+          f"stats.dropped_instances.")
+
+
 def _dirs(root, save_masks):
     subs = ["images", "annotations", "meta"] + (["masks"] if save_masks else [])
     for s in subs:
@@ -174,6 +207,8 @@ def main():
               "scenes, 2.0% of non-merged boxes fell under 1.0 and the deepest "
               "was 0.748, so filter.min_visibility=0.25 dropped nothing. "
               "Merged boxes (every cartridge) still get no visible_fraction.")
+
+    _filter_res_check(cfg)
 
     ids = class_ids()
     root = os.path.abspath(a.out)

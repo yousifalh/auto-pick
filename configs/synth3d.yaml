@@ -105,7 +105,16 @@ filter:
   # 1st percentile 1054, while cropped ones reached 488. 500 keeps every
   # un-cropped box with better than 2x headroom - including the smallest cells
   # at the top of the zoom range - and floors the box size at sqrt(500) = 22 px
-  # sqrt(area), which the 30 px smallest anchor covers at 0.60 centred IoU.
+  # sqrt(area), which the 40 px smallest anchor covers at better than 0.5
+  # centred IoU.
+  #
+  # It is a PIXEL count and does not travel with `--res`. At the production
+  # 1280x720 it drops nothing legitimate (177 boxes before this change against
+  # 185 after, over the same 24 scenes); at a `--res 640 360` dev run each part
+  # covers a quarter of the pixels and the same 48 scenes went from 365 boxes
+  # to 266. generate3d warns about that rather than rescaling the threshold,
+  # because a dev run that silently disagreed with production about which parts
+  # exist is the harder bug to find.
   min_px: 500
   min_side: 6
   # Longest box side over shortest. Truncation is again the reason: a part
