@@ -298,18 +298,44 @@ def main():
     print(f"[done] {root}")
 
 
+# torchvision FasterRCNN's GeneralizedRCNNTransform defaults. recog/model.py
+# deliberately does NOT override them (see the NOTE there), so these are what
+# every render is resized to before the RPN ever sees it, in training as well
+# as inference.
+_TV_MIN_SIZE, _TV_MAX_SIZE = 800.0, 1333.0
+
+
+def _transform_scale(res):
+    """
+    The factor GeneralizedRCNNTransform applies to a `res` render, and hence
+    to its boxes, before they meet the anchors.
+
+    This is why a low-res dev run no longer trips a false warning: torchvision
+    resizes a 640x360 render to the SAME 1333x750 as a 1280x720 one, so a box
+    is the same number of network pixels either way. Comparing raw rendered
+    pixels against anchor_scales - which the previous version did - made every
+    `--res 640 360` run look like a regression and taught the reader to ignore
+    this check.
+    """
+    lo, hi = min(res), max(res)
+    return min(_TV_MIN_SIZE / lo, _TV_MAX_SIZE / hi)
+
+
 def _anchor_check(stats, res):
     """
-    Warn when the rendered box sizes fall off EITHER end of the configured
-    anchor range. The previous version hard-coded "32-512px" and only warned
-    about boxes being too large, so it could not detect the inverted failure
-    where anchors are far smaller than the boxes - which is exactly what
-    happened when this dataset replaced the cv2 one.
+    Warn when the box sizes fall off EITHER end of the configured anchor range.
+    The original version hard-coded "32-512px" and only warned about boxes
+    being too large, so it could not detect the inverted failure where anchors
+    are far smaller than the boxes - which is exactly what happened when this
+    dataset replaced the cv2 one.
 
-    Box sizes are in RENDERED pixels, so a low-res dev run (--res 640 360)
-    reads about half what the same scene measures at the production 1280x720
-    and will trip the lower warning without anything being wrong. The
-    resolution is printed alongside for that reason.
+    The band is the anchor range widened by sqrt(2) at each end, not the
+    anchor range itself. That is the same criterion the anchor tuning uses:
+    two same-aspect boxes a factor of sqrt(2) apart in sqrt(area) have a
+    centred IoU of exactly 0.50, so a box within sqrt(2) of the nearest anchor
+    still has an anchor that can match it. `param_space.zoom` deliberately
+    puts the smallest boxes a little under the smallest anchor - the old
+    strict test would fire on every single production run and mean nothing.
     """
     s = stats.get("box_sqrt_area_px")
     if not s:
@@ -320,20 +346,26 @@ def _anchor_check(stats, res):
               "from configs/recognition.yaml")
         return
     lo, hi = rng
+    k = _transform_scale(res)
+    p05, p50, p95 = (s["p05"] * k, s["p50"] * k, s["p95"] * k)
+    floor, ceil = lo / math.sqrt(2.0), hi * math.sqrt(2.0)
     print(f"\nAnchor check: configs/recognition.yaml covers "
           f"{lo:g}-{hi:g}px sqrt(area) (anchor_scales, plus the x2 P6 level "
-          f"recog/model.py appends); your boxes are "
-          f"p05={s['p05']} p50={s['p50']} p95={s['p95']} "
-          f"at the rendered {res[0]}x{res[1]}")
-    if s["p05"] < lo:
-        print(f"  WARNING: p05={s['p05']} is BELOW the smallest anchor "
-              f"({lo:g}px) - those boxes have no anchor that can match them. "
-              f"Lower anchor_scales in configs/recognition.yaml, or shrink "
-              f"layout.area so the parts fill more of the frame.")
-    if s["p95"] > hi:
-        print(f"  WARNING: p95={s['p95']} is ABOVE the largest anchor "
-              f"({hi:g}px). Widen anchor_scales in configs/recognition.yaml, "
-              f"or enlarge layout.area.")
+          f"recog/model.py appends), matchable at IoU>=0.5 over "
+          f"{floor:.0f}-{ceil:.0f}px; your boxes are p05={p05:.1f} "
+          f"p50={p50:.1f} p95={p95:.1f} after torchvision resizes the "
+          f"rendered {res[0]}x{res[1]} by {k:.3f} "
+          f"(raw p05={s['p05']} p50={s['p50']} p95={s['p95']})")
+    if p05 < floor:
+        print(f"  WARNING: p05={p05:.1f} is below {floor:.0f}px, more than "
+              f"sqrt(2) under the smallest anchor ({lo:g}px) - those boxes "
+              f"cannot reach 0.5 IoU with any anchor. Lower anchor_scales in "
+              f"configs/recognition.yaml, or narrow param_space.zoom.")
+    if p95 > ceil:
+        print(f"  WARNING: p95={p95:.1f} is above {ceil:.0f}px, more than "
+              f"sqrt(2) over the largest anchor ({hi:g}px). Widen "
+              f"anchor_scales in configs/recognition.yaml, or narrow "
+              f"param_space.zoom.")
 
 
 if __name__ == "__main__":

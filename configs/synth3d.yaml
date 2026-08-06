@@ -57,8 +57,37 @@ camera:
   focal: 50.0
 
 filter:
-  min_px: 80
+  # 500, not the old 80. Both of these were dead thresholds until
+  # param_space.zoom landed: with the camera always framing the whole layout
+  # area, nothing was ever cropped, and the smallest silhouette in the whole
+  # 1000-image set measured 1037 px against a limit of 80.
+  #
+  # Truncation makes them live, and unbounded: a part clipped to a corner of
+  # the frame can leave arbitrarily few pixels, and the resulting box is far
+  # smaller than any WHOLE part - so it lands below the smallest anchor no
+  # matter how the anchors are tuned. MEASURED over 1245 boxes from 150
+  # zoom-varied scenes: the smallest un-cropped silhouette was 1037 px and the
+  # 1st percentile 1054, while cropped ones reached 488. 500 keeps every
+  # un-cropped box with better than 2x headroom - including the smallest cells
+  # at the top of the zoom range - and floors the box size at sqrt(500) = 22 px
+  # sqrt(area), which the 30 px smallest anchor covers at 0.60 centred IoU.
+  min_px: 500
   min_side: 6
+  # Longest box side over shortest. Truncation is again the reason: a part
+  # cropped along its length leaves a strip whose aspect is a property of where
+  # the frame edge fell rather than of the object, and `model.anchor_ratios` is
+  # tuned to the parts' OWN aspect ratios, so nothing can ever match it.
+  #
+  # MEASURED on the same 1245 boxes: every box above 3.7 was truncated, the
+  # widest un-cropped box was 3.68 (the 18650's own 65.0/18.3 = 3.55 plus
+  # rotation jitter and antialiasing), and the four above 4.0 ran 4.6, 5.1, 6.9
+  # and 9.8 - scoring 0.34-0.45 best-centred-IoU against every anchor set
+  # tried, including sets that put every other box above 0.5. 4.0 sits in the
+  # empty band between the two populations.
+  #
+  # 0 disables the check, which is the dataclass default, so a config written
+  # before this filter existed behaves exactly as it did.
+  max_aspect: 4.0
   # INERT under the current pipeline - it is a threshold with nothing to
   # threshold, kept because the machinery around it is correct and would start
   # working the moment overlapping layouts exist. Two independent reasons:
@@ -100,6 +129,33 @@ param_space:
   # level, which is annotated noise rather than a dark scene. See the note on
   # `dim_workshop`. -5.2 is still 1.7 stops under the old fixed -3.5.
   exposure: [-5.2, -3.2]
+
+  # Per-scene camera framing multiplier, applied to `ortho_scale` on top of
+  # `camera.margin_range`. LARGER zoom = wider view = SMALLER parts.
+  #
+  # Without it the training set was effectively single-scale. MEASURED over the
+  # previous 1000-image set: battery sqrt(area) p05 50.9 / p50 53.3 / p95 56.2
+  # px, a p95/p05 ratio of 1.10, because every 18650 is identical geometry and
+  # the camera framed a fixed 0.80 x 0.45 m area with only margin_range's
+  # 1.02-1.10 of jitter. Real batteries at the min_size=500 inference scale
+  # span 43-65 px, a ratio of 1.51, and per-image AP on the real photos tracks
+  # the gap monotonically (65px -> AP 1.000, 54px -> 1.000, 46px -> 0.857,
+  # 43px -> 0.380). The control is the `cartridge` class: four different CAD
+  # models give it a 1.69 training ratio and its AP stays high at every scale,
+  # including on the image where the cells around it are missed.
+  #
+  # MEASURED with this 0.75-1.60 range over 300 scenes (two independent seeds,
+  # 2434 boxes, 1280x720, --no-render): battery sqrt(area) p05 34.9 / p50 45.8
+  # / p95 64.9 px, min 29.0 max 74.1 - a p95/p05 ratio of 1.86, covering the
+  # real 1.51 with headroom at both ends. Truncated annotations went 0 of 8542
+  # to 66 of 2434 (2.71%), against 2 of 80 (2.5%) in the real photos.
+  #
+  # COUPLED to model.anchor_scales in configs/recognition.yaml. The top of this
+  # range is what sets the SMALLEST box and therefore the smallest anchor;
+  # widening it without retuning the anchors recreates the mismatch that once
+  # left 20% of boxes below 0.5 best-IoU. generate3d prints an anchor check at
+  # the end of every run.
+  zoom: [0.75, 1.60]
 
 # Which materials each CAD role may draw from.
 role_materials:

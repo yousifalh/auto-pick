@@ -229,6 +229,26 @@ def test_every_backdrop_carries_its_own_albedo_range():
         assert all(h >= l for l, h in zip(lo, hi)), name
 
 
+def test_zoom_is_sampled_per_scene_and_actually_varies_scale():
+    """Without this the training set is effectively single-scale. MEASURED on
+    the previous 1000-image set: battery sqrt(area) p05 50.9 / p95 56.2, a
+    ratio of 1.10, while the real photos span 43-65 px (1.51) and per-image AP
+    tracks that gap monotonically down to 0.380 on the smallest."""
+    cfg = C.load_config()
+    lo, hi = cfg.param_space["zoom"]
+    assert 0 < lo < hi, f"zoom {cfg.param_space['zoom']} is not a real range"
+    # The real photos need 1.51 end to end; a range that cannot reach it is
+    # decoration. Measured: 0.75-1.60 yields a 1.86 box-size ratio.
+    assert hi / lo >= 1.51, (
+        f"zoom range {lo}-{hi} spans {hi / lo:.2f}, under the 1.51 scale ratio "
+        f"the real photos actually show")
+    # zoom < 1 is what crops parts at the frame edge; the old set had 0 of
+    # 8542 truncated annotations against 2 of 80 in the real photos.
+    assert lo < 1.0, (
+        f"zoom range starts at {lo} >= 1.0, so the frame always contains the "
+        f"whole layout area and nothing is ever truncated")
+
+
 def test_layout_area_matches_render_aspect():
     """A square area under a 16:9 render wastes ~44% of every frame."""
     cfg = C.load_config()
@@ -622,6 +642,77 @@ def test_thin_sliver_is_dropped_for_short_side_not_low_area():
     anns, dropped = A.boxes_from_mask(ids, {1: _meta()}, C.class_ids(), cfg)
     assert anns == []
     assert dropped[0]["reason"] == "side<6"
+
+
+def test_crop_sliver_is_dropped_for_an_impossible_aspect_ratio():
+    """Frame truncation - new with param_space.zoom - produces strips whose
+    aspect is a property of where the frame edge fell, not of the object. No
+    anchor can ever match one: MEASURED, every box above aspect 3.7 in a
+    1245-box sample was truncated, the widest un-cropped box was 3.68, and the
+    four above 4.0 scored 0.34-0.45 best-centred-IoU against every anchor set
+    tried."""
+    ids = np.zeros((200, 40), dtype=np.int32)
+    ids[0:180, 2:14] = 1                     # 12 x 180, aspect 15
+    cfg = C.FilterCfg(min_px=1, min_side=1, max_aspect=4.0)
+    anns, dropped = A.boxes_from_mask(ids, {1: _meta()}, C.class_ids(), cfg)
+    assert anns == []
+    assert dropped[0]["reason"] == "aspect>4.0"
+
+
+def test_a_whole_cell_at_its_real_aspect_survives_the_filter():
+    """The 18650's own 65.0/18.3 = 3.55 must stay comfortably inside the
+    limit, or the filter deletes the majority class."""
+    ids = np.zeros((200, 60), dtype=np.int32)
+    ids[10:81, 10:30] = 1                    # 20 x 71, aspect 3.55
+    cfg = C.FilterCfg(min_px=1, min_side=1, max_aspect=4.0)
+    anns, dropped = A.boxes_from_mask(ids, {1: _meta()}, C.class_ids(), cfg)
+    assert dropped == []
+    assert len(anns) == 1
+
+
+def test_max_aspect_zero_disables_the_filter():
+    """The dataclass default, so a config predating the filter is unchanged."""
+    ids = np.zeros((200, 40), dtype=np.int32)
+    ids[0:180, 2:14] = 1
+    cfg = C.FilterCfg(min_px=1, min_side=1, max_aspect=0.0)
+    anns, dropped = A.boxes_from_mask(ids, {1: _meta()}, C.class_ids(), cfg)
+    assert len(anns) == 1 and dropped == []
+
+
+def test_merged_box_is_also_checked_for_an_impossible_aspect():
+    """A truncated `cartridge` is merged from its shell halves, and
+    merge_group_boxes re-derives the box - so the filter has to be applied
+    there too or every cartridge opts out of it."""
+    ids = np.zeros((200, 60), dtype=np.int32)
+    ids[0:20, 5:25] = 1                      # 20 x 20, aspect 1
+    ids[160:180, 5:25] = 2                   # 20 x 20, aspect 1
+    meta = {1: _meta(**{"class": "cartridge"}), 2: _meta(**{"class": "cartridge"})}
+    cfg = C.FilterCfg(min_px=1, min_side=1, max_aspect=4.0)
+    anns, _ = A.boxes_from_mask(ids, meta, C.class_ids(), cfg)
+    assert len(anns) == 2, "each half is square; only the union is a sliver"
+    merged = A.merge_group_boxes(anns, {1: "item0", 2: "item0"},
+                                 C.class_ids(), C.FilterCfg(
+                                     min_px=1, min_side=1, max_aspect=0.0))
+    assert len(merged) == 1, "control: with the filter off the merge survives"
+    assert A.merge_group_boxes(anns, {1: "item0", 2: "item0"},
+                               C.class_ids(), cfg) == []
+
+
+def test_the_configured_filters_bound_the_smallest_box_the_anchors_must_cover():
+    """min_px and max_aspect were dead thresholds until zoom made truncation
+    possible; together they floor the box size at sqrt(min_px), which is what
+    lets model.anchor_scales have a smallest value at all. MEASURED: the
+    smallest un-cropped silhouette is 1037 px, cropped ones reach 488."""
+    f = C.load_config().filter
+    assert f.max_aspect >= 3.7, (
+        f"max_aspect {f.max_aspect} is at or under the 3.68 widest un-cropped "
+        f"box measured, so it would delete whole cells")
+    assert f.min_px > 400, (
+        f"min_px {f.min_px} does not bound the box size: a corner crop can "
+        f"leave a box far below the smallest anchor")
+    assert f.min_px < 1037, (
+        f"min_px {f.min_px} is at or above the smallest un-cropped silhouette "
+        f"measured (1037 px), so it would start deleting whole parts")
 
 
 def test_drop_truncated_flag_actually_drops():

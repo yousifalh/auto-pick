@@ -3,15 +3,57 @@ model:
   name: faster_rcnn
   backbone: resnet34_fpn
   num_classes: 3  # background, battery, cartridge
-  # Sized for the Blender dataset's measured boxes at 1280x720: sqrt(area) is
-  # 50-57 px for batteries and 112-185 px for cartridges, and an 18650 cell is
-  # ~3.55:1. recog/model.py appends base_scales[-1]*2 as the P6 level, so the
-  # covered range is 56-320 px. The old [4, 8, 16, 32] / max ratio 2.0 were
-  # tuned for recog/synth_dataset.py's much smaller cv2 primitives and left
-  # 20% of boxes below 0.5 best-IoU (cartridge median 0.21); these give a
-  # minimum best-IoU of 0.57 with nothing below 0.5.
+  # anchor_ratios is unchanged and was re-checked, not merely kept: the
+  # measured aspect histogram is bimodal on the 18650's own 65.0/18.3 = 3.55
+  # and its reciprocal (batteries, 78% of boxes), with cartridges spread over
+  # 0.33-2.7. Two retuned ratio lists and a 6-ratio and a 7-ratio list were all
+  # scored against the data below; none moved the minimum at all and the
+  # 6-ratio list made the cartridge median WORSE (0.733 -> 0.703), because the
+  # binding constraint is the scale spacing, not aspect coverage. Extra ratios
+  # are not free either - they multiply RPN anchors per location, and
+  # training.batch_size is already 2 because of a fragmentation OOM.
   anchor_ratios: [0.28, 0.5, 1.0, 2.0, 3.5]
-  anchor_scales: [56, 80, 112, 160]
+  #
+  # anchor_scales is COUPLED to param_space.zoom in configs/synth3d.yaml.
+  # [56, 80, 112, 160] was correct for the old fixed-framing dataset, whose
+  # batteries spanned only 50-57 px sqrt(area) (a 1.10 ratio). Per-scene zoom
+  # widens that to 29-74 px, and re-using the old anchors would put 15% of
+  # boxes below 0.5 best-IoU - the same failure the old [4, 8, 16, 32] caused.
+  #
+  # MEASURED on 2434 boxes from 300 freshly generated scenes (two independent
+  # seeds, 1280x720), best CENTRED IoU per box over every (scale, ratio) anchor
+  # including the P6 level recog/model.py appends as base_scales[-1]*2, with
+  # box sizes first put through torchvision's GeneralizedRCNNTransform
+  # (min_size 800 / max_size 1333, the defaults recog/model.py deliberately
+  # leaves alone) which scales a 1280x720 render by 1.041:
+  #
+  #   anchor_scales        +P6   min    p05    med    <0.5    <0.6   batt  cart
+  #   [56, 80, 112, 160]   320   0.290  0.427  0.728  15.37%  26.71% 0.709 0.748
+  #   [40, 64, 96, 144]    288   0.504  0.643  0.808   0.00%   2.14% 0.823 0.733
+  #   [32, 51, 82, 131]    262   0.500  0.630  0.750   0.00%   2.63% 0.755 0.727
+  #   [32, 50, 78, 127]    254   0.507  0.643  0.756   0.00%   2.88% 0.768 0.725
+  #   [32, 54, 102, 171]   342   0.508  0.605  0.732   0.00%   3.78% 0.740 0.726
+  #   [28, 44, 70, 112]    224   0.503  0.621  0.772   0.00%   4.27% 0.799 0.715
+  #   [32, 46, 59, 112]    224   0.503  0.589  0.828   0.00%   5.75% 0.854 0.706
+  #   [39, 68, 118, 204]   408   0.574  0.598  0.772   0.00%   5.83% 0.775 0.723
+  #
+  # [40, 64, 96, 144] wins on p05, median, both class medians and the fraction
+  # under 0.6, and meets the bar (nothing below 0.5) on each seed separately -
+  # 0.504 and 0.513. An exhaustive search over 84156 four-tuples found a
+  # higher MINIMUM available ([39, 68, 118, 204], 0.574), and it is recorded
+  # above rather than chosen: it buys 0.07 at the single worst box by pushing
+  # 3.7% more of the corpus under 0.6, and torchvision's RPN assigns every
+  # ground-truth box its best anchor regardless of threshold
+  # (allow_low_quality_matches), so the bulk of the distribution is what
+  # actually trains.
+  #
+  # The 0.504 minimum is a STRUCTURAL floor, not a tuning failure. model.py's
+  # P6 level is exactly 2x the largest configured scale, and any factor-2 gap
+  # has a trough at sqrt(2)*s where a same-aspect box scores exactly 0.50. The
+  # 15 boxes between 0.50 and 0.52 are all cartridges at sqrt(area) 203-206,
+  # i.e. sitting on 144*sqrt(2) = 204. No anchor set escapes this by more than
+  # a few hundredths while the cartridge distribution is continuous across it.
+  anchor_scales: [40, 64, 96, 144]
   roi_output_size: 7
   nms_iou: 0.4
   confidence_threshold: 0.70
@@ -50,7 +92,22 @@ augmentation:
   # ShiftScaleRotate). One-sided limits, mirrored: 0.04 -> +/-4% of the side,
   # 0.10 -> scale 0.90-1.10, 4 -> +/-4 degrees.
   shift_limit: 0.04
-  scale_limit: 0.10
+  # 0.20, not 0.10. At +/-10% the affine block spans a 1.10/0.90 = 1.22 ratio
+  # end to end, which cannot on its own cover the 1.51 ratio the real photos
+  # show (batteries 43-65 px at the min_size=500 inference scale). +/-20% spans
+  # exactly 1.50 - the real ratio - so the augmenter now reaches it unaided,
+  # and it stacks with the render-time param_space.zoom that supplies 1.86.
+  # It is not a substitute for that: it resamples one render rather than
+  # producing a genuinely differently-framed scene, so it cannot add
+  # perspective, sampling or shadow-scale variety. It is simply free.
+  #
+  # It does interact with anchor_scales, which is why it was not widened
+  # further: the block fires on p_geometric * Affine.p = 25% of samples, and at
+  # the bottom of the draw the smallest batteries land near 27 px against the
+  # 40 px smallest anchor. That is a per-sample transient rather than a
+  # property of the labels, and the RPN still assigns every ground-truth box
+  # its best anchor, but at +/-40% it would stop being a transient.
+  scale_limit: 0.20
   rotation_limit: 4
   # --- camera / sensor degradation ---------------------------------------
   # The renders are pin-sharp and noiseless; the real photos are handheld

@@ -47,8 +47,9 @@
     "focal": 50.0
   },
   "filter": {
-    "min_px": 80,
+    "min_px": 500,
     "min_side": 6,
+    "max_aspect": 4.0,
     "min_visibility": 0.25,
     "drop_truncated": false
   },
@@ -80,6 +81,10 @@
     "exposure": [
       -5.2,
       -3.2
+    ],
+    "zoom": [
+      0.75,
+      1.6
     ]
   },
   "role_materials": {

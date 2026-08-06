@@ -19,6 +19,31 @@ from typing import Dict, List, Sequence, Tuple
 import numpy as np
 
 
+def _too_thin(w: int, h: int, cfg) -> bool:
+    """
+    True when a box is a longer, thinner strip than any WHOLE part can be.
+
+    Only frame truncation produces these. A part cropped along its length
+    leaves a sliver whose aspect ratio is a property of where the frame edge
+    fell, not of the object - and no anchor can ever match it, because
+    `model.anchor_ratios` is (correctly) tuned to the parts' own aspect
+    ratios. Measured over 1245 boxes from 150 zoom-varied scenes, EVERY box
+    with an aspect above 3.7 was truncated, and the widest un-cropped box was
+    3.68 (the 18650's own 65.0/18.3 = 3.55 plus rotation jitter and
+    antialiasing); the four above 4.0 ran 4.6, 5.1, 6.9 and 9.8 and scored
+    0.34-0.45 best-centred-IoU against every anchor set tried, including sets
+    that put every other box above 0.5.
+
+    `max_aspect = 0` disables the check, which is the dataclass default: a
+    config that predates this filter behaves exactly as it did.
+    """
+    limit = getattr(cfg, "max_aspect", 0.0) or 0.0
+    if limit <= 0.0:
+        return False
+    lo, hi = min(w, h), max(w, h)
+    return lo <= 0 or hi > limit * lo
+
+
 def boxes_from_mask(ids: np.ndarray, id_meta: Dict[int, dict], class_ids: Dict[str, int],
                     cfg, full_areas: Dict[int, int] = None
                     ) -> Tuple[List[dict], List[dict]]:
@@ -67,6 +92,8 @@ def boxes_from_mask(ids: np.ndarray, id_meta: Dict[int, dict], class_ids: Dict[s
             reason = f"visible_px<{cfg.min_px}"
         elif min(w, h) < cfg.min_side:
             reason = f"side<{cfg.min_side}"
+        elif _too_thin(w, h, cfg):
+            reason = f"aspect>{cfg.max_aspect}"
         elif cfg.drop_truncated and truncated:
             reason = "truncated"
         elif vis_frac is not None and vis_frac < cfg.min_visibility:
@@ -117,7 +144,8 @@ def merge_group_boxes(anns: List[dict], groups: Dict[int, str],
         x1 = max(m["bbox_xyxy"][2] for m in members)
         y1 = max(m["bbox_xyxy"][3] for m in members)
         area = sum(m["area"] for m in members)
-        if area < cfg.min_px or min(x1 - x0, y1 - y0) < cfg.min_side:
+        if (area < cfg.min_px or min(x1 - x0, y1 - y0) < cfg.min_side
+                or _too_thin(x1 - x0, y1 - y0, cfg)):
             continue
         out.append({
             "pass_index": members[0]["pass_index"],

@@ -94,6 +94,12 @@ def sample_params(rng: random.Random, cfg, overrides: dict = None) -> dict:
     if "exposure" in ps:
         lo, hi = ps["exposure"]
         p["exposure"] = rng.uniform(lo, hi)
+    # Per-scene camera framing multiplier - see world.setup_camera. Larger
+    # zoom = wider view = smaller parts. Absent is the supported case and
+    # reproduces the old fixed framing exactly.
+    if "zoom" in ps:
+        lo, hi = ps["zoom"]
+        p["zoom"] = rng.uniform(lo, hi)
     if overrides:
         p.update({k: v for k, v in overrides.items() if v is not None})
     return p
@@ -252,7 +258,8 @@ def build(params: dict, rng: random.Random, library: A.AssetLibrary,
     all_objs = [o for it in items for o in it.objects]
     _, top = A.group_bbox(all_objs)
     cam, cam_meta = W.setup_camera(cfg.camera, cfg.layout, cfg.render.res,
-                                   rng, top_z=top.z)
+                                   rng, top_z=top.z,
+                                   zoom=params.get("zoom", 1.0))
     meta["camera"] = cam_meta
     meta["lighting"] = W.setup_lighting(params["lighting"], rng, cam.location,
                                         cfg)

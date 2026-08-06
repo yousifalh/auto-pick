@@ -370,14 +370,39 @@ def _frame_extent(area_w: float, area_h: float, aspect: float) -> float:
     return max(area_w / aspect, area_h)
 
 
-def setup_camera(cfg, layout_cfg, res, rng: random.Random, top_z: float = 0.0):
+def setup_camera(cfg, layout_cfg, res, rng: random.Random, top_z: float = 0.0,
+                 zoom: float = 1.0):
     """
     Bird's-eye camera. A camera with zero rotation already looks down -Z, so a
     top-down view needs no aiming.
 
     Framing derives from the layout AREA, not from the objects, so scale stays
-    consistent across the dataset - a power bank is the same number of pixels in
-    every image, which is what detection training wants.
+    consistent across the dataset for a given `zoom`.
+
+    `zoom` is the per-scene framing multiplier drawn from `param_space.zoom`.
+    It multiplies the framed extent, so LARGER zoom means a WIDER view and
+    SMALLER parts - the same sense as `margin`, which it stacks with. It
+    defaults to 1.0, so a config without `param_space.zoom` frames exactly as
+    it did before.
+
+    It exists because a fixed framing made the dataset effectively
+    single-scale: measured over the 1000-image set, battery sqrt(area) ran
+    p05 50.9 / p95 56.2 px, a 1.10 ratio, against a real-photo span of
+    43-65 px (1.51). The `cartridge` class is the control - it has four
+    different CAD models and therefore a 1.69 training ratio, and it is the
+    class whose AP does not collapse when scale shifts.
+
+    At `zoom < 1.0` the frame is NARROWER than the layout area, so parts near
+    the area boundary are cropped by the frame edge. That is deliberate: the
+    old set had 0 of 8542 truncated annotations while real photos have 2 of 80.
+    At `zoom > 1.0` there is spare backdrop around the layout, which is
+    harmless - the backdrop plane is `max(area) * 6` across.
+
+    NOTE this is COUPLED to `model.anchor_scales` in configs/recognition.yaml.
+    Widening the zoom range without retuning the anchors puts the smallest
+    boxes below the smallest anchor, which is the exact mismatch that once
+    left 20% of boxes under 0.5 best-IoU. Change them together and re-run the
+    anchor check `recog/generate3d.py` prints at the end of a run.
 
     The framing above is verified empirically, not trusted from the formula.
     On Blender 5.0.0 with area [0.80, 0.45], res 1280x720, margin forced to 1.0
@@ -416,18 +441,26 @@ def setup_camera(cfg, layout_cfg, res, rng: random.Random, top_z: float = 0.0):
     aspect = res_x / res_y
     need = _frame_extent(area_w, area_h, aspect)
 
+    zoom = float(zoom)
+    if zoom <= 0.0:
+        raise ValueError(
+            f"camera zoom must be positive, got {zoom!r}: it multiplies the "
+            f"framed extent, so zero or negative would collapse or mirror the "
+            f"frame rather than merely widening it")
+
     if cfg.ortho:
         cam.data.type = "ORTHO"
-        cam.data.ortho_scale = need * margin
+        cam.data.ortho_scale = need * margin * zoom
     else:
         cam.data.type = "PERSP"
         cam.data.lens = cfg.focal
         fov = 2 * math.atan(cam.data.sensor_width / (2 * cfg.focal))
-        half = need / 2 * margin
+        half = need / 2 * margin * zoom
         cam.location.z = top_z + half / math.tan(fov / 2)
 
     cam.data.clip_start, cam.data.clip_end = 0.001, 100.0
     return cam, {"margin": margin, "shift_x": shift_x, "shift_y": shift_y,
+                 "zoom": zoom,
                  "ortho": cfg.ortho, "height": cfg.height,
                  "ortho_scale": getattr(cam.data, "ortho_scale", None)}
 

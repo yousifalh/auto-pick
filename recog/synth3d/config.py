@@ -134,10 +134,13 @@ class CameraCfg:
 
 @dataclass
 class FilterCfg:
-    min_px: int = 80
+    min_px: int = 500
     min_side: int = 6
     min_visibility: float = 0.25
     drop_truncated: bool = False
+    # Longest box side / shortest. 0 disables the check. See
+    # configs/synth3d.yaml for the measurement that sets it.
+    max_aspect: float = 0.0
 
 
 @dataclass
