@@ -20,6 +20,7 @@ import random
 
 import bpy
 
+from .lightrig import off_axis_placement, shadow_direction
 from .materials import set_input, rng_range
 
 
@@ -172,6 +173,86 @@ def build_backdrop(name: str, rng: random.Random, cfg, size: float = 3.0,
 #  lighting
 # --------------------------------------------------------------------------- #
 
+def _lamp_color(kelvin: float, tint):
+    """
+    Blackbody colour, optionally pulled off the Planckian locus.
+
+    `tint` is a per-channel multiplier from the rig's config. It exists for
+    one reason: real fluorescent tubes are NOT blackbody radiators. They are
+    mercury-vapour discharge with a phosphor coating and a hard spike near
+    546 nm, which is why a fluorescent-lit factory photograph has a green
+    cast that no colour temperature can reproduce. Feeding the detector only
+    Planckian illuminants teaches it that the illuminant lies on a
+    one-parameter curve, and every real fluorescent frame is then off-model.
+    """
+    r, g, b = kelvin_to_rgb(kelvin)
+    if tint:
+        r, g, b = r * tint[0], g * tint[1], b * tint[2]
+    return (max(0.0, min(1.0, r)), max(0.0, min(1.0, g)),
+            max(0.0, min(1.0, b)))
+
+
+def _add_area_light(name: str, loc, rot, energy: float, size: float,
+                    color, shape: str = "SQUARE"):
+    bpy.ops.object.light_add(type="AREA", location=loc)
+    lt = bpy.context.active_object
+    lt.name = name
+    lt.data.energy = energy
+    lt.data.shape = shape
+    lt.data.size = size
+    lt.data.color = color
+    lt.rotation_euler = rot
+    return lt
+
+
+def _off_axis_lamp(spec, rng: random.Random, name: str, keys: dict,
+                   drawn: dict, out_prefix: str, azimuth_base: float = 0.0):
+    """
+    Draw one off-axis lamp from `spec` and build it.
+
+    Returns the drawn azimuth, or None if the rig does not configure this
+    lamp - the fill lamp is optional and most rigs omit it.
+
+    `keys` maps each logical parameter to its config key, so the key lamp and
+    the fill lamp share this code while reading `energy` / `fill_energy` and
+    so on. `azimuth_base` is what makes the fill lamp's azimuth an OFFSET
+    from the key lamp's rather than an independent draw: a mixed-illuminant
+    rig is only mixed if the two illuminants actually arrive from different
+    sides, and two independent draws from [0, 360) land on top of each other
+    often enough to hollow the rig out.
+    """
+    if keys["energy"] not in spec:
+        return None
+    energy = rng_range(rng, spec[keys["energy"]])
+    size = rng_range(rng, spec[keys["size"]])
+    kelvin = rng_range(rng, spec[keys["kelvin"]])
+    elevation = rng_range(rng, spec[keys["elevation"]])
+    distance = rng_range(rng, spec[keys["distance"]])
+    azimuth = (azimuth_base + rng_range(rng, spec[keys["azimuth"]])) % 360.0
+
+    loc, rot = off_axis_placement(azimuth, elevation, distance)
+    _add_area_light(name, loc, rot, energy, size,
+                    _lamp_color(kelvin, spec.get(keys["tint"])))
+    sx, sy = shadow_direction(azimuth)
+    drawn.update({
+        out_prefix + "energy": energy, out_prefix + "size": size,
+        out_prefix + "kelvin": kelvin, out_prefix + "azimuth": azimuth,
+        out_prefix + "elevation": elevation, out_prefix + "distance": distance,
+        out_prefix + "shadow_dir": [sx, sy],
+    })
+    return azimuth
+
+
+_KEY_LAMP = {"energy": "energy", "size": "size", "kelvin": "kelvin",
+             "elevation": "elevation", "distance": "distance",
+             "azimuth": "azimuth", "tint": "tint"}
+
+_FILL_LAMP = {"energy": "fill_energy", "size": "fill_size",
+              "kelvin": "fill_kelvin", "elevation": "fill_elevation",
+              "distance": "fill_distance", "azimuth": "fill_azimuth_offset",
+              "tint": "fill_tint"}
+
+
 def setup_lighting(preset_name: str, rng: random.Random, cam_loc, cfg):
     spec = cfg.lighting[preset_name]
     drawn = {"lighting": preset_name, "kind": spec["kind"]}
@@ -238,6 +319,27 @@ def setup_lighting(preset_name: str, rng: random.Random, cam_loc, cfg):
         # px for a full-frame plane either way. `visible_camera` is False by
         # default for a light on 5.0 in any case, so nothing is set here.
         drawn.update(energy=energy, size=size, kelvin=kelvin, offset=off)
+
+    elif spec["kind"] == "off_axis":
+        # The whole point of this kind. `camera_softbox` hangs the lamp at the
+        # camera, so under a top-down camera the light is coaxial with the
+        # view: shading is flat and every cast shadow falls exactly behind the
+        # object that cast it, where the camera cannot see it. Real factory
+        # light arrives from overhead and to one side, and the reference
+        # photos show the shadows to prove it. Azimuth is drawn over the full
+        # circle and elevation over the rig's own band, so shadow DIRECTION
+        # and LENGTH both vary across the dataset instead of being absent
+        # from it.
+        key_az = _off_axis_lamp(spec, rng, "KeyLight", _KEY_LAMP, drawn, "")
+        if key_az is None:
+            raise ValueError(
+                f"lighting preset {preset_name!r} declares kind 'off_axis' "
+                f"but configures no `energy`, so it would build no key lamp "
+                f"and render lit only by the world background. That is a "
+                f"config bug, not a dim rig: it silently ignores every other "
+                f"key the preset sets.")
+        _off_axis_lamp(spec, rng, "FillLight", _FILL_LAMP, drawn, "fill_",
+                       azimuth_base=key_az)
 
     return drawn
 

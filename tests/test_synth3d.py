@@ -34,7 +34,7 @@ def test_num_classes_with_background():
 
 # ------------------------------------------------------- bpy boundary ----
 
-_BPY_FREE_CANDIDATES = ["config", "catalog", "layout", "annotate"]
+_BPY_FREE_CANDIDATES = ["config", "catalog", "layout", "annotate", "lightrig"]
 _BPY_FREE_MODS = [m for m in _BPY_FREE_CANDIDATES
                    if (ROOT / "recog" / "synth3d" / f"{m}.py").is_file()]
 
@@ -71,6 +71,129 @@ def test_load_config_from_yaml():
     assert "jig" in cfg.param_space["layout_mode"]
     assert set(cfg.role_materials) == {"case", "cell"}
     assert cfg.lighting["overcast_softbox"]["kind"] == "camera_softbox"
+
+
+# ----------------------------------------------------------- lighting ----
+#
+# The dataset's three original rigs were all `camera_softbox`, which puts the
+# lamp at the camera. Under a top-down camera that makes the light coaxial
+# with the view: shading is flat and every cast shadow hides exactly behind
+# the object that cast it. The reference photos are full of directional
+# shadows, so the training set was missing a cue the real images all carry.
+
+_OFF_AXIS_KEYS = ("energy", "size", "kelvin", "azimuth", "elevation",
+                  "distance", "world_strength", "world_kelvin")
+
+
+def test_lighting_rigs_cover_more_than_one_kind():
+    """All-camera_softbox is the state this task existed to leave."""
+    kinds = {s["kind"] for s in C.load_config().lighting.values()}
+    assert "off_axis" in kinds, (
+        "no off-axis rig: every scene is lit coaxially with the camera, so "
+        "the dataset contains no visible cast shadow at all")
+    assert "camera_softbox" in kinds, "the original rigs must keep working"
+
+
+def test_every_lighting_rig_is_reachable_from_the_param_space():
+    """A rig absent from param_space.lighting is never sampled, so it is
+    dead config that looks live - the single easiest way to add a lighting
+    preset and have it change nothing whatsoever."""
+    cfg = C.load_config()
+    assert set(cfg.param_space["lighting"]) == set(cfg.lighting), (
+        f"rigs defined but never sampled: "
+        f"{sorted(set(cfg.lighting) - set(cfg.param_space['lighting']))}; "
+        f"sampled but not defined: "
+        f"{sorted(set(cfg.param_space['lighting']) - set(cfg.lighting))}")
+
+
+def test_off_axis_rigs_carry_every_key_setup_lighting_reads():
+    """world.setup_lighting indexes these directly, so a missing one is a
+    KeyError thousands of renders into a dataset build, not at load time."""
+    cfg = C.load_config()
+    for name, spec in cfg.lighting.items():
+        if spec["kind"] != "off_axis":
+            continue
+        for key in _OFF_AXIS_KEYS:
+            assert key in spec, f"{name} has kind off_axis but no {key!r}"
+        lo, hi = spec["elevation"]
+        assert 0 < lo <= hi <= 90, f"{name} elevation {spec['elevation']}"
+        assert spec["distance"][0] > 0, name
+
+
+def test_a_fill_lamp_rig_configures_every_fill_key():
+    """The fill lamp is optional and drawn all-or-nothing off `fill_energy`.
+    A rig that sets fill_energy and forgets fill_kelvin gets a KeyError at
+    render time; one that sets fill_kelvin and forgets fill_energy silently
+    builds no fill lamp at all and quietly stops being mixed-illuminant."""
+    cfg = C.load_config()
+    fill_keys = ("fill_energy", "fill_size", "fill_kelvin",
+                 "fill_azimuth_offset", "fill_elevation", "fill_distance")
+    for name, spec in cfg.lighting.items():
+        present = [k for k in fill_keys if k in spec]
+        assert present in ([], list(fill_keys)), (
+            f"{name} configures a partial fill lamp: has {present}, "
+            f"missing {[k for k in fill_keys if k not in spec]}")
+
+
+def test_the_dim_rig_is_actually_the_dimmest_and_lowest():
+    """`dim_workshop` is the user-facing 'dark setting'. Its darkness must
+    come from the light's geometry - a low elevation and almost no ambient -
+    rather than from a small energy, because exposure is sampled per scene
+    and multiplies energy while it cannot multiply an angle. An earlier draft
+    got this backwards and rendered black frames at the bottom of the
+    exposure range: median object-to-background difference under one 8-bit
+    level, on annotated images."""
+    cfg = C.load_config()
+    dim = cfg.lighting["dim_workshop"]
+    others = {n: s for n, s in cfg.lighting.items()
+              if n != "dim_workshop" and s["kind"] == "off_axis"}
+
+    # Midpoints, not disjoint bands: mixed_daylight is a window light and is
+    # legitimately low too, so the bands overlap by design. What has to hold
+    # is that dim_workshop is the lowest and least-ambient rig on average.
+    def mid(span):
+        return (span[0] + span[1]) / 2.0
+
+    assert all(mid(dim["elevation"]) < mid(o["elevation"])
+               for o in others.values()), (
+        f"dim_workshop's mean elevation {mid(dim['elevation'])} is not the "
+        f"lowest of the off-axis rigs "
+        f"({ {n: mid(s['elevation']) for n, s in others.items()} }) - a low "
+        f"lamp is what makes its shadows long")
+    assert all(mid(dim["world_strength"]) < mid(o["world_strength"])
+               for o in others.values()), (
+        f"dim_workshop's mean ambient {mid(dim['world_strength'])} is not "
+        f"the lowest of the off-axis rigs "
+        f"({ {n: mid(s['world_strength']) for n, s in others.items()} }) - "
+        f"low ambient is what makes its shadows deep")
+
+
+def test_the_fluorescent_rig_is_off_the_planckian_locus():
+    """Real tubes are mercury discharge behind a phosphor, not blackbody. If
+    every illuminant in the set lies on the Planckian locus the detector
+    learns a one-parameter illuminant model that no real fluorescent-lit
+    photograph obeys."""
+    tint = C.load_config().lighting["fluorescent_factory"]["tint"]
+    assert len(tint) == 3
+    assert tint[1] > tint[0] and tint[1] > tint[2], (
+        f"fluorescent tint {tint} has no green bias, so it is just another "
+        f"colour temperature")
+    assert all(0.8 <= c <= 1.2 for c in tint), f"tint {tint} is not subtle"
+
+
+def test_exposure_is_sampled_per_scene_not_fixed():
+    """A single render.exposure tone-maps every scene identically. Measured
+    over 20 scenes at the old fixed -3.5, the spread of mean frame luminance
+    was 0.170 and essentially all of it came from the backdrop, not from any
+    variation in light level."""
+    cfg = C.load_config()
+    lo, hi = cfg.param_space["exposure"]
+    assert lo < hi, "exposure must be a real range, not a pinned value"
+    assert hi - lo >= 1.0, f"exposure range {hi - lo:.2f} stops is token"
+    # render.exposure survives as the documented fallback for a config that
+    # omits param_space.exposure; it must stay inside the sampled band or the
+    # two disagree about what a normal scene looks like.
+    assert lo <= cfg.render.exposure <= hi
 
 
 def test_every_material_and_backdrop_has_a_measured_luma_ref():
@@ -718,6 +841,110 @@ def test_jig_placements_are_spread_across_the_plate_not_pinned_to_the_top():
     assert top_left / n < 0.6, (
         f"top-left quadrant holds {top_left}/{n} = {top_left / n:.3f} of "
         f"placements - still corner-biased")
+
+
+# ----------------------------------------------------- off-axis lamps ----
+#
+# The aiming is the one part of the off-axis rig that is easy to get silently
+# wrong. A 90-degree error still lights *something*, the render still looks
+# plausible, and only comparing shadow direction against the configured
+# azimuth across a whole sweep would reveal it. So the rotation is re-derived
+# here from independently written matrices rather than by reusing the
+# module's own formula.
+
+import math
+
+from recog.synth3d import lightrig as LR
+
+
+def _rot_xyz(rx, ry, rz):
+    """Blender composes rotation_euler XYZ as Rz @ Ry @ Rx."""
+    cx, sx = math.cos(rx), math.sin(rx)
+    cy, sy = math.cos(ry), math.sin(ry)
+    cz, sz = math.cos(rz), math.sin(rz)
+    Rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]])
+    Ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]])
+    Rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]])
+    return Rz @ Ry @ Rx
+
+
+@pytest.mark.parametrize("az", [0, 37, 90, 143, 180, 271, 359])
+@pytest.mark.parametrize("el", [5, 25, 47, 70, 90])
+def test_an_off_axis_lamp_points_at_the_thing_it_is_lighting(az, el):
+    loc, rot = LR.off_axis_placement(az, el, 1.7)
+    emitted = _rot_xyz(*rot) @ np.array(LR.EMIT_AXIS)
+    wanted = -np.array(loc)
+    wanted = wanted / np.linalg.norm(wanted)
+    np.testing.assert_allclose(emitted, wanted, atol=1e-9)
+
+
+@pytest.mark.parametrize("az", [0, 90, 210])
+def test_an_off_axis_lamp_aims_at_a_target_that_is_not_the_origin(az):
+    """Nothing uses a non-origin target today, but the offset is the easiest
+    thing to drop when someone later aims a lamp at the jig plate."""
+    target = (0.12, -0.05, 0.03)
+    loc, rot = LR.off_axis_placement(az, 40.0, 1.4, target=target)
+    emitted = _rot_xyz(*rot) @ np.array(LR.EMIT_AXIS)
+    wanted = np.array(target) - np.array(loc)
+    wanted = wanted / np.linalg.norm(wanted)
+    np.testing.assert_allclose(emitted, wanted, atol=1e-9)
+
+
+def test_lamp_position_matches_the_requested_spherical_coordinates():
+    loc, _ = LR.off_axis_placement(0.0, 30.0, 2.0)
+    assert loc[0] == pytest.approx(2.0 * math.cos(math.radians(30)))
+    assert loc[1] == pytest.approx(0.0, abs=1e-12)
+    assert loc[2] == pytest.approx(2.0 * math.sin(math.radians(30)))
+
+
+def test_a_lamp_is_always_above_the_backdrop_plane():
+    """Elevation is capped positive precisely so a lamp cannot end up level
+    with or under the ground plane, where it would light nothing visible."""
+    for el in (0.5, 15.0, 89.0, 90.0):
+        loc, _ = LR.off_axis_placement(123.0, el, 1.5)
+        assert loc[2] > 0.0, el
+
+
+@pytest.mark.parametrize("bad", [0.0, -10.0, 90.1, 180.0])
+def test_an_unusable_elevation_is_rejected_rather_than_rendered(bad):
+    with pytest.raises(ValueError, match="elevation"):
+        LR.off_axis_placement(0.0, bad, 1.5)
+
+
+def test_a_non_positive_distance_is_rejected():
+    with pytest.raises(ValueError, match="distance"):
+        LR.off_axis_placement(0.0, 45.0, 0.0)
+
+
+def test_straight_overhead_reduces_to_no_tilt():
+    """el = 90 is the degenerate case that should behave like the old
+    camera_softbox: lamp directly above, emitting straight down."""
+    loc, rot = LR.off_axis_placement(217.0, 90.0, 1.5)
+    assert loc[0] == pytest.approx(0.0, abs=1e-12)
+    assert loc[1] == pytest.approx(0.0, abs=1e-12)
+    assert rot[0] == pytest.approx(0.0)
+    emitted = _rot_xyz(*rot) @ np.array(LR.EMIT_AXIS)
+    np.testing.assert_allclose(emitted, [0, 0, -1], atol=1e-12)
+
+
+@pytest.mark.parametrize("az,expected", [
+    (0.0, (-1.0, 0.0)), (90.0, (0.0, -1.0)),
+    (180.0, (1.0, 0.0)), (270.0, (0.0, 1.0)),
+])
+def test_shadows_fall_away_from_the_lamp(az, expected):
+    np.testing.assert_allclose(LR.shadow_direction(az), expected, atol=1e-12)
+
+
+def test_azimuth_sweeps_shadows_through_every_direction():
+    """The reason azimuth is drawn over the full circle: shadow DIRECTION has
+    to vary across the dataset, or the detector can learn 'shadow is always
+    down-left' as if it were a property of the parts."""
+    dirs = [LR.shadow_direction(a) for a in range(0, 360, 15)]
+    assert len({(round(x, 6), round(y, 6)) for x, y in dirs}) == 24
+    xs = [d[0] for d in dirs]
+    ys = [d[1] for d in dirs]
+    assert min(xs) < -0.9 and max(xs) > 0.9
+    assert min(ys) < -0.9 and max(ys) > 0.9
 
 
 # ------------------------------------------------------- CAD import ----

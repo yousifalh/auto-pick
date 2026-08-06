@@ -83,6 +83,17 @@ def sample_params(rng: random.Random, cfg, overrides: dict = None) -> dict:
         "lighting": rng.choice(ps["lighting"]),
         "layout_mode": chosen,
     }
+    # Per-scene exposure. Drawn here rather than read off `render.exposure`
+    # because a single fixed value tone-maps every scene identically, so the
+    # dataset had no light-LEVEL variation at all - only the backdrop moved
+    # the frame mean. It is a scene parameter like any other, so it travels in
+    # `params` and lands in the sidecar; `generate3d` hands it to
+    # `render.render_beauty`, which falls back to `render.exposure` when it is
+    # absent. Absent is the supported case: a config without
+    # `param_space.exposure` renders exactly as it did before.
+    if "exposure" in ps:
+        lo, hi = ps["exposure"]
+        p["exposure"] = rng.uniform(lo, hi)
     if overrides:
         p.update({k: v for k, v in overrides.items() if v is not None})
     return p

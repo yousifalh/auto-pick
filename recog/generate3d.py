@@ -139,7 +139,10 @@ def run_sweep(a, cfg, library, root):
             continue
         png = os.path.join(root, "images", stem + ".png")
         if not a.no_render:
-            render.render_beauty(cfg.render, png)
+            # Same seed for every entry, so the drawn exposure is identical
+            # across the sweep: the swept axis really is the only thing that
+            # moves, which is the whole contract of a sweep sheet.
+            render.render_beauty(cfg.render, png, params.get("exposure"))
         meta.update({"sweep_axis": axis, "sweep_entry": entry,
                      "image": stem + ".png"})
         with open(os.path.join(root, "meta", stem + ".json"), "w") as f:
@@ -228,7 +231,7 @@ def main():
             if a.save_blend and i == 0:
                 bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(a.save_blend))
             if not a.no_render:
-                render.render_beauty(cfg.render, png)
+                render.render_beauty(cfg.render, png, params.get("exposure"))
 
             annotate.write_voc_xml(xml, stem + ".png", W, H, anns)
 

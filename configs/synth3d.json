@@ -71,7 +71,15 @@
     "lighting": [
       "overcast_softbox",
       "harsh_inspection",
-      "warm_indoor"
+      "warm_indoor",
+      "fluorescent_factory",
+      "high_bay_led",
+      "dim_workshop",
+      "mixed_daylight"
+    ],
+    "exposure": [
+      -5.2,
+      -3.2
     ]
   },
   "role_materials": {
@@ -667,6 +675,211 @@
       "world_kelvin": [
         3200,
         4500
+      ],
+      "hdri": null,
+      "hdri_strength": [
+        0,
+        0
+      ],
+      "hdri_rotation": [
+        0,
+        0
+      ]
+    },
+    "fluorescent_factory": {
+      "kind": "off_axis",
+      "energy": [
+        700.0,
+        1300.0
+      ],
+      "size": [
+        1.2,
+        2.2
+      ],
+      "kelvin": [
+        4000,
+        5000
+      ],
+      "tint": [
+        0.96,
+        1.045,
+        0.95
+      ],
+      "azimuth": [
+        0,
+        360
+      ],
+      "elevation": [
+        55,
+        80
+      ],
+      "distance": [
+        1.6,
+        2.4
+      ],
+      "world_strength": [
+        0.3,
+        0.6
+      ],
+      "world_kelvin": [
+        4200,
+        5200
+      ],
+      "hdri": null,
+      "hdri_strength": [
+        0,
+        0
+      ],
+      "hdri_rotation": [
+        0,
+        0
+      ]
+    },
+    "high_bay_led": {
+      "kind": "off_axis",
+      "energy": [
+        1400.0,
+        2600.0
+      ],
+      "size": [
+        0.25,
+        0.6
+      ],
+      "kelvin": [
+        5000,
+        6500
+      ],
+      "azimuth": [
+        0,
+        360
+      ],
+      "elevation": [
+        50,
+        78
+      ],
+      "distance": [
+        1.8,
+        2.6
+      ],
+      "world_strength": [
+        0.05,
+        0.18
+      ],
+      "world_kelvin": [
+        5500,
+        7000
+      ],
+      "hdri": null,
+      "hdri_strength": [
+        0,
+        0
+      ],
+      "hdri_rotation": [
+        0,
+        0
+      ]
+    },
+    "dim_workshop": {
+      "kind": "off_axis",
+      "energy": [
+        170.0,
+        420.0
+      ],
+      "size": [
+        0.15,
+        0.5
+      ],
+      "kelvin": [
+        2700,
+        3600
+      ],
+      "azimuth": [
+        0,
+        360
+      ],
+      "elevation": [
+        18,
+        42
+      ],
+      "distance": [
+        1.0,
+        1.8
+      ],
+      "world_strength": [
+        0.012,
+        0.055
+      ],
+      "world_kelvin": [
+        3000,
+        4500
+      ],
+      "hdri": null,
+      "hdri_strength": [
+        0,
+        0
+      ],
+      "hdri_rotation": [
+        0,
+        0
+      ]
+    },
+    "mixed_daylight": {
+      "kind": "off_axis",
+      "energy": [
+        600.0,
+        1200.0
+      ],
+      "size": [
+        1.0,
+        2.0
+      ],
+      "kelvin": [
+        6000,
+        7800
+      ],
+      "azimuth": [
+        0,
+        360
+      ],
+      "elevation": [
+        22,
+        45
+      ],
+      "distance": [
+        1.6,
+        2.4
+      ],
+      "fill_energy": [
+        150.0,
+        400.0
+      ],
+      "fill_size": [
+        0.8,
+        1.6
+      ],
+      "fill_kelvin": [
+        2700,
+        3400
+      ],
+      "fill_azimuth_offset": [
+        110,
+        250
+      ],
+      "fill_elevation": [
+        45,
+        75
+      ],
+      "fill_distance": [
+        1.2,
+        2.0
+      ],
+      "world_strength": [
+        0.1,
+        0.3
+      ],
+      "world_kelvin": [
+        5000,
+        7500
       ],
       "hdri": null,
       "hdri_strength": [

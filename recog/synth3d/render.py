@@ -167,7 +167,16 @@ def _configure_file_output(out, mask_dir: str, stem: str):
 #  beauty render settings
 # --------------------------------------------------------------------------- #
 
-def configure_beauty(cfg, out_png: str):
+def configure_beauty(cfg, out_png: str, exposure=None):
+    """
+    `exposure` overrides `cfg.exposure` for this one render.
+
+    It is a per-SCENE parameter (drawn in `scene.sample_params` from
+    `param_space.exposure`) while everything else here is a per-RUN setting,
+    which is why it arrives as an argument instead of being read off cfg.
+    None means "no per-scene value was drawn" and falls back to `cfg.exposure`,
+    so a config with no `param_space.exposure` renders exactly as before.
+    """
     s = bpy.context.scene
     s.render.engine = "CYCLES"
     s.render.resolution_x, s.render.resolution_y = cfg.res
@@ -211,7 +220,7 @@ def configure_beauty(cfg, out_png: str):
         s.view_settings.view_transform = cfg.view_transform
     except TypeError:
         pass
-    s.view_settings.exposure = cfg.exposure
+    s.view_settings.exposure = cfg.exposure if exposure is None else exposure
 
     if cfg.device == "GPU":
         enable_gpu()
@@ -368,14 +377,14 @@ def isolated_areas(cfg, mask_dir: str, objects_by_id):
     return areas
 
 
-def render_beauty(cfg, out_png: str):
+def render_beauty(cfg, out_png: str, exposure=None):
     scene = bpy.context.scene
     if hasattr(scene, "compositing_node_group"):
         scene.compositing_node_group = None      # Blender 5.0
     else:
         scene.use_nodes = False                  # Blender 4.x
     bpy.context.view_layer.use_pass_object_index = False
-    configure_beauty(cfg, out_png)
+    configure_beauty(cfg, out_png, exposure)
     os.makedirs(os.path.dirname(os.path.abspath(out_png)), exist_ok=True)
     bpy.ops.render.render(write_still=True)
 

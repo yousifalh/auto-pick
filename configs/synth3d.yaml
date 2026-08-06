@@ -25,6 +25,12 @@ render:
   # flattened, and the low-contrast fraction turns back UP because the dark end
   # starts colliding instead (conveyor_belt against cell_black/shell_black).
   # -3.5 is that turning point.
+  #
+  # THIS IS NOW ONLY THE FALLBACK. `param_space.exposure` samples a per-scene
+  # value and generate3d hands it to render.render_beauty; this constant is
+  # what gets used when a config omits `param_space.exposure` entirely. It is
+  # deliberately still the measured optimum, so dropping the param_space entry
+  # restores exactly the old behaviour.
   exposure: -3.5
   max_bounces: 12
   clamp_indirect: 10.0
@@ -73,7 +79,27 @@ param_space:
     scatter: 0.7            # domain randomization: learn shape, not context
     jig: 0.3                # in-distribution coverage of the real fixture
   backdrop: [concrete, brushed_metal, fabric, paper, conveyor_belt]
-  lighting: [overcast_softbox, harsh_inspection, warm_indoor]
+  lighting: [overcast_softbox, harsh_inspection, warm_indoor,
+             fluorescent_factory, high_bay_led, dim_workshop, mixed_daylight]
+  # Per-scene exposure, in stops, applied by the view transform. Sampled here
+  # rather than fixed at render.exposure because a single value tone-maps every
+  # scene identically: measured over 20 scenes at the old fixed -3.5, the spread
+  # of mean frame luminance was 0.170 and essentially ALL of it came from the
+  # backdrop (fabric/belt 0.26-0.40, paper/concrete/metal 0.63-0.79) rather than
+  # from anything to do with light level. Nothing was dark; the darkest whole
+  # frame in the set measured 0.258.
+  #
+  # The range is deliberately ASYMMETRIC about the old -3.5. There is almost no
+  # headroom upward - the brightest scenes already measured 0.79 mean and the
+  # measured sweep puts clip_obj at 0.14% by -3.0 and 0.92% by -2.5 - so the
+  # room to widen is downward, which is also what was actually asked for.
+  #
+  # The bottom end is -5.2, not the -5.8 first tried. -5.8 was measured as too
+  # far: it does not blow anything out, but stacked on the darkest rig and the
+  # darkest backdrop it drove object-to-background contrast under one 8-bit
+  # level, which is annotated noise rather than a dark scene. See the note on
+  # `dim_workshop`. -5.2 is still 1.7 stops under the old fixed -3.5.
+  exposure: [-5.2, -3.2]
 
 # Which materials each CAD role may draw from.
 role_materials:
@@ -242,6 +268,31 @@ backdrops:
     roughness: [0.50, 0.80]
     bump: [0.15, 0.45]
 
+# Two kinds are in play here.
+#
+# `camera_softbox` hangs the lamp at the camera. Under this top-down camera
+# that makes the light coaxial with the view: shading is flat and every cast
+# shadow falls exactly behind the object that cast it, hidden from the camera.
+# All three original rigs are that kind, so the dataset contained no visible
+# cast shadow at all, while the reference factory photos are full of them.
+#
+# `off_axis` places the lamp at a drawn (azimuth, elevation, distance) and aims
+# it at the origin - see recog/synth3d/lightrig.py. Azimuth spans the full
+# circle and elevation spans each rig's own band, so shadow direction and
+# shadow length both vary scene to scene.
+#
+# Energies are NOT comparable between the two kinds. A camera_softbox sits
+# ~0.87 m above the parts; an off_axis lamp sits 1.0-2.6 m away and strikes a
+# horizontal surface at an angle, so it needs roughly (d/0.87)^2 / cos(90-el)
+# times the power for the same illuminance - a factor of 3 to 8. The numbers
+# below were calibrated by rendering, not derived.
+#
+# `tint` is a per-channel multiplier applied on top of the blackbody colour.
+# It exists because real fluorescent tubes are not blackbody radiators - they
+# are mercury discharge behind a phosphor, with a spike near 546 nm - so a
+# fluorescent-lit factory has a green cast that no colour temperature can
+# reproduce. Without it, every illuminant in the training set lies on the
+# Planckian locus and every real fluorescent photo is off-model.
 lighting:
   overcast_softbox:
     kind: camera_softbox
@@ -273,6 +324,111 @@ lighting:
     offset: [0.05, 0.22]
     world_strength: [0.15, 0.40]
     world_kelvin: [3200, 4500]
+    hdri: null
+    hdri_strength: [0, 0]
+    hdri_rotation: [0, 0]
+
+  # ---------------------------------------------------------------- off-axis --
+
+  # Rows of overhead fluorescent tubes: the default light of every older
+  # factory floor. Large source and a high elevation, so shadows are present
+  # but soft and short; a healthy world_strength stands in for the bounce off
+  # pale walls and ceiling that makes such a space fairly even. 4000-5000K with
+  # the green cast that gives fluorescent-lit photographs their characteristic
+  # look.
+  fluorescent_factory:
+    kind: off_axis
+    energy: [700.0, 1300.0]
+    size: [1.2, 2.2]
+    kelvin: [4000, 5000]
+    # Softened from [0.95, 1.06, 0.93]: stacked on a 4000-5000K blackbody that
+    # read frankly olive rather than as the slight green a real tube gives.
+    tint: [0.96, 1.045, 0.95]
+    azimuth: [0, 360]
+    elevation: [55, 80]
+    distance: [1.6, 2.4]
+    world_strength: [0.30, 0.60]
+    world_kelvin: [4200, 5200]
+    hdri: null
+    hdri_strength: [0, 0]
+    hdri_rotation: [0, 0]
+
+  # Modern high-bay LED: brighter, cooler and much more compact than a tube,
+  # so the shadows have hard edges. The low world_strength is what makes them
+  # hard - a small source with a lot of ambient fill still reads soft, because
+  # the ambient lifts the shadow interior back up.
+  high_bay_led:
+    kind: off_axis
+    energy: [1400.0, 2600.0]
+    size: [0.25, 0.60]
+    kelvin: [5000, 6500]
+    azimuth: [0, 360]
+    elevation: [50, 78]
+    distance: [1.8, 2.6]
+    world_strength: [0.05, 0.18]
+    world_kelvin: [5500, 7000]
+    hdri: null
+    hdri_strength: [0, 0]
+    hdri_rotation: [0, 0]
+
+  # The dark setting. A single warm bulb low down in a corner: low light level,
+  # long shadows, high contrast.
+  #
+  # What makes this rig dark is the LOW ELEVATION and the near-absent ambient,
+  # not a low energy. That distinction was measured, not assumed. An earlier
+  # draft used energy [90, 260] with world_strength [0.005, 0.04], which is
+  # about 1.8 stops under the other rigs. On its own that looked right - but
+  # exposure is sampled per scene and multiplies it, so dim_workshop on
+  # conveyor_belt at the bottom of the exposure range rendered as a black
+  # frame: over 8 such scenes the median object-to-background luminance
+  # difference was 0.9-1.6 of 255 levels in four of them, i.e. under the 8-bit
+  # quantisation floor. Those images still carry full annotations, so they ask
+  # the detector to find objects in pure noise - actively worse than dropping
+  # them. Energy raised so the darkness comes mostly from the light's
+  # GEOMETRY, which exposure cannot stack with, rather than from
+  # underexposure, which it can.
+  #
+  # [300, 750] was the other end of that mistake: it made the rig no longer
+  # dim at all - on concrete it measured 0.653 mean frame luminance, brighter
+  # than overcast_softbox on the same backdrop. [170, 420] is the middle that
+  # measured well on both guardrails at once.
+  dim_workshop:
+    kind: off_axis
+    energy: [170.0, 420.0]
+    size: [0.15, 0.50]
+    kelvin: [2700, 3600]
+    azimuth: [0, 360]
+    elevation: [18, 42]
+    distance: [1.0, 1.8]
+    world_strength: [0.012, 0.055]
+    world_kelvin: [3000, 4500]
+    hdri: null
+    hdri_strength: [0, 0]
+    hdri_rotation: [0, 0]
+
+  # Daylight through a window plus warm interior fill. Worth having because it
+  # is the one rig here that breaks the single-illuminant assumption: the two
+  # lamps differ by roughly 3500K and always arrive from different sides
+  # (fill_azimuth_offset is an offset from the key, not an independent draw),
+  # so one face of a part is lit cool and another warm at the same time. A
+  # detector trained only on single-illuminant scenes can learn to treat
+  # "colour of the lit face" as a material property, which it is not.
+  mixed_daylight:
+    kind: off_axis
+    energy: [600.0, 1200.0]
+    size: [1.0, 2.0]
+    kelvin: [6000, 7800]
+    azimuth: [0, 360]
+    elevation: [22, 45]
+    distance: [1.6, 2.4]
+    fill_energy: [150.0, 400.0]
+    fill_size: [0.8, 1.6]
+    fill_kelvin: [2700, 3400]
+    fill_azimuth_offset: [110, 250]
+    fill_elevation: [45, 75]
+    fill_distance: [1.2, 2.0]
+    world_strength: [0.10, 0.30]
+    world_kelvin: [5000, 7500]
     hdri: null
     hdri_strength: [0, 0]
     hdri_rotation: [0, 0]
