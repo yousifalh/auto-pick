@@ -107,22 +107,21 @@ def _next_free_x(
     The returned x is snapped to cell boundaries. Snapping can only move
     the item right, never left. Every returned position is guaranteed to
     satisfy ``not _overlaps_forbidden(mask, x, y, w, h, mm_per_cell)``.
+    Sub-cell-precision positions may be skipped; the mask is quantised
+    at mm_per_cell anyway, so sub-cell precision is not information it carries.
     """
-    # Quick check: does x_from fit in the strip at all?
-    if x_from + w > strip_width + tol:
-        return None
-
     r1 = max(0, int(y / mm_per_cell))
     r2 = min(mask.shape[0], int(np.ceil((y + h) / mm_per_cell)))
     if r2 <= r1:
         # Empty row band: position clears by definition.
-        return x_from
+        return x_from if x_from + w <= strip_width + tol else None
 
     # Collapse the row band: a column is blocked if any cell in it is.
     blocked = mask[r1:r2, :].any(axis=0)
 
     n_cols = max(1, int(np.ceil(w / mm_per_cell)))
-    c_start = max(0, int(x_from / mm_per_cell))
+    # Start scanning at the first cell boundary at or after x_from.
+    c_start = int(np.ceil(x_from / mm_per_cell - tol))
 
     # Scan for the first run of n_cols consecutive clear columns.
     run = 0
@@ -130,18 +129,12 @@ def _next_free_x(
         run = 0 if blocked[c] else run + 1
         if run >= n_cols:
             # Found n_cols clear columns ending at column c.
-            # Try positions snapped to cell boundaries, starting from x_from.
-            x_candidate = (c - n_cols + 1) * mm_per_cell
-            # Walk upward from x_from to find the first cell-aligned position
-            # that actually clears the mask (accepting arithmetic floating-point).
-            # Start from the ceiling of x_from to never move backward.
-            c_test = max(0, int(np.ceil(x_from / mm_per_cell)))
-            while c_test * mm_per_cell + w <= strip_width + tol:
-                x_test = c_test * mm_per_cell
-                if not _overlaps_forbidden(mask, x_test, y, w, h, mm_per_cell):
-                    return x_test
-                c_test += 1
-            return None
+            # The item occupies columns [c - n_cols + 1, c + 1).
+            # Return the position directly; it is correct by construction:
+            # _overlaps_forbidden will compute c1=c-n_cols+1, c2=c+1,
+            # checking exactly the columns we just cleared.
+            x = (c - n_cols + 1) * mm_per_cell
+            return x if x + w <= strip_width + tol else None
     return None
 
 
