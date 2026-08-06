@@ -117,6 +117,9 @@ class LayoutCfg:
     max_tries: int = 500
     jitter_deg: float = 2.0
     allow_90s: bool = True
+    # Largest padded-footprint IoU two scatter-placed parts may share. 0 is
+    # exact non-overlap, i.e. the behaviour this solver has always had.
+    max_overlap_iou: float = 0.0
     jig_clearance: float = 0.004
     jig_jitter_deg: float = 1.0
     jig_depth: Tuple[float, float] = (0.006, 0.012)

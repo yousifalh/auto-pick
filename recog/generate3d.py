@@ -53,12 +53,13 @@ def parse_args(cfg):
     p.add_argument("--visibility", action="store_true",
                    help="measure each instance's unoccluded area (one extra "
                         "index render per instance, up to ~32 per sample). "
-                        "CURRENTLY YIELDS NO SIGNAL: both layout solvers "
-                        "guarantee AABB non-overlap so no labelled instance "
-                        "can occlude another, and merge_group_boxes does not "
-                        "compute visibility for merged boxes (i.e. for any "
-                        "cartridge). Only useful once overlapping layouts "
-                        "exist.")
+                        "Live since layout.max_overlap_iou, but small: "
+                        "measured over 90 overlapping scatter scenes, 2.0% of "
+                        "non-merged boxes came back under 1.0 and the deepest "
+                        "was 0.748, against a filter.min_visibility of 0.25 - "
+                        "so it changed no label. merge_group_boxes still "
+                        "reports None for merged boxes, i.e. for every "
+                        "cartridge. Diagnostic, not part of a production run.")
     p.add_argument("--resume", action="store_true")
     p.add_argument("--no-render", action="store_true")
     p.add_argument("--save-blend", default=None)
@@ -167,10 +168,12 @@ def main():
     if a.variant:
         VARIANTS[:] = [v for v in VARIANTS if v.name == a.variant]
     if a.visibility:
-        print("[warn] --visibility costs one extra index render per instance "
-              "and currently yields no signal: the layout solvers guarantee "
-              "non-overlap so every labelled instance measures 1.0, and "
-              "merged boxes (every cartridge) get no visible_fraction at all.")
+        print("[warn] --visibility costs one extra index render per instance. "
+              "It yields real but small signal now that layout.max_overlap_iou "
+              "lets parts occlude: measured over 90 overlapping scatter "
+              "scenes, 2.0% of non-merged boxes fell under 1.0 and the deepest "
+              "was 0.748, so filter.min_visibility=0.25 dropped nothing. "
+              "Merged boxes (every cartridge) still get no visible_fraction.")
 
     ids = class_ids()
     root = os.path.abspath(a.out)

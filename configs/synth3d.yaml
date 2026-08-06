@@ -44,7 +44,42 @@ layout:
   max_tries: 500
   jitter_deg: 2.0           # hard cap on off-axis tilt; keeps footprints AABB
   allow_90s: true
-  jig_clearance: 0.004      # metres of pocket margin around each part
+  # Largest padded-footprint IoU two scatter-placed parts may share. 0 is the
+  # exact non-overlap this solver always guaranteed, and it is what made
+  # filter.min_visibility a threshold with nothing to threshold and made the
+  # synthetic validation metric saturate at mAP 1.0 within 0-5 epochs. Real
+  # trays hold cells shoulder to shoulder.
+  #
+  # The threshold is on the PADDED footprint (layout.pad is 8 mm), so it is not
+  # the fraction of one part hidden by another. MEASURED over 400 seeded
+  # layouts, as the raw part overlap expressed as a fraction of the smaller
+  # part's footprint:
+  #
+  #   max_overlap_iou   scenes with a raw overlap   median   max
+  #        0.00                   0 %                 -       -
+  #        0.05                 1.8 %               0.050   0.240
+  #        0.10                 6.3 %               0.230   0.857
+  #        0.15                 7.8 %               0.230   0.895
+  #        0.20                10.3 %               0.365   1.000
+  #        0.30                10.8 %               0.317   1.000
+  #        0.40                10.8 %               0.317   1.000
+  #
+  # 0.20 is where the curve flattens: above it the solver draws positions
+  # uniformly and simply does not land on another part more often, so a larger
+  # threshold buys nothing. It is also where the median overlap becomes real
+  # occlusion (a third of the smaller part) rather than a shaved corner.
+  max_overlap_iou: 0.20
+  # 0.002, not the old 0.004. The jig is the in-distribution half of the set
+  # and the reference photos show cells sitting in a pocket row separated by a
+  # thin printed wall, not by 11 mm of plate: with 4 mm of clearance and a 3 mm
+  # wall, adjacent cells sat 11 mm apart, 60% of a cell diameter. 2 mm is the
+  # tightest value that is still safe, not an arbitrary reduction - a
+  # 81.7 x 180 mm power bank turned by the 1.0 degree jig_jitter_deg grows its
+  # AABB by 1.57 mm on the short axis, so at 1.5 mm of clearance a jittered
+  # part would push through its own pocket wall. Adjacent cells are now 7 mm
+  # apart. The wall itself is left at 3 mm: it is what keeps each pocket's
+  # boolean cutter separate, and at 0 the recesses merge into one trough.
+  jig_clearance: 0.002      # metres of pocket margin around each part
   jig_jitter_deg: 1.0       # smaller than scatter: must stay inside the pocket
   jig_depth: [0.006, 0.012]
   jig_wall: 0.003           # metres of plate material left between pockets
@@ -88,17 +123,40 @@ filter:
   # 0 disables the check, which is the dataclass default, so a config written
   # before this filter existed behaves exactly as it did.
   max_aspect: 4.0
-  # INERT under the current pipeline - it is a threshold with nothing to
-  # threshold, kept because the machinery around it is correct and would start
-  # working the moment overlapping layouts exist. Two independent reasons:
-  #  * a visible_fraction is only computed when generate3d is run with
-  #    --visibility, and both layout solvers (layout.plan and layout.plan_jig)
-  #    guarantee exact AABB non-overlap, so no LABELLED instance can occlude
-  #    another. The only occluders in a scene - jig plate, PCB, backdrop -
-  #    carry pass_index 0. Batteries therefore always measure exactly 1.0.
-  #  * annotate.merge_group_boxes hard-codes visible_fraction = None on every
-  #    merged box, and every `cartridge` is merged, so this never applies to a
-  #    cartridge at all.
+  # Now MEASURABLE, and still never the binding filter. Keeping it, and
+  # keeping it at 0.25, is a decision backed by the measurement below rather
+  # than an oversight.
+  #
+  # Until layout.max_overlap_iou existed this was a threshold with nothing to
+  # threshold: both solvers guaranteed exact AABB non-overlap, so no LABELLED
+  # instance could occlude another and every one measured exactly 1.0. With
+  # overlap at 0.20, measured over 90 scatter scenes run with --visibility
+  # (698 kept annotations, 557 of them non-merged and therefore measured):
+  #
+  #   visible_fraction < 1.00   11 boxes (1.97%)
+  #                    < 0.95    8 boxes (1.44%)
+  #                    < 0.90    5 boxes (0.90%)
+  #                    < 0.75    1 box   (0.18%)
+  #                    < 0.50    0
+  #                    < 0.25    0        <- the threshold
+  #
+  # The deepest occlusion in the corpus leaves 74.8% of the part visible,
+  # three times this threshold, so it would drop nothing. That is not because
+  # the overlap is timid - it is because anything occluded hard enough to
+  # approach 0.25 has already lost most of its silhouette and is caught by
+  # `min_px` first (30 such drops in the same run), or is hidden completely and
+  # never appears in np.unique at all. 0.25 stays as the backstop for the case
+  # where a part is mostly hidden but still large on screen.
+  #
+  # annotate.merge_group_boxes still hard-codes visible_fraction = None on
+  # every merged box, so this cannot apply to a `cartridge` (141 of the 698
+  # boxes above). DELIBERATELY NOT FIXED: the members' fractions are over their
+  # own isolated silhouettes and do not compose into the group's - shell top
+  # and shell bottom occlude each other - so a correct group fraction needs a
+  # further isolated render per merge group, on a code path (--visibility) that
+  # production runs never enable because it costs one extra index render per
+  # instance. It would buy a number that the measurement above says would not
+  # change a single label.
   min_visibility: 0.25
   drop_truncated: false
 
@@ -156,6 +214,15 @@ param_space:
   # left 20% of boxes below 0.5 best-IoU. generate3d prints an anchor check at
   # the end of every run.
   zoom: [0.75, 1.60]
+
+  # Probability that a scatter scene may place parts touching or occluding,
+  # up to layout.max_overlap_iou. Per-scene rather than global so the set keeps
+  # a majority of unambiguous, fully-visible examples alongside the crowded
+  # ones - a detector that has only ever seen crowded trays has no clean
+  # silhouette to learn from. This one is a judgement, not a measurement: the
+  # solver's own hit rate already keeps real overlap to about a tenth of
+  # scatter scenes, so a low probability here would make it vanishingly rare.
+  overlap_prob: 0.5
 
 # Which materials each CAD role may draw from.
 role_materials:

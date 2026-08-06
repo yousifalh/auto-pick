@@ -25,7 +25,8 @@
     "max_tries": 500,
     "jitter_deg": 2.0,
     "allow_90s": true,
-    "jig_clearance": 0.004,
+    "max_overlap_iou": 0.2,
+    "jig_clearance": 0.002,
     "jig_jitter_deg": 1.0,
     "jig_depth": [
       0.006,
@@ -85,7 +86,8 @@
     "zoom": [
       0.75,
       1.6
-    ]
+    ],
+    "overlap_prob": 0.5
   },
   "role_materials": {
     "case": [

@@ -247,13 +247,21 @@ class AssetLibrary:
 
 def place_item(item: Item, placement, rng: random.Random):
     """
-    Apply a Placement: rotate about Z, move into position, sit on z=0.
+    Apply a Placement: rotate about Z, move into position, sit on
+    `placement.z` (0 for every non-overlapping placement).
 
     Composes one world matrix and applies it to every member, for the same two
     reasons lay_flat does - `o.rotation_euler.z += rot` is a no-op under the
     importer's QUATERNION rotation mode, which silently threw away every
     rotation layout.py asked for and left the dataset with zero rotation
     diversity. The gate asserts two rot_deg values give two different bboxes.
+
+    The lift is applied AFTER `drop_to_floor`, so it is measured from the
+    part's own lowest point rather than from wherever the import left it.
+    `layout.plan` sets it to the top of whatever the item overlaps: two parts
+    sharing ground area cannot both rest on the floor without occupying the
+    same space, and a render of interpenetrating solids is not a render of one
+    part lying across another.
 
     rng is unused; it is kept for signature stability with the callers and with
     the other placement helpers.
@@ -268,3 +276,9 @@ def place_item(item: Item, placement, rng: random.Random):
         o.matrix_world = M @ o.matrix_world
     bpy.context.view_layer.update()
     drop_to_floor(item.objects)
+
+    lift = float(getattr(placement, "z", 0.0) or 0.0)
+    if lift:
+        for o in item.objects:
+            o.location.z += lift
+        bpy.context.view_layer.update()

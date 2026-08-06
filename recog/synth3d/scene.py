@@ -100,6 +100,12 @@ def sample_params(rng: random.Random, cfg, overrides: dict = None) -> dict:
     if "zoom" in ps:
         lo, hi = ps["zoom"]
         p["zoom"] = rng.uniform(lo, hi)
+    # Whether THIS scene may place parts touching or occluding each other, at
+    # up to `layout.max_overlap_iou`. Per-scene rather than global so the set
+    # keeps a majority of unambiguous, fully-visible examples alongside the
+    # crowded ones the real trays show.
+    if "overlap_prob" in ps:
+        p["allow_overlap"] = rng.random() < float(ps["overlap_prob"])
     if overrides:
         p.update({k: v for k, v in overrides.items() if v is not None})
     return p
@@ -185,7 +191,20 @@ def build(params: dict, rng: random.Random, library: A.AssetLibrary,
         placements, pockets = L.plan_jig([it.footprint for it in items],
                                          cfg.layout, rng)
     else:
-        placements = L.plan([it.footprint for it in items], cfg.layout, rng)
+        # `allow_overlap` is drawn per scene by sample_params; a config with no
+        # `param_space.overlap_prob` never sets it, and then the configured
+        # threshold simply applies to every scene. Either way the default
+        # `max_overlap_iou = 0` keeps the old exact non-overlap.
+        max_ov = (cfg.layout.max_overlap_iou
+                  if params.get("allow_overlap", True) else 0.0)
+        # Heights are what stop an overlap being an interpenetration - see
+        # layout.plan. Measured here rather than cached on the Item because the
+        # parts are still at their template pose and lay_flat has already run,
+        # so the bbox is exactly the resting height.
+        heights = [(lambda b: b[1].z - b[0].z)(A.group_bbox(it.objects))
+                   for it in items]
+        placements = L.plan([it.footprint for it in items], cfg.layout, rng,
+                            heights=heights, max_overlap_iou=max_ov)
 
     kept: List[A.Item] = []
     for item, plc in zip(items, placements):

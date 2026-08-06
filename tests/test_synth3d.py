@@ -229,6 +229,32 @@ def test_every_backdrop_carries_its_own_albedo_range():
         assert all(h >= l for l, h in zip(lo, hi)), name
 
 
+def test_overlap_is_configured_to_actually_happen():
+    """A `max_overlap_iou` of 0 or an `overlap_prob` of 0 leaves the whole
+    feature inert while looking live. Without real overlap, `min_visibility`
+    still has nothing to threshold and the synthetic validation metric still
+    saturates at mAP 1.0."""
+    cfg = C.load_config()
+    assert cfg.layout.max_overlap_iou > 0.0
+    assert 0.0 < cfg.param_space["overlap_prob"] <= 1.0
+    # Not so large that clean, unambiguous examples become the minority.
+    assert cfg.param_space["overlap_prob"] <= 0.75
+
+
+def test_jig_clearance_leaves_room_for_the_jitter_it_allows():
+    """jig_jitter_deg turns a part inside its own pocket; too little clearance
+    and the part pushes through the pocket wall it is supposed to sit in. The
+    binding case is the longest asset on its short axis."""
+    cfg = C.load_config().layout
+    fps = _real_footprints()
+    theta = math.radians(cfg.jig_jitter_deg)
+    worst = max(max(w, h) * math.sin(theta) / 2.0 for w, h in fps)
+    assert cfg.jig_clearance >= worst, (
+        f"jig_clearance {cfg.jig_clearance * 1000:.2f}mm is under the "
+        f"{worst * 1000:.2f}mm a {cfg.jig_jitter_deg} degree turn adds to the "
+        f"largest part's AABB")
+
+
 def test_zoom_is_sampled_per_scene_and_actually_varies_scale():
     """Without this the training set is effectively single-scale. MEASURED on
     the previous 1000-image set: battery sqrt(area) p05 50.9 / p95 56.2, a
@@ -402,20 +428,104 @@ def _overlap(a, b):
     return not (a[2] <= b[0] or b[2] <= a[0] or a[3] <= b[1] or b[3] <= a[1])
 
 
-def test_scatter_never_overlaps_over_300_scenes():
+def _padded_half(f, plc, cfg):
+    ex, ey = L.footprint_after_rotation(f[0], f[1], plc.quarter)
+    return ex / 2 + cfg.pad / 2, ey / 2 + cfg.pad / 2
+
+
+def test_scatter_never_overlaps_when_overlap_is_disabled_over_300_scenes():
+    """max_overlap_iou = 0 is the dataclass default and must reproduce the
+    exact non-overlap this solver guaranteed for its whole life - every config
+    written before overlap existed depends on it."""
     cfg = C.load_config().layout
     fps = _real_footprints()
     total = 0
     for seed in range(300):
         rng = random.Random(seed)
         chosen = [rng.choice(fps) for _ in range(rng.randint(1, 4))]
-        plcs = L.plan(chosen, cfg, rng)
+        plcs = L.plan(chosen, cfg, rng, max_overlap_iou=0.0)
         boxes = [_aabb(f, p, cfg) for f, p in zip(chosen, plcs) if p is not None]
         total += len(boxes)
         for i in range(len(boxes)):
             for j in range(i + 1, len(boxes)):
                 assert not _overlap(boxes[i], boxes[j]), f"seed {seed}"
+        assert all(p.z == 0.0 for p in plcs if p is not None), f"seed {seed}"
     assert total > 500, f"only {total} items placed across 300 scenes"
+
+
+def test_disabled_overlap_is_the_same_layout_the_old_solver_produced():
+    """Not merely 'also non-overlapping': the same rng draws, hence the same
+    placements. A rewrite that consumed the rng differently would silently
+    change every scene in the corpus while still passing the test above."""
+    cfg = C.load_config().layout
+    fps = _real_footprints()
+    for seed in (0, 3, 11, 42):
+        a = [p.as_dict() if p else None
+             for p in L.plan(fps, cfg, random.Random(seed), max_overlap_iou=0.0)]
+        b = [p.as_dict() if p else None
+             for p in L.plan(fps, cfg, random.Random(seed), heights=[0.02] * len(fps),
+                             max_overlap_iou=0.0)]
+        assert a == b, f"seed {seed}: passing heights changed a disjoint layout"
+
+
+def test_scatter_overlap_is_bounded_by_the_configured_iou():
+    """Above 0 parts may touch and occlude, but never by more than asked."""
+    cfg = C.load_config().layout
+    fps = _real_footprints()
+    limit = 0.20
+    n_overlapping = 0
+    for seed in range(300):
+        rng = random.Random(seed)
+        chosen = [rng.choice(fps) for _ in range(rng.randint(2, 5))]
+        plcs = L.plan(chosen, cfg, rng, heights=[0.02] * len(chosen),
+                      max_overlap_iou=limit)
+        got = [(f, p) for f, p in zip(chosen, plcs) if p is not None]
+        for i in range(len(got)):
+            for j in range(i + 1, len(got)):
+                (fi, pi), (fj, pj) = got[i], got[j]
+                hxi, hyi = _padded_half(fi, pi, cfg)
+                hxj, hyj = _padded_half(fj, pj, cfg)
+                v = L.padded_iou(pi.x, pi.y, hxi, hyi, pj.x, pj.y, hxj, hyj)
+                assert v <= limit + 1e-12, f"seed {seed}: IoU {v:.4f} > {limit}"
+                n_overlapping += v > 0.0
+    assert n_overlapping > 0, (
+        "no pair overlapped at all across 300 scenes - the threshold is inert "
+        "and filter.min_visibility would still have nothing to threshold")
+
+
+def test_an_overlapping_part_is_lifted_onto_the_one_it_overlaps():
+    """Two solids resting on the same floor and sharing ground area occupy the
+    same space. Without the lift a render shows interpenetration rather than
+    one part lying across another, and no mask- or box-level check can see it.
+    """
+    cfg = C.load_config().layout
+    fps = _real_footprints()
+    seen_lift = False
+    for seed in range(300):
+        rng = random.Random(seed)
+        chosen = [rng.choice(fps) for _ in range(rng.randint(2, 5))]
+        heights = [0.02 + 0.001 * k for k in range(len(chosen))]
+        plcs = L.plan(chosen, cfg, rng, heights=heights, max_overlap_iou=0.20)
+        got = [(k, f, p) for k, (f, p) in enumerate(zip(chosen, plcs))
+               if p is not None]
+        for k, f, p in got:
+            hx, hy = _padded_half(f, p, cfg)
+            partners = [
+                (k2, f2, p2) for k2, f2, p2 in got
+                if k2 != k and L.padded_iou(
+                    p.x, p.y, hx, hy, p2.x, p2.y,
+                    *_padded_half(f2, p2, cfg)) > 0.0]
+            if not partners:
+                assert p.z == 0.0, f"seed {seed}: lifted with nothing under it"
+                continue
+            seen_lift = True
+            # It rests on something, and never below the floor.
+            assert p.z >= 0.0
+            # One of the two must be on top of the other, not both on the
+            # floor: at least one of every overlapping pair carries a lift.
+            assert p.z > 0.0 or any(p2.z > 0.0 for _, _, p2 in partners), (
+                f"seed {seed}: an overlapping pair both rest on z = 0")
+    assert seen_lift, "no overlap occurred, so the lift was never exercised"
 
 
 def test_scatter_stays_inside_the_area():

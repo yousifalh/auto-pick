@@ -157,9 +157,15 @@ def merge_group_boxes(anns: List[dict], groups: Dict[int, str],
             "truncated": any(m["truncated"] for m in members),
             # Deliberately None, not a computed value: the members' fractions
             # are over their own isolated silhouettes and do not compose into
-            # the group's. Consequence, documented in configs/synth3d.yaml:
+            # the group's - a shell top and a shell bottom occlude each other,
+            # so summing them double-counts and biases the ratio low. A correct
+            # group fraction needs a further isolated render of the whole
+            # group. Consequence, documented in configs/synth3d.yaml:
             # filter.min_visibility never applies to a merged box, which is
-            # every `cartridge`.
+            # every `cartridge`. Measured over 90 overlapping scatter scenes,
+            # the deepest occlusion anywhere left 74.8% of a part visible
+            # against a 0.25 threshold, so computing it would not have changed
+            # a single label.
             "visible_fraction": None,
             "asset": members[0].get("asset"),
             "variant": members[0].get("variant"),
