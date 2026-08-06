@@ -67,6 +67,20 @@ model:
 dataset:
   img_dir: recog/dataset3d/images
   ann_dir: recog/dataset3d/annotations
+  # Per-scene sidecars from recog/generate3d.py. Not read for training data -
+  # only to pick the HARD validation subset that checkpoint selection runs on.
+  # The full-set synthetic metric saturates at mAP 1.0 within 0-5 epochs and
+  # has picked a worse checkpoint three times running (best.pt 0.6858 against
+  # last.pt 0.7296 on the six real photos). The sidecars already record every
+  # drawn parameter, so the hard scenes - darkest exposure, highest zoom
+  # (smallest parts), parts occluding each other - cost nothing to identify.
+  # Leave this unset and training falls back to the saturating full-set
+  # metric, with a warning.
+  meta_dir: recog/dataset3d/meta
+  # Fraction of the validation split to select on. At train_val_split 0.85
+  # over 1000 images that is 150 val scenes, so 0.25 gives ~37 - small, but a
+  # strict intersection of the three hardest conditions would give about 1.
+  hard_val_fraction: 0.25
   class_map:
     battery: 1
     cartridge: 2
