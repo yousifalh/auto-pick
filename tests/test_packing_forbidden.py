@@ -56,6 +56,21 @@ def test_next_free_x_never_moves_left_of_x_from():
     assert _next_free_x(m, 7.0, 0.0, 4.0, 3.0, CELL, 20.0, 1e-6) == 7.0
 
 
+def test_next_free_x_negative_x_from_never_returns_negative_x():
+    """A negative x_from must not wrap `blocked` via negative indexing.
+
+    `c_start = int(x_from / mm_per_cell)` without a `max(0, ...)` clamp goes
+    negative for a negative x_from, and Python silently wraps `blocked[c]`
+    from the end of the array instead of raising — which can return a
+    negative x. Not reachable today (shelf cursors are non-negative), but
+    Task 2 wires this to a running shelf cursor, so pin the contract now.
+    """
+    m = _mask(10, 20)
+    x = _next_free_x(m, -5.0, 0.0, 4.0, 3.0, CELL, 20.0, 1e-6)
+    assert x is not None
+    assert x >= 0.0
+
+
 def test_next_free_x_result_actually_clears_the_mask():
     """Whatever it returns must satisfy _overlaps_forbidden == False and x >= x_from."""
     from common.packing import _overlaps_forbidden
@@ -89,7 +104,8 @@ def test_next_free_x_ieee754_truncation_regression():
     x_from = 3 * cell
 
     x = _next_free_x(m, x_from, 0.0, w, 3.0, cell, 20.0, 1e-6)
-    # Should find a clear position (columns 3, 4, 5 are clear).
+    # Should find a clear position: the function returns 2.8, i.e. column 4
+    # (spanning 4..6), not columns 3/4/5 as the width might suggest.
     assert x is not None, "Should find a valid position"
     # Must actually clear the mask.
     assert not _overlaps_forbidden(m, x, 0.0, w, 3.0, cell), \
@@ -104,22 +120,39 @@ def test_next_free_x_non_binary_cell_sizes_property(mm_per_cell):
     Binary-exact cell sizes (like 1.0, 1.5) hide rounding bugs in the
     float-to-column conversion. Non-binary sizes (0.7, 0.3, 1/3) expose them.
     Keep fractional x_from and all invariant assertions.
+
+    Dimensions are scaled by mm_per_cell (not absolute) so the geometry
+    stays coherent as the cell size varies: a 30-column, 30 mm-wide mask
+    with an absolute w=5.0 needs 17 columns at mm_per_cell=0.3, and
+    x_from up to 25.0 lands past column 83 of a 30-column mask, so the
+    scan finds nothing and the body below never runs. Scaling keeps the
+    item/mask/x_from relationship — and thus the hit rate — constant
+    across cell sizes.
     """
     from common.packing import _overlaps_forbidden
 
     rng = np.random.default_rng(42)
-    strip_width = 30.0
-    w = 5.0
+    strip_width = 40 * mm_per_cell
+    w = 2.5 * mm_per_cell
+    h = 2.0 * mm_per_cell
+    hits = 0
 
     for _ in range(200):
-        m = (rng.random((12, 30)) < 0.15).astype(np.uint8)
-        x_from = rng.random() * 25.0
-        x = _next_free_x(m, x_from, 0.0, w, 4.0, mm_per_cell, strip_width, 1e-6)
+        m = (rng.random((12, 40)) < 0.15).astype(np.uint8)
+        x_from = rng.random() * 10 * mm_per_cell
+        x = _next_free_x(m, x_from, 0.0, w, h, mm_per_cell, strip_width, 1e-6)
         if x is not None:
+            hits += 1
             # All three properties must hold.
-            assert not _overlaps_forbidden(m, x, 0.0, w, 4.0, mm_per_cell), \
+            assert not _overlaps_forbidden(m, x, 0.0, w, h, mm_per_cell), \
                 f"mm_per_cell={mm_per_cell}: x={x} must not overlap"
             assert x >= x_from - 1e-6, \
                 f"mm_per_cell={mm_per_cell}: x={x} must be >= x_from={x_from}"
             assert x + w <= strip_width + 1e-6, \
                 f"mm_per_cell={mm_per_cell}: x={x} must fit in strip"
+
+    # Anti-vacuity guard: without this, a future dimension tweak could
+    # silently re-hollow the test (drive hits to 0) and nothing would
+    # complain, since `if x is not None:` bodies that never run still
+    # make the test pass.
+    assert hits > 20, f"test is vacuous: only {hits}/200 iterations exercised the assertions"

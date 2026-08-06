@@ -110,6 +110,12 @@ def _next_free_x(
     Sub-cell-precision positions may be skipped; the mask is quantised
     at mm_per_cell anyway, so sub-cell precision is not information it carries.
     """
+    if x_from + w > strip_width + tol:
+        # Even the leftmost candidate can't fit. x only increases from here
+        # on, so every later candidate would fail too — bail before scanning
+        # the whole mask to reach a foregone conclusion.
+        return None
+
     r1 = max(0, int(y / mm_per_cell))
     r2 = min(mask.shape[0], int(np.ceil((y + h) / mm_per_cell)))
     if r2 <= r1:
@@ -120,8 +126,15 @@ def _next_free_x(
     blocked = mask[r1:r2, :].any(axis=0)
 
     n_cols = max(1, int(np.ceil(w / mm_per_cell)))
-    # Start scanning at the first cell boundary at or after x_from.
-    c_start = int(np.ceil(x_from / mm_per_cell - tol))
+    # Start scanning at the first cell boundary at or after x_from. tol is a
+    # millimetre tolerance; convert it to cell space (tol / mm_per_cell)
+    # before subtracting from a value already in cells — mixing the units
+    # here let the effective slack scale with mm_per_cell, which breached
+    # the x >= x_from - tol contract for mm_per_cell > 1. Clamp to 0: a
+    # negative x_from (not reachable today, but Task 2 wires this to a
+    # running shelf cursor) must not turn into a negative index below,
+    # which Python would silently wrap instead of raising.
+    c_start = max(0, int(np.ceil(x_from / mm_per_cell - tol / mm_per_cell)))
 
     # Scan for the first run of n_cols consecutive clear columns.
     run = 0
@@ -130,14 +143,15 @@ def _next_free_x(
         if run >= n_cols:
             # Found n_cols clear columns ending at column c.
             x = (c - n_cols + 1) * mm_per_cell
-            # Validate with _overlaps_forbidden: integer column arithmetic in the
-            # scan may differ from float-based indexing in the predicate due to
-            # IEEE-754 rounding. Multiplying c*mm_per_cell then dividing by
-            # mm_per_cell can truncate to an adjacent column. Check that x
-            # actually clears before returning. If the predicate check fails due
-            # to truncation, continue scanning for the next run rather than
-            # returning here. This keeps the overall algorithm O(columns) because
-            # truncation is rare and we validate once per run found.
+            # Validate with _overlaps_forbidden: integer column arithmetic in
+            # the scan can disagree with the float-based indexing the
+            # predicate re-derives, due to IEEE-754 rounding. Concrete case:
+            # cell=0.7, c=3 -> x=2.0999999999999996; the predicate computes
+            # x/mm_per_cell = 2.9999999999999996, and int() truncates that to
+            # 2, one column short of the run just cleared. Validating catches
+            # it; on the rare truncation the loop just continues to the next
+            # run, so this is at most a second validation call, not a
+            # per-candidate probe loop.
             if x + w <= strip_width + tol and not _overlaps_forbidden(
                 mask, x, y, w, h, mm_per_cell
             ):
