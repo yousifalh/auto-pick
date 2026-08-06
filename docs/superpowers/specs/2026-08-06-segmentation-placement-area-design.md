@@ -385,14 +385,27 @@ no interior floor. The proxy is coplanar with the fake board, occupying the
 complement of the module footprint within the shell's top face — the same trick
 `build_pcb` already uses, and equally valid under a bird's-eye camera.
 
-**A populated-bay layout mode is required.** The deployed system fills cartridges
-one cell at a time, so the camera sees partly-filled bays for most of every run.
-The generator currently cannot produce one: `layout.plan` and `layout.plan_jig`
-both guarantee exact AABB non-overlap, so a cell can never sit on a cartridge. A
-segmenter trained only on empty bays would first meet a partly-filled one in
-deployment, during the operation it exists to support. A layout mode that places
-0–N cells onto the bay proxy, at the pitch the packer would choose, is therefore
-part of this design rather than an optional enhancement.
+**A populated-bay layout mode is required — but the machinery already exists.**
+The deployed system fills cartridges one cell at a time, so the camera sees
+partly-filled bays for most of every run, and a segmenter trained only on empty
+bays would first meet a partly-filled one during the operation it exists to
+support.
+
+An earlier draft claimed `layout.plan` guarantees exact AABB non-overlap so a
+cell can never sit on a cartridge. That was read from
+[`isolated_areas`'s docstring](../../../recog/synth3d/render.py#L352-L365),
+which is stale. `LayoutCfg.max_overlap_iou` is live, `configs/synth3d.yaml` sets
+it to **0.20**, and [`scene.py:198-207`](../../../recog/synth3d/scene.py#L198-L207)
+passes it to `plan()` together with per-item `heights`, so overlapping parts are
+lifted onto one another via `Placement.z`. Cells already land on cartridges
+today, and partly-occluded bays already occur — incidentally.
+
+What is missing is not the capability but the *control*. Random scatter lands a
+cell anywhere on a shell at an arbitrary angle; the deployed system produces
+cells seated in the bay, axis-aligned, at the pitch the packer chose. The new
+mode is therefore a targeted placement built on the existing lift machinery —
+sample 0–N of the packer's own placements for that cartridge and seat cells
+there — not new overlap infrastructure.
 
 ### 5.4 One index pass, unchanged
 
@@ -409,11 +422,11 @@ along with the amodal requirement that motivated it.
 
 One consequence must be recorded rather than inherited.
 [`isolated_areas`'s docstring](../../../recog/synth3d/render.py#L352-L365)
-states that `--visibility` currently yields no signal because nothing labelled
-can occlude anything labelled. Both §5.3's populated bays and §5.5's obstructions
-break that premise — cells sit on cartridges, adhesive sits on cells.
-`filter.min_visibility` becomes meaningful for the first time, and that ruling
-needs re-deriving rather than carrying forward.
+still states that `--visibility` yields no signal because nothing labelled can
+occlude anything labelled. That has not been true since `max_overlap_iou` went
+live at 0.20 (§5.3); the docstring is stale and should be corrected as part of
+this work, since a future reader will otherwise re-derive a conclusion from it
+as this spec's earlier draft did.
 
 **The existing filters must not apply to `placement_area`.** This follows
 directly from ruling 4 and is easy to miss.
