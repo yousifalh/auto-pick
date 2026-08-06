@@ -84,6 +84,52 @@ def _overlaps_forbidden(
     return bool(mask[r1:r2, c1:c2].any())
 
 
+def _next_free_x(
+    mask: np.ndarray,
+    x_from: float,
+    y: float,
+    w: float,
+    h: float,
+    mm_per_cell: float,
+    strip_width: float,
+    tol: float,
+) -> Optional[float]:
+    """Leftmost ``x >= x_from`` where a ``w x h`` footprint clears ``mask``.
+
+    Returns ``None`` when no such position fits inside ``strip_width``.
+
+    This is what lets a shelf survive an obstacle. The previous
+    implementation abandoned the whole shelf as soon as the cursor
+    position overlapped a forbidden cell, which FDR §6.3.1 measured as
+    23.0 -> 3.2 cells placed at 2.5% coverage — worse than not being
+    obstacle-aware at all.
+
+    The returned x is snapped to a cell boundary. Snapping can only move
+    the item right, never left, so the result is conservative: it never
+    reports a position that overlaps.
+    """
+    r1 = max(0, int(y / mm_per_cell))
+    r2 = min(mask.shape[0], int(np.ceil((y + h) / mm_per_cell)))
+    if r2 <= r1:
+        return x_from if x_from + w <= strip_width + tol else None
+
+    # Collapse the row band: a column is blocked if any cell in it is.
+    blocked = mask[r1:r2, :].any(axis=0)
+
+    n_cols = max(1, int(np.ceil(w / mm_per_cell)))
+    c_start = max(0, int(x_from / mm_per_cell))
+
+    # Scan for the first run of n_cols consecutive clear columns.
+    run = 0
+    for c in range(c_start, blocked.shape[0]):
+        run = 0 if blocked[c] else run + 1
+        if run >= n_cols:
+            x = (c - n_cols + 1) * mm_per_cell
+            x = max(x, x_from)
+            return x if x + w <= strip_width + tol else None
+    return None
+
+
 # --------------------------------------------------------- FFDH ----
 
 # A shelf is (y_bottom, shelf_height, x_cursor).
