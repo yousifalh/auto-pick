@@ -219,6 +219,32 @@ def test_placements_do_not_overlap_each_other():
             assert overlap_x <= 1e-6 or overlap_y <= 1e-6, f"{a} overlaps {b}"
 
 
+def test_new_shelf_opens_to_the_right_of_a_left_edge_obstacle():
+    """A block at the left edge must not veto the whole new shelf."""
+    # 100 x 20 strip. Rows 0..9 (the first shelf band) blocked at x=0..30.
+    mask = _mask(20, 100, [(0, 10, 0, 30)])
+    items = [Item(id=0, width=20.0, height=10.0)]
+    res = first_fit_decreasing(
+        items, 100.0, 20.0, allow_rotation=False,
+        forbidden_mask=mask, mm_per_cell=CELL,
+    )
+    assert res.count == 1
+    assert res.placements[0].x == 30.0
+    assert res.placements[0].y == 0.0
+
+
+def test_new_shelf_falls_through_when_the_whole_band_is_blocked():
+    """If no x on the band is clear, the item is genuinely unplaceable."""
+    mask = _mask(20, 100, [(0, 20, 0, 100)])
+    items = [Item(id=0, width=20.0, height=10.0)]
+    res = first_fit_decreasing(
+        items, 100.0, 20.0, allow_rotation=False,
+        forbidden_mask=mask, mm_per_cell=CELL,
+    )
+    assert res.count == 0
+    assert res.unplaced_ids == [0]
+
+
 def test_unmasked_behaviour_is_unchanged():
     """With no mask the fix must be inert."""
     items = [Item(id=i, width=18.5, height=65.0) for i in range(12)]

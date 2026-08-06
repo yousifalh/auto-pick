@@ -264,15 +264,28 @@ def _try_place_item(
     # (2) Open a new shelf above the last one.
     last_y = shelves[-1][0] + shelves[-1][1] if shelves else 0.0
     for (w, h, rot) in orientations:
-        if w > strip_width + tol:
-            continue
         if last_y + h > strip_height + tol:
             continue
-        if forbidden_mask is not None and _overlaps_forbidden(
-            forbidden_mask, 0.0, last_y, w, h, mm_per_cell,
-        ):
+        if w > strip_width + tol:
             continue
-        shelves.append((last_y, h, w))
-        return PackedItem(item=item, x=0.0, y=last_y, rotated=rot)
+
+        x = 0.0
+        if forbidden_mask is not None and _overlaps_forbidden(
+            forbidden_mask, x, last_y, w, h, mm_per_cell,
+        ):
+            nxt = _next_free_x(
+                forbidden_mask, x, last_y, w, h,
+                mm_per_cell, strip_width, tol,
+            )
+            if nxt is None:
+                continue
+            x = nxt
+
+        # The new shelf's cursor advances to x + w, not w: the region we
+        # skipped over to clear the obstacle is deliberately given up.
+        # Reclaiming it would need a per-shelf free-list, which this
+        # design explicitly avoids. Consistent with branch (1) above.
+        shelves.append((last_y, h, x + w))
+        return PackedItem(item=item, x=x, y=last_y, rotated=rot)
 
     return None
