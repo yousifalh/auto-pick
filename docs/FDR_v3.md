@@ -62,11 +62,14 @@ precision and 41–52 % recall — its failure mode is exclusively
 recall, not noise, which re-frames its operational role as a
 high-precision safety net rather than a noisy fallback (§10.6,
 Figure 8). (3) The forbidden-mask FFDH variant claimed as the
-project's principal algorithmic contribution is, on its own
-empirical benchmark in §6.3.1, *worse* than a naive
-rejection-sampling baseline at non-zero forbidden coverage; the
-limitation is rooted in the shelf-cursor logic and the proposed
-fix is recorded as priority-2 future work (§13.2).
+project's principal algorithmic contribution was, on its own
+empirical benchmark in §6.3.1, initially *worse* than a naive
+rejection-sampling baseline at every non-zero forbidden coverage.
+The limitation was rooted in the shelf-cursor logic, which abandoned
+a whole shelf on contact with an obstacle; the packer now steps past
+the obstacle and retries, and the re-run benchmark reverses the sign
+of the gap at every coverage level (3.17 → 14.28 mean cells placed
+at 2.5 % coverage against a 10.57 baseline, §6.3.1).
 
 Status against the success criteria. Four of six numbered project
 objectives are fully met (centroid error ≤ 2 px, queue rebuild ≤ 8 ms,
@@ -587,7 +590,8 @@ cell flip to FORBIDDEN.
 The forbidden-mask extension is the project's principal algorithmic
 contribution. The algorithm consumes a binary occupancy grid alongside
 the strip dimensions and items list and produces the same `PackResult`
-as standard FFDH. Pseudocode (matching `plan/bin_packing.py`):
+as standard FFDH. Pseudocode (matching `common/packing.py`, re-exported
+by `plan/bin_packing.py`):
 
 ```
 function FFDH-Forbidden(items, strip_w, strip_h, mask, mm_per_cell):
@@ -596,29 +600,44 @@ function FFDH-Forbidden(items, strip_w, strip_h, mask, mm_per_cell):
     placements <- []
     for item in items:
         placed <- false
-        for orient in {(w, h), (h, w)}:            # if rotation allowed
-            for shelf in shelves:
-                if orient.w fits within strip_w - shelf.x_cursor and
-                   orient.h <= shelf.height and
-                   not Overlaps(mask, shelf.x_cursor, shelf.y, orient):
-                    place item at (shelf.x_cursor, shelf.y)
-                    shelf.x_cursor += orient.w
-                    placed <- true; break
+        for shelf in shelves:                      # (1) first fit
+            for orient in {(w, h), (h, w)}:        # if rotation allowed
+                if orient.h > shelf.height: continue
+                if orient.w > strip_w - shelf.x_cursor: continue
+                x <- shelf.x_cursor
+                if Overlaps(mask, x, shelf.y, orient):
+                    x <- NextFreeX(mask, x, shelf.y, orient, strip_w)
+                    if x is NONE: continue         # this shelf is exhausted
+                place item at (x, shelf.y)
+                shelf.x_cursor <- x + orient.w
+                placed <- true; break
             if placed: break
-            new_y <- last_shelf_top
-            if orient.w <= strip_w and new_y + orient.h <= strip_h and
-               not Overlaps(mask, 0, new_y, orient):
-                add new shelf (new_y, orient.h, orient.w)
-                place item at (0, new_y); placed <- true; break
+        if placed: continue
+        new_y <- last_shelf_top                    # (2) open a new shelf
+        for orient in {(w, h), (h, w)}:
+            if new_y + orient.h > strip_h: continue
+            if orient.w > strip_w: continue
+            x <- 0
+            if Overlaps(mask, x, new_y, orient):
+                x <- NextFreeX(mask, x, new_y, orient, strip_w)
+                if x is NONE: continue
+            add shelf (new_y, orient.h, x + orient.w)
+            place item at (x, new_y); placed <- true; break
         if not placed: unplaced.append(item.id)
     return placements, unplaced
 ```
 
 `Overlaps(mask, x, y, orient)` is an O(cells-in-bbox) rasterised
 test against the occupancy grid (`_overlaps_forbidden` in source).
-Total runtime remains O(n log n) for the sort plus O(n × s × m) for
-the placement loop, where *s* is the (typically small) number of open
-shelves and *m* is the cost of one mask check.
+`NextFreeX` returns the leftmost cell-aligned x ≥ the current cursor
+at which the footprint clears the mask, or NONE when no such x fits
+inside the strip; it collapses the item's row band to a per-column
+blocked vector and scans for the first run of clear columns, at
+O(rows-in-band × cols) for the collapse plus O(cols) for the scan
+(`_next_free_x` in source). Total runtime remains O(n log n) for the
+sort plus O(n × s × m) for the placement loop, where *s* is the
+(typically small) number of open shelves and *m* is the cost of one
+mask check or cursor advance.
 
 Worst-case bound. Standard FFDH guarantees ≤ 1.7 × OPT (Coffman,
 Garey & Johnson, 1980). The forbidden-mask extension cannot beat
@@ -627,61 +646,145 @@ it. A conservative upper bound: if the mask blocks an
 area-fraction *f* of the strip, the achievable density is at most
 (1 − *f*) of the unconstrained optimum, with FFDH's 1.7 × ratio
 applied on top of this reduced ceiling. The empirical experiment
-below demonstrates that this bound is loose under the current
-shelf-cursor logic.
+below shows that this bound remains loose — the shelf discipline
+gives up horizontal space each time it steps over an obstacle — but
+that it is far less loose than the original shelf-cursor logic made
+it.
 
 Empirical evaluation. A direct head-to-head against a naive
 *rejection-sampling* baseline — which runs unmodified FFDH and then
 discards any placed item that overlaps the mask — was run on a
 200×150 mm strip with 40 candidate 18.5×65 mm items, 40 random masks
 per coverage level, masks drawn as small 2–6 cell rectangular blobs
-to mimic PCB obstructions:
+to mimic PCB obstructions. The benchmark was run twice: once against
+the original shelf-cursor implementation, and again after the fix
+described below.
 
-| Forbidden coverage | Forbidden-mask FFDH | Rejection-sampling FFDH | Δ        |
-|--------------------|--------------------:|------------------------:|---------:|
-| 0.0 %              | 23.0                | 23.0                    | 0.0      |
-| 2.5 %              | 3.2                 | 10.6                    | **−7.4** |
-| 5.0 %              | 1.2                 | 5.4                     | **−4.2** |
-| 10.0 %             | 0.1                 | 1.1                     | −1.0     |
-| 15.0 %             | 0.1                 | 0.3                     | −0.2     |
-| 25.0 %             | 0.0                 | 0.0                     | 0.0      |
+*Before the fix* (as first reported):
+
+| Forbidden coverage | Forbidden-mask FFDH | Rejection-sampling FFDH | Δ         |
+|--------------------|--------------------:|------------------------:|----------:|
+| 0.0 %              | 23.00               | 23.00                   | +0.00     |
+| 2.5 %              | 3.17                | 10.57                   | **−7.40** |
+| 5.0 %              | 1.15                | 5.38                    | **−4.22** |
+| 10.0 %             | 0.12                | 1.07                    | −0.95     |
+| 15.0 %             | 0.10                | 0.30                    | −0.20     |
+| 25.0 %             | 0.00                | 0.03                    | −0.03     |
+
+*After the fix* (current receipt):
+
+| Forbidden coverage | Forbidden-mask FFDH | Rejection-sampling FFDH | Δ         |
+|--------------------|--------------------:|------------------------:|----------:|
+| 0.0 %              | 23.00               | 23.00                   | +0.00     |
+| 2.5 %              | 14.28               | 10.95                   | **+3.33** |
+| 5.0 %              | 9.05                | 5.80                    | **+3.25** |
+| 10.0 %             | 2.60                | 1.12                    | +1.48     |
+| 15.0 %             | 0.57                | 0.40                    | +0.17     |
+| 25.0 %             | 0.03                | 0.00                    | +0.03     |
 
 (values are mean cells placed across 40 seeds; full receipt at
-`docs/receipts/forbidden_bench.csv`).
+`docs/receipts/forbidden_bench.csv`, regenerable with
+`scripts/forbidden_bench.py`).
 
-This is an honest negative finding revealed by the formalisation
-exercise. The forbidden-aware variant places fewer cells than
-the naive baseline at all non-zero coverages. Root cause: when the
-algorithm attempts to place an item at a shelf's `x_cursor` and the
-position overlaps a forbidden cell, the current implementation
-abandons the entire shelf for that item rather than advancing the
-cursor past the obstacle. The naive baseline, in contrast, packs
-greedily without obstacle awareness and post-filters — and
-post-filter survival is denser than pre-filter avoidance under the
-present shelf-cursor logic.
+The sign of Δ reverses at every non-zero coverage: the
+forbidden-aware variant now places *more* cells than the naive
+baseline everywhere, where previously it placed fewer everywhere. At
+the 2.5 % coverage that best represents real PCB obstruction the
+aware arm goes from 3.17 to 14.28 cells, a 4.5× improvement that
+also clears the 10.57-cell rejection-sampling baseline of the
+original run by +3.71. The 0 % row is unchanged at 23.00, confirming
+that the fix is inert when no mask is supplied.
 
-Proposed fix and operational impact. When `Overlaps(mask,
-x_cursor, …)` returns true, the algorithm should advance `x_cursor`
-to the right edge of the obstructing forbidden region and retry on
-the same shelf, rather than abandoning the shelf. This preserves
-the shelf-FFDH invariant (left-justified, height-sorted) while
-consuming horizontal space that the naive baseline gets only by
-post-filter accident. The fix requires changing the shelf-state
-representation to track a list of obstacles per shelf rather than a
-single cursor; this is recorded as a new priority-2 item in §13.2.
-On the project's actual cartridge geometry — where PCB obstructions
-typically occupy ≤ 5 % of the placement region — the present
-implementation is estimated to under-place by 4–7 cells per
-cartridge relative to a fixed version. The synthetic dataset's
-cartridges have effectively zero forbidden-cell coverage (the
-generator does not render PCB components inside cartridge interiors)
-so the production pipeline's measured success rate is unaffected by
-this finding on the current test set; the bug becomes operationally
-significant only on real factory imagery where PCB obstructions are
-non-trivial. The fact that the contribution is currently *worse*
-than the trivial baseline on the constrained case is the kind of
-finding that only emerges from rigorous empirical formalisation,
-and is exactly the value of writing a § 6.3.1 in the first place.
+Two caveats are recorded for the reader's judgement. First, the
+original generator script was never committed — only its output was
+— so the "after" run uses a *reconstruction*
+(`scripts/forbidden_bench.py`). Its mask parameters were recovered
+from the recorded output rather than assumed: the grid size is fixed
+exactly by the recorded `actual_cov` denominators, and the blob-size
+and blob-count parameters are the unique choice matching both the
+mean and the standard deviation of the recorded forbidden-cell
+counts at all five non-zero coverage levels — which incidentally
+establishes that the "2–6 cell" blobs of the original description
+were drawn from `integers(2, 6)`, i.e. sides of 2 to 5 cells, and
+that the blob count was sized off the largest such blob rather than
+the mean, so realised coverage runs at roughly 47 % of the nominal
+target in both runs alike. Second, the
+reconstruction does not reproduce the original random stream
+seed-for-seed, so the two tables above rest on different mask draws
+from the same distribution. The control for this is the
+rejection-sampling column, which the fix does not touch: it
+reproduces the original per-level means to within 1.1 standard
+errors at every coverage level (10.95 vs 10.57, 5.80 vs 5.38, 1.12
+vs 1.07, 0.40 vs 0.30, 0.00 vs 0.03). The comparison is therefore
+sound in distribution rather than paired. Within the "after" run the
+two arms see identical masks, so its Δ column is exact, and the
+result is insensitive to the choice of master seed — the 2.5 % aware
+mean ranges 14.28–15.40 across eight independent master seeds, with
+the committed seed the most conservative of the eight.
+
+The original measurement was an honest negative finding revealed by
+the formalisation exercise: the forbidden-aware variant placed fewer
+cells than the naive baseline at all non-zero coverages. Root cause:
+when the algorithm attempted to place an item at a shelf's
+`x_cursor` and the position overlapped a forbidden cell, the
+implementation abandoned the entire shelf for that item rather than
+advancing the cursor past the obstacle. The naive baseline, in
+contrast, packs greedily without obstacle awareness and
+post-filters — and post-filter survival was denser than pre-filter
+avoidance under the original shelf-cursor logic.
+
+Implemented fix and operational impact. The fix was applied to both
+placement branches of `_try_place_item`: when `Overlaps(mask, x, …)`
+returns true, the algorithm now advances the candidate x to the
+leftmost cell-aligned position at which the footprint clears the
+mask and retries on the same shelf, abandoning the shelf only when
+no such position fits inside the strip. This preserves the
+shelf-FFDH invariant (left-justified, height-sorted) while consuming
+horizontal space that the naive baseline gets only by post-filter
+accident.
+
+The implementation departs from what this section originally
+proposed. The proposal was to change the shelf-state representation
+to track a list of obstacles per shelf rather than a single cursor.
+That proved unnecessary: `_next_free_x` scans the mask on demand,
+collapsing the item's row band to a per-column blocked vector at the
+moment of placement, so the shelf tuple remains `(y, height,
+x_cursor)` and no consumer of the shelf state had to change. The
+skipped span between the old cursor and the new x is deliberately
+forfeited — reclaiming it would need the per-shelf free-list the
+original proposal implied, and the measured gain did not justify
+it.
+
+The measured delta is +11.11 cells at 2.5 % coverage (3.17 → 14.28)
+and +7.90 at 5.0 % (1.15 → 9.05), which brackets and exceeds the
+4–7 cells-per-cartridge gain this section originally estimated for
+the project's actual cartridge geometry, where PCB obstructions
+typically occupy ≤ 5 % of the placement region. The variant now
+beats the rejection-sampling baseline at every coverage level rather
+than losing to it at every level, so the contribution is a clean
+rather than a partial win. The synthetic dataset's cartridges have
+effectively zero forbidden-cell coverage (the generator does not
+render PCB components inside cartridge interiors), so the production
+pipeline's measured success rate on the current test set is
+unchanged by the fix — as the unchanged 0 % row confirms; the
+improvement becomes operationally significant only on real factory
+imagery where PCB obstructions are non-trivial, and on the
+pixel-precise obstruction masks that §13.2(5) would introduce. The
+cost is wall-time. Within the post-fix run the aware arm takes
+0.35 ms per pack at 2.5 % coverage and peaks at 1.2 ms at 15 %,
+against roughly 0.09 ms for the naive arm, because a blocked cursor
+now triggers a column scan instead of an immediate shelf
+abandonment — and because it does more work simply by placing more
+items. The peak remains comfortably inside the 8 ms O3 budget.
+Absolute timings are not comparable across the two runs, which were
+taken on different machines.
+
+The fact that the contribution was, on first measurement, *worse*
+than the trivial baseline on the constrained case — and that the
+gap was closed only because the measurement existed to expose it —
+is the kind of finding that only emerges from rigorous empirical
+formalisation, and is exactly the value of writing a § 6.3.1 in the
+first place.
 
 The benefit of `allow_rotation=True` was quantified by ablation across
 four representative strip sizes, 40 seeds each, on a 70:30 mix of
@@ -1275,15 +1378,18 @@ preventing accidental mutation of perceptual state. (2) A green-channel
 placement-area extractor with per-cell forbidden-mask output consumed
 directly by the packer, paired with a forbidden-mask-aware FFDH
 variant whose pseudocode, worst-case bound, and empirical
-limitations are formalised in §6.3.1. The contribution is a partial
-rather than a clean win: the formalisation exercise revealed that
-the current shelf-cursor implementation underplaces relative to a
-naive rejection-sampling baseline at non-zero forbidden coverage,
-and §6.3.1 records both the bug and the proposed fix. The framework
-itself — passing an occupancy mask through to the packer and
-testing rasterised overlap inline — is the contribution; the
-specific shelf-cursor logic that consumes it needs the priority-2
-fix in §13.2.
+characterisation are formalised in §6.3.1. The formalisation
+exercise first revealed that the original shelf-cursor
+implementation *underplaced* relative to a naive rejection-sampling
+baseline at every non-zero forbidden coverage; the cause was
+identified, fixed, and re-measured, and the variant now beats that
+baseline at every coverage level (3.17 → 14.28 mean cells placed at
+2.5 % coverage, against a 10.57 baseline). Both measurements are
+retained in §6.3.1, because the negative result and its correction
+are jointly the contribution: the framework — passing an occupancy
+mask through to the packer and testing rasterised overlap inline —
+was only shown to be worth having once the benchmark existed to
+falsify it.
 (3) A verified FFDH packing core that meets the 8 ms O3 budget with two
 orders of magnitude of headroom, with an invariant test suite checking
 no-overlap, forbidden-mask respect, and rotation correctness, and a
@@ -1302,18 +1408,32 @@ allowed this finding to surface before submission.
 
 ### 13.2 Future work
 
-Seven follow-on programmes are identified. (1, priority 1) Extend the
+One item previously listed here as priority-2 future work — fixing
+the forbidden-mask FFDH shelf-cursor underplacement reported in
+§6.3.1 — has been completed and is no longer future work. The
+single-cursor shelf state was retained; instead of the proposed
+list-of-obstacles representation the packer now scans the mask on
+demand for the leftmost clear position and retries on the same
+shelf. The re-run benchmark is the "after the fix" table in §6.3.1:
+mean cells placed at 2.5 % forbidden coverage rises from 3.17 to
+14.28, and the variant beats the rejection-sampling baseline at
+every coverage level rather than losing to it at every level. Per
+the segmentation placement-area design spec (§8), this item was a
+blocking prerequisite for item (5) below — feeding pixel-precise
+obstruction masks into the old shelf-cursor logic would have made
+packing worse than the rectangle it replaces. That block is now
+lifted and item (5) may be scheduled on its own merits.
+
+Item (2) is retired rather than renumbered, so the numbering below
+is unchanged and existing cross-references to it remain valid.
+
+Six follow-on programmes remain. (1, priority 1) Extend the
 15-epoch from-scratch Faster R-CNN runs (val mAP@0.5 = 0.87 with default
 anchors) to a full 60-epoch schedule on GPU with COCO-pretrained
 weights, paired with a domain-randomisation study on real factory
 imagery, to close the remaining 0.87→0.90 gap in O1 and measure the
-synthetic-to-real transfer delta on a common test set. (2, priority 2)
-Fix the forbidden-mask FFDH shelf-cursor underplacement reported in
-§6.3.1: replace the single-cursor shelf state with a list-of-obstacles
-representation so the algorithm advances past forbidden cells rather
-than abandoning the shelf. The benchmark in §6.3.1 predicts a 4–7
-cells-per-cartridge gain on real factory imagery once this is in
-place. (3, priority 3) A real-robot integration campaign on the
+synthetic-to-real transfer delta on a common test set. (3, priority 3)
+A real-robot integration campaign on the
 laboratory KR 6 once it returns, to validate the retry policy and
 the EthernetKRL framing against real CRC corruption events rather
 than simulated ones. (4) A real factory-photograph collection of
@@ -1328,7 +1448,8 @@ bounding rectangle plus 5 px safety inset and inferred PCB mask
 (§6.2) with a pixel-precise placement mask predicted by a Mask
 R-CNN head, removing the 2-D rectangular approximation and letting
 the packer respect curved cartridge interiors and sub-pixel PCB
-exclusions natively. (6) A closed-loop grasp-verification upgrade
+exclusions natively; the packer-side prerequisite for this is now
+satisfied. (6) A closed-loop grasp-verification upgrade
 using a wrist force-torque sensor, which would let the executor
 report a pick failure within the pick phase rather than after a full
 transport cycle, shortening recovery by up to 400 ms per event.
@@ -1653,7 +1774,7 @@ I = Inspection.
 | O3   | Queue rebuild ≤ 8 ms median        | T+A · `bench_cycles.py`, Figure 4                                  | Pass — 3 ms median   |
 | O3.a | FFDH no-overlap invariant          | T · `_assert_no_overlaps` in `test_bin_packing.py`                 | Pass                 |
 | O3.b | FFDH rotation gain quantified      | T+A · `ffdh_ablation.csv`, Figure 7                                | Pass — 0–57 % gain   |
-| O3.c | Forbidden-mask FFDH benchmarked    | T+A · `forbidden_bench.csv`, §6.3.1                                | Partial — see §6.3.1 |
+| O3.c | Forbidden-mask FFDH benchmarked    | T+A · `forbidden_bench.csv`, `forbidden_bench.py`, §6.3.1          | Pass — beats baseline|
 | O4   | Recover from single pick failure   | (lab access not obtained — §10.3, §13.2)                           | **Not tested**       |
 | O5   | Deterministic queue, row-major     | T · `tests/test_planner.py`                                        | Pass                 |
 | O6   | Branch coverage ≥ 70 %             | I · `pytest-cov.txt`                                               | Pass — 86 %          |
@@ -1681,8 +1802,8 @@ real-robot behaviour is recorded as priority 3 in §13.2.
 Eleven numbered project requirements (six headline objectives plus
 five derived sub-requirements), three standards-compliance items,
 and nine AHEP-4 learning outcomes are tracked. Of the eleven project
-requirements, eight pass, two (O1 and O3.c) are partially met with
-the residual gaps documented in §10.1 and §6.3.1, and one (O4) is
+requirements, nine pass, one (O1) is partially met with
+the residual gap documented in §10.1, and one (O4) is
 not assessed in this report because the laboratory robot was
 withdrawn (§10.3). The three standards-compliance items are
 implemented to specification in code but were not hardware-validated
