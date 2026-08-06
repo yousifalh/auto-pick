@@ -1,0 +1,42 @@
+Forbidden-mask FFDH - master-seed sensitivity of the aware arm
+================================================================
+Regenerate with:  for s in 20260806 0 1 7 42 123 999 2024; do \
+                    python scripts/forbidden_bench.py --seed $s --no-write; done
+
+mean cells placed by the obstacle-aware arm, 40 seeds per cell
+     seed     2.5%      5.0%     10.0%     15.0%     25.0%
+ 20260806 *     14.28      9.05      2.60      0.57      0.03
+        0       14.65      8.95      2.60      0.60      0.07
+        1       15.40      9.07      3.00      0.82      0.00
+        7       14.68      9.25      2.90      0.60      0.03
+       42       14.70      9.18      2.15      0.80      0.07
+      123       14.68      8.70      2.33      0.60      0.00
+      999       14.62      9.00      2.55      0.80      0.03
+     2024       14.62      9.15      2.92      0.60      0.03
+
+      min       14.28      8.70      2.15      0.57      0.00
+      max       15.40      9.25      3.00      0.82      0.07
+     mean       14.70      9.04      2.63      0.68      0.03
+
+paired gain (aware - naive on identical masks), same runs
+     seed     2.5%      5.0%     10.0%     15.0%     25.0%
+ 20260806 *     +3.33     +3.25     +1.48     +0.17     +0.03
+        0       +3.27     +3.50     +1.20     +0.38     +0.07
+        1       +4.00     +3.75     +1.68     +0.55     -0.03
+        7       +3.40     +3.70     +1.77     +0.28     +0.03
+       42       +3.65     +3.88     +0.70     +0.57     +0.05
+      123       +3.52     +3.38     +1.07     +0.30     +0.00
+      999       +3.30     +3.65     +1.20     +0.53     +0.03
+     2024       +3.70     +3.73     +1.75     +0.30     -0.03
+
+      min       +3.27     +3.25     +0.70     +0.17     -0.03
+      max       +4.00     +3.88     +1.77     +0.57     +0.07
+
+* = the committed master seed (docs/receipts/forbidden_bench.txt).
+The 2.5 % and 5 % columns are stable and far above the 10.6
+rejection-sampling bar under every seed, and the paired gain is
+positive under all eight. The 15 % and 25 % columns are not: at
+25 % the paired gain changes sign across seeds, which is why FDR
+6.3.1 restricts its sign-reversal claim to coverages at or below
+10 % and reports 15 % and 25 % as indistinguishable from the
+baseline.

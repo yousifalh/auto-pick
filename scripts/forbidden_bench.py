@@ -36,15 +36,19 @@ that output rather than assumed:
   blob sides are 2..5 cells — the "2-6 cell blobs" of FDR §6.3.1 names
   the call's arguments, not its support.
 
-Run with ``python scripts/forbidden_bench.py``.
+Run with ``python scripts/forbidden_bench.py`` to regenerate the
+committed receipt. ``--seed N`` re-runs under a different master seed
+for sensitivity checking; any non-default seed prints without writing,
+so a sweep cannot overwrite the committed receipt.
 """
 from __future__ import annotations
 
+import argparse
 import csv
 import sys
 import time
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -156,9 +160,10 @@ def check_valid(mask: np.ndarray, placements) -> None:
 
 # --------------------------------------------------------------- run ----
 
-def main() -> None:
+def collect(master_seed: int) -> List[dict]:
+    """Run both arms over every (coverage, seed) pair."""
     items = build_items()
-    rows = []
+    rows: List[dict] = []
 
     # Warm the interpreter so the first timed call is not an outlier.
     for _ in range(5):
@@ -166,7 +171,7 @@ def main() -> None:
 
     for level, coverage in enumerate(COVERAGES):
         for seed in range(N_SEEDS):
-            rng = np.random.default_rng([MASTER_SEED, level, seed])
+            rng = np.random.default_rng([master_seed, level, seed])
             mask = make_mask(rng, coverage)
             actual = float(mask.sum()) / mask.size
 
@@ -189,15 +194,20 @@ def main() -> None:
                 "us_naive": us_naive,
             })
 
-    CSV_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with CSV_PATH.open("w", newline="", encoding="utf-8") as fh:
-        writer = csv.DictWriter(fh, fieldnames=[
-            "target_cov", "actual_cov", "seed",
-            "n_aware", "n_naive", "us_aware", "us_naive",
-        ], lineterminator="\n")
-        writer.writeheader()
-        writer.writerows(rows)
+    return rows
 
+
+def paired_t(diffs: List[int]) -> float:
+    """Paired t against H0: mean difference = 0. NaN when all diffs equal."""
+    n = len(diffs)
+    mean = sum(diffs) / n
+    var = sum((d - mean) ** 2 for d in diffs) / (n - 1)
+    if var <= 0.0:
+        return float("nan")
+    return mean / ((var / n) ** 0.5)
+
+
+def summarise(rows: List[dict]) -> List[str]:
     lines = [
         "Forbidden-mask FFDH vs rejection-sampling FFDH",
         "=" * 64,
@@ -213,8 +223,63 @@ def main() -> None:
             "%5.1f%%%13.2f%13.2f%+9.2f%11.1f%11.1f"
             % (coverage * 100, a, n, a - n, ua, un)
         )
-    with TXT_PATH.open("w", newline="\n", encoding="utf-8") as fh:
-        fh.write("\n".join(lines) + "\n")
+
+    # Paired within-run statistics. Both arms see identical masks, so the
+    # per-seed difference is the primary evidence: it is unaffected by how
+    # faithfully the mask generator reconstructs the original one.
+    lines += [
+        "",
+        "Paired within-run comparison (same mask for both arms, 40 seeds)",
+        "=" * 64,
+        "   cov     mean diff    paired t   win/tie/loss",
+    ]
+    for coverage in COVERAGES:
+        sub = [r for r in rows if r["target_cov"] == coverage]
+        diffs = [r["n_aware"] - r["n_naive"] for r in sub]
+        t = paired_t(diffs)
+        wins = sum(1 for d in diffs if d > 0)
+        ties = sum(1 for d in diffs if d == 0)
+        loss = sum(1 for d in diffs if d < 0)
+        t_txt = "     n/a" if t != t else "%8.2f" % t
+        lines.append(
+            "%5.1f%%%14.3f    %s   %d/%d/%d"
+            % (coverage * 100, sum(diffs) / len(diffs), t_txt,
+               wins, ties, loss)
+        )
+    return lines
+
+
+def main(argv: Optional[Sequence[str]] = None) -> None:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--seed", type=int, default=MASTER_SEED,
+        help="master seed (default %(default)s — the committed receipt)",
+    )
+    parser.add_argument(
+        "--no-write", action="store_true",
+        help="print the summary without touching the receipt files; "
+             "implied whenever --seed differs from the default, so a "
+             "sensitivity sweep cannot clobber the committed receipt",
+    )
+    args = parser.parse_args(argv)
+
+    rows = collect(args.seed)
+    lines = summarise(rows)
+
+    write = not args.no_write and args.seed == MASTER_SEED
+    if write:
+        CSV_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with CSV_PATH.open("w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=[
+                "target_cov", "actual_cov", "seed",
+                "n_aware", "n_naive", "us_aware", "us_naive",
+            ], lineterminator="\n")
+            writer.writeheader()
+            writer.writerows(rows)
+        with TXT_PATH.open("w", newline="\n", encoding="utf-8") as fh:
+            fh.write("\n".join(lines) + "\n")
+    else:
+        lines.insert(1, "(seed %d - not written to the receipt)" % args.seed)
     print("\n".join(lines))
 
 

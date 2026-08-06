@@ -68,8 +68,11 @@ rejection-sampling baseline at every non-zero forbidden coverage.
 The limitation was rooted in the shelf-cursor logic, which abandoned
 a whole shelf on contact with an obstacle; the packer now steps past
 the obstacle and retries, and the re-run benchmark reverses the sign
-of the gap at every coverage level (3.17 → 14.28 mean cells placed
-at 2.5 % coverage against a 10.57 baseline, §6.3.1).
+of the gap at every coverage level up to 10 % (at 2.5 % coverage the
+aware arm beats the baseline on all 40 paired seeds, +3.33 cells,
+paired *t* = 13.4). At 15 % and 25 % coverage both arms place almost
+nothing and the difference is not statistically distinguishable from
+zero; no claim is made there. See §6.3.1.
 
 Status against the success criteria. Four of six numbered project
 objectives are fully met (centroid error ≤ 2 px, queue rebuild ≤ 8 ms,
@@ -660,7 +663,9 @@ to mimic PCB obstructions. The benchmark was run twice: once against
 the original shelf-cursor implementation, and again after the fix
 described below.
 
-*Before the fix* (as first reported):
+*Before the fix* (as first reported; the per-seed rows behind this
+table are preserved at commit `70d815c`, `git show
+70d815c:docs/receipts/forbidden_bench.csv`):
 
 | Forbidden coverage | Forbidden-mask FFDH | Rejection-sampling FFDH | Δ         |
 |--------------------|--------------------:|------------------------:|----------:|
@@ -686,14 +691,43 @@ described below.
 `docs/receipts/forbidden_bench.csv`, regenerable with
 `scripts/forbidden_bench.py`).
 
-The sign of Δ reverses at every non-zero coverage: the
-forbidden-aware variant now places *more* cells than the naive
-baseline everywhere, where previously it placed fewer everywhere. At
-the 2.5 % coverage that best represents real PCB obstruction the
-aware arm goes from 3.17 to 14.28 cells, a 4.5× improvement that
-also clears the 10.57-cell rejection-sampling baseline of the
-original run by +3.71. The 0 % row is unchanged at 23.00, confirming
-that the fix is inert when no mask is supplied.
+The primary evidence is the *paired, within-run* comparison. Both
+arms are given the identical mask on every seed, so the per-seed
+difference is unaffected by how faithfully the mask generator has
+been reconstructed — the caveat discussed below does not reach it.
+Across the 40 seeds at each level:
+
+| Forbidden coverage | mean Δ (aware − naive) | paired *t* | aware wins/ties/losses |
+|--------------------|-----------------------:|-----------:|-----------------------:|
+| 0.0 %              | 0.000                  | —          | 0 / 40 / 0             |
+| 2.5 %              | +3.325                 | 13.35      | 40 / 0 / 0             |
+| 5.0 %              | +3.250                 | 15.18      | 40 / 0 / 0             |
+| 10.0 %             | +1.475                 | 6.60       | 29 / 7 / 4             |
+| 15.0 %             | +0.175                 | 1.31       | 11 / 23 / 6            |
+| 25.0 %             | +0.025                 | 1.00       | 1 / 39 / 0             |
+
+Up to 10 % coverage the reversal is decisive: at 2.5 % and 5 % the
+aware arm wins on every one of the 40 seeds without exception, and at
+10 % it wins on 29 and loses on 4. **At 15 % and 25 % it is not.**
+Both of those *t* values fall below the two-sided 5 % critical value
+of 2.02 on 39 degrees of freedom, and the whole of the 25 % "gain" is
+a single extra item placed across 40 runs. Under other master seeds
+the 25 % difference changes sign — it ranges −0.03 to +0.07 across
+eight seeds (`docs/receipts/forbidden_bench_seeds.txt`). At those
+coverages both arms place almost nothing, and the honest reading is
+that the fix neither helps nor hurts. The sign-reversal claim in this
+section is therefore restricted to coverages at or below 10 %; the
+15 % and 25 % rows are reported as indistinguishable from the
+baseline.
+
+At the 2.5 % coverage that best represents real PCB obstruction the
+aware arm places 14.28 cells against the naive arm's 10.95 on the
+same masks, a paired gain of **+3.33**. Set against the *original*
+run — a cross-run comparison, weaker for the reasons given next — it
+rises from 3.17 to 14.28 cells, a 4.5× improvement that clears that
+run's 10.57-cell rejection-sampling baseline by +3.71. The 0 % row is
+unchanged at 23.00, confirming that the fix is inert when no mask is
+supplied.
 
 Two caveats are recorded for the reader's judgement. First, the
 original generator script was never committed — only its output was
@@ -715,12 +749,20 @@ from the same distribution. The control for this is the
 rejection-sampling column, which the fix does not touch: it
 reproduces the original per-level means to within 1.1 standard
 errors at every coverage level (10.95 vs 10.57, 5.80 vs 5.38, 1.12
-vs 1.07, 0.40 vs 0.30, 0.00 vs 0.03). The comparison is therefore
-sound in distribution rather than paired. Within the "after" run the
-two arms see identical masks, so its Δ column is exact, and the
-result is insensitive to the choice of master seed — the 2.5 % aware
-mean ranges 14.28–15.40 across eight independent master seeds, with
-the committed seed the most conservative of the eight.
+vs 1.07, 0.40 vs 0.30, 0.00 vs 0.03). This caveat bounds only the
+*cross-run* "before vs after" comparison, which is sound in
+distribution rather than paired; it does not touch the paired table
+above, on which the aware-beats-naive conclusion actually rests.
+
+The result is also insensitive to the choice of master seed. Across
+eight independent master seeds the 2.5 % aware mean ranges
+14.28–15.40 and the paired gain +3.27 to +4.00; at 5 % the gain
+ranges +3.25 to +3.88 and at 10 % +0.70 to +1.77, so the sign holds
+under every seed at every coverage up to 10 %. The committed seed is
+the most conservative of the eight at 2.5 %. The sweep is receipted
+at `docs/receipts/forbidden_bench_seeds.txt` and reproduced by
+`python scripts/forbidden_bench.py --seed N --no-write` for each N;
+a non-default `--seed` never writes to the committed receipt.
 
 The original measurement was an honest negative finding revealed by
 the formalisation exercise: the forbidden-aware variant placed fewer
@@ -759,10 +801,14 @@ The measured delta is +11.11 cells at 2.5 % coverage (3.17 → 14.28)
 and +7.90 at 5.0 % (1.15 → 9.05), which brackets and exceeds the
 4–7 cells-per-cartridge gain this section originally estimated for
 the project's actual cartridge geometry, where PCB obstructions
-typically occupy ≤ 5 % of the placement region. The variant now
-beats the rejection-sampling baseline at every coverage level rather
-than losing to it at every level, so the contribution is a clean
-rather than a partial win. The synthetic dataset's cartridges have
+typically occupy ≤ 5 % of the placement region. Note that the
+operationally relevant band is exactly the one where the evidence is
+strongest: the variant now beats the rejection-sampling baseline on
+every paired seed at 2.5 % and 5 % coverage, where it previously
+lost, so within the ≤ 5 % regime the contribution is a clean rather
+than a partial win. Above 10 % coverage neither arm places enough to
+distinguish them and no claim is made. The synthetic dataset's
+cartridges have
 effectively zero forbidden-cell coverage (the generator does not
 render PCB components inside cartridge interiors), so the production
 pipeline's measured success rate on the current test set is
@@ -1383,8 +1429,12 @@ exercise first revealed that the original shelf-cursor
 implementation *underplaced* relative to a naive rejection-sampling
 baseline at every non-zero forbidden coverage; the cause was
 identified, fixed, and re-measured, and the variant now beats that
-baseline at every coverage level (3.17 → 14.28 mean cells placed at
-2.5 % coverage, against a 10.57 baseline). Both measurements are
+baseline on every one of the 40 paired seeds at 2.5 % and 5 %
+coverage — the band that matters operationally — and on 29 of 40 at
+10 % (3.17 → 14.28 mean cells placed at 2.5 % coverage, a paired
+gain of +3.33 over the naive arm on identical masks). At 15 % and
+25 % coverage the two arms remain indistinguishable. Both
+measurements are
 retained in §6.3.1, because the negative result and its correction
 are jointly the contribution: the framework — passing an occupancy
 mask through to the packer and testing rasterised overlap inline —
@@ -1416,8 +1466,10 @@ list-of-obstacles representation the packer now scans the mask on
 demand for the leftmost clear position and retries on the same
 shelf. The re-run benchmark is the "after the fix" table in §6.3.1:
 mean cells placed at 2.5 % forbidden coverage rises from 3.17 to
-14.28, and the variant beats the rejection-sampling baseline at
-every coverage level rather than losing to it at every level. Per
+14.28, and the variant beats the rejection-sampling baseline on
+every paired seed at 2.5 % and 5 % coverage where it previously lost
+at all coverages; at 15 % and 25 % the two arms are statistically
+indistinguishable. Per
 the segmentation placement-area design spec (§8), this item was a
 blocking prerequisite for item (5) below — feeding pixel-precise
 obstruction masks into the old shelf-cursor logic would have made
@@ -1774,7 +1826,7 @@ I = Inspection.
 | O3   | Queue rebuild ≤ 8 ms median        | T+A · `bench_cycles.py`, Figure 4                                  | Pass — 3 ms median   |
 | O3.a | FFDH no-overlap invariant          | T · `_assert_no_overlaps` in `test_bin_packing.py`                 | Pass                 |
 | O3.b | FFDH rotation gain quantified      | T+A · `ffdh_ablation.csv`, Figure 7                                | Pass — 0–57 % gain   |
-| O3.c | Forbidden-mask FFDH benchmarked    | T+A · `forbidden_bench.csv`, `forbidden_bench.py`, §6.3.1          | Pass — beats baseline|
+| O3.c | Forbidden-mask FFDH benchmarked    | T+A · `forbidden_bench.csv`, `forbidden_bench.py`, §6.3.1          | Pass — beats baseline ≤ 10 % coverage |
 | O4   | Recover from single pick failure   | (lab access not obtained — §10.3, §13.2)                           | **Not tested**       |
 | O5   | Deterministic queue, row-major     | T · `tests/test_planner.py`                                        | Pass                 |
 | O6   | Branch coverage ≥ 70 %             | I · `pytest-cov.txt`                                               | Pass — 86 %          |
