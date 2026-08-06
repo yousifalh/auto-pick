@@ -104,14 +104,19 @@ def _next_free_x(
     23.0 -> 3.2 cells placed at 2.5% coverage — worse than not being
     obstacle-aware at all.
 
-    The returned x is snapped to a cell boundary. Snapping can only move
-    the item right, never left, so the result is conservative: it never
-    reports a position that overlaps.
+    The returned x is snapped to cell boundaries. Snapping can only move
+    the item right, never left. Every returned position is guaranteed to
+    satisfy ``not _overlaps_forbidden(mask, x, y, w, h, mm_per_cell)``.
     """
+    # Quick check: does x_from fit in the strip at all?
+    if x_from + w > strip_width + tol:
+        return None
+
     r1 = max(0, int(y / mm_per_cell))
     r2 = min(mask.shape[0], int(np.ceil((y + h) / mm_per_cell)))
     if r2 <= r1:
-        return x_from if x_from + w <= strip_width + tol else None
+        # Empty row band: position clears by definition.
+        return x_from
 
     # Collapse the row band: a column is blocked if any cell in it is.
     blocked = mask[r1:r2, :].any(axis=0)
@@ -124,9 +129,19 @@ def _next_free_x(
     for c in range(c_start, blocked.shape[0]):
         run = 0 if blocked[c] else run + 1
         if run >= n_cols:
-            x = (c - n_cols + 1) * mm_per_cell
-            x = max(x, x_from)
-            return x if x + w <= strip_width + tol else None
+            # Found n_cols clear columns ending at column c.
+            # Try positions snapped to cell boundaries, starting from x_from.
+            x_candidate = (c - n_cols + 1) * mm_per_cell
+            # Walk upward from x_from to find the first cell-aligned position
+            # that actually clears the mask (accepting arithmetic floating-point).
+            # Start from the ceiling of x_from to never move backward.
+            c_test = max(0, int(np.ceil(x_from / mm_per_cell)))
+            while c_test * mm_per_cell + w <= strip_width + tol:
+                x_test = c_test * mm_per_cell
+                if not _overlaps_forbidden(mask, x_test, y, w, h, mm_per_cell):
+                    return x_test
+                c_test += 1
+            return None
     return None
 
 

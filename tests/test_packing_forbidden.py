@@ -57,12 +57,17 @@ def test_next_free_x_never_moves_left_of_x_from():
 
 
 def test_next_free_x_result_actually_clears_the_mask():
-    """Whatever it returns must satisfy _overlaps_forbidden == False."""
+    """Whatever it returns must satisfy _overlaps_forbidden == False and x >= x_from."""
     from common.packing import _overlaps_forbidden
 
     rng = np.random.default_rng(0)
     for _ in range(200):
         m = (rng.random((12, 30)) < 0.15).astype(np.uint8)
-        x = _next_free_x(m, 0.0, 0.0, 5.0, 4.0, CELL, 30.0, 1e-6)
+        # Test with both cell-aligned and fractional x_from values.
+        x_from = rng.random() * 25.0
+        x = _next_free_x(m, x_from, 0.0, 5.0, 4.0, CELL, 30.0, 1e-6)
         if x is not None:
+            # Must clear the mask and satisfy x >= x_from and fit in strip.
             assert not _overlaps_forbidden(m, x, 0.0, 5.0, 4.0, CELL)
+            assert x >= x_from - 1e-6
+            assert x + 5.0 <= 30.0 + 1e-6
