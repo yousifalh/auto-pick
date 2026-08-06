@@ -71,3 +71,55 @@ def test_next_free_x_result_actually_clears_the_mask():
             assert not _overlaps_forbidden(m, x, 0.0, 5.0, 4.0, CELL)
             assert x >= x_from - 1e-6
             assert x + 5.0 <= 30.0 + 1e-6
+
+
+def test_next_free_x_ieee754_truncation_regression():
+    """Regression test for IEEE-754 rounding bug in float column conversion.
+
+    When integer column arithmetic is converted to float position and back,
+    rounding can cause the predicate to check a different column than the scan
+    intended. This test pins the exact case from the fuzz.
+    """
+    from common.packing import _overlaps_forbidden
+
+    cell = 0.7
+    m = _mask(3, 10)
+    m[:, 2] = 1  # Block column 2
+    w = 3 * cell
+    x_from = 3 * cell
+
+    x = _next_free_x(m, x_from, 0.0, w, 3.0, cell, 20.0, 1e-6)
+    # Should find a clear position (columns 3, 4, 5 are clear).
+    assert x is not None, "Should find a valid position"
+    # Must actually clear the mask.
+    assert not _overlaps_forbidden(m, x, 0.0, w, 3.0, cell), \
+        f"Position {x} must clear the mask"
+    assert x >= x_from - 1e-6
+
+
+@pytest.mark.parametrize("mm_per_cell", [0.7, 0.3, 1/3])
+def test_next_free_x_non_binary_cell_sizes_property(mm_per_cell):
+    """Property test over non-binary cell sizes that trigger IEEE-754 rounding.
+
+    Binary-exact cell sizes (like 1.0, 1.5) hide rounding bugs in the
+    float-to-column conversion. Non-binary sizes (0.7, 0.3, 1/3) expose them.
+    Keep fractional x_from and all invariant assertions.
+    """
+    from common.packing import _overlaps_forbidden
+
+    rng = np.random.default_rng(42)
+    strip_width = 30.0
+    w = 5.0
+
+    for _ in range(200):
+        m = (rng.random((12, 30)) < 0.15).astype(np.uint8)
+        x_from = rng.random() * 25.0
+        x = _next_free_x(m, x_from, 0.0, w, 4.0, mm_per_cell, strip_width, 1e-6)
+        if x is not None:
+            # All three properties must hold.
+            assert not _overlaps_forbidden(m, x, 0.0, w, 4.0, mm_per_cell), \
+                f"mm_per_cell={mm_per_cell}: x={x} must not overlap"
+            assert x >= x_from - 1e-6, \
+                f"mm_per_cell={mm_per_cell}: x={x} must be >= x_from={x_from}"
+            assert x + w <= strip_width + 1e-6, \
+                f"mm_per_cell={mm_per_cell}: x={x} must fit in strip"

@@ -129,12 +129,20 @@ def _next_free_x(
         run = 0 if blocked[c] else run + 1
         if run >= n_cols:
             # Found n_cols clear columns ending at column c.
-            # The item occupies columns [c - n_cols + 1, c + 1).
-            # Return the position directly; it is correct by construction:
-            # _overlaps_forbidden will compute c1=c-n_cols+1, c2=c+1,
-            # checking exactly the columns we just cleared.
             x = (c - n_cols + 1) * mm_per_cell
-            return x if x + w <= strip_width + tol else None
+            # Validate with _overlaps_forbidden: integer column arithmetic in the
+            # scan may differ from float-based indexing in the predicate due to
+            # IEEE-754 rounding. Multiplying c*mm_per_cell then dividing by
+            # mm_per_cell can truncate to an adjacent column. Check that x
+            # actually clears before returning. If the predicate check fails due
+            # to truncation, continue scanning for the next run rather than
+            # returning here. This keeps the overall algorithm O(columns) because
+            # truncation is rare and we validate once per run found.
+            if x + w <= strip_width + tol and not _overlaps_forbidden(
+                mask, x, y, w, h, mm_per_cell
+            ):
+                return x
+            # Predicate check failed; continue scanning for the next run.
     return None
 
 
