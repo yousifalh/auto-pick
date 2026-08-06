@@ -6,10 +6,42 @@ pipeline is deliberately aggressive — factory-floor lighting varies
 more than typical lab conditions — so the photometric block stacks
 brightness/contrast, gamma, hue-saturation-value and random shadows.
 
+The train pipeline is four blocks, applied in capture order:
+
+  1. ``photometric``  — illumination: brightness/contrast, gamma, HSV,
+     cast shadows. Gated by ``p_photometric``.
+  2. ``dihedral``     — the eight symmetries of the square: horizontal
+     flip, vertical flip, k*90° rotation. NOT gated by ``p_geometric``
+     (see below).
+  3. ``geometric``    — sub-pixel camera pose: a small affine shift /
+     scale / rotate. Gated by ``p_geometric``.
+  4. ``camera``       — sensor and optics degradation: motion blur,
+     defocus, ISO/read noise. Gated by ``p_camera``.
+
+Why the dihedral block is separate and ungated
+----------------------------------------------
+This domain is top-down and axis-aligned: the camera looks straight
+down at parts lying flat on a surface, and nothing in the scene has a
+canonical "up". A flip or a 90° rotation therefore maps a valid scene
+to another equally valid scene, and maps an axis-aligned box to an
+axis-aligned box with no area lost and no interpolation — it is exact,
+free, and multiplies the effective dataset by eight. That is a much
+better deal than the affine block, which resamples pixels and can push
+a box off the frame, so the two do not belong behind the same switch.
+Folding them together also meant ``HorizontalFlip(p=0.5)`` nested
+inside ``Compose(p=0.5)`` fired on only a quarter of samples.
+
+Real photos are handheld phone shots of a bench; the renders are
+pin-sharp, noiseless and taken from a fixed height. Block 4 exists to
+close that gap — without it the detector can key on render sharpness,
+which no real photograph has.
+
 When Albumentations isn't installed (CPU-only CI), the module falls
 back to :class:`_FallbackTransform`: a seeded, deterministic
 numpy-only shim that still returns the expected dict shape so the
-dataset pipeline can be unit-tested.
+dataset pipeline can be unit-tested. The fallback deliberately does
+NOT implement blocks 2-4; it exists to keep the suite runnable, not to
+be a second training pipeline.
 """
 from __future__ import annotations
 
@@ -25,6 +57,12 @@ except Exception:  # pragma: no cover - only hit on CI containers
     _ALB_AVAILABLE = False
 
 
+# cv2.BORDER_CONSTANT. Named here rather than importing cv2 for one integer:
+# the module must stay importable in the albumentations-free fallback
+# environment, which has no cv2 either.
+_BORDER_CONSTANT = 0
+
+
 # ------------------------------------------------------------- builders --
 
 def build_train_transform(cfg: Dict[str, Any]):
@@ -37,24 +75,23 @@ def build_train_transform(cfg: Dict[str, Any]):
 
     photometric = A.Compose([
         A.RandomBrightnessContrast(
-            brightness_limit=cfg.get("brightness_limit", 0.40),
-            contrast_limit=cfg.get("contrast_limit", 0.40),
+            brightness_limit=cfg.get("brightness_limit", 0.55),
+            contrast_limit=cfg.get("contrast_limit", 0.50),
             p=0.9,
         ),
         A.RandomGamma(
-            gamma_limit=tuple(cfg.get("gamma_limit", (60, 140))),
-            p=0.6,
+            # Gamma is what actually reaches "dim" without crushing the
+            # black point the way a large negative brightness offset does:
+            # it rescales the whole tone curve instead of subtracting a
+            # constant, so shadow detail survives.
+            gamma_limit=tuple(cfg.get("gamma_limit", (45, 190))),
+            p=0.7,
         ),
         A.HueSaturationValue(
             hue_shift_limit=cfg.get("hue_shift_limit", 15),
-            sat_shift_limit=cfg.get("sat_shift_limit", 25),
-            val_shift_limit=cfg.get("val_shift_limit", 10),
+            sat_shift_limit=cfg.get("sat_shift_limit", 30),
+            val_shift_limit=cfg.get("val_shift_limit", 20),
             p=0.5,
-        ),
-        A.GaussNoise(
-            # Albumentations 2.x uses `std_range` in normalised units.
-            std_range=(0.05, 0.2),
-            p=0.4,
         ),
         A.RandomShadow(
             shadow_roi=(0, 0, 1, 1),
@@ -62,27 +99,75 @@ def build_train_transform(cfg: Dict[str, Any]):
             shadow_dimension=5,
             p=0.4,
         ),
-    ], p=cfg.get("p_photometric", 0.8))
+    ], p=cfg.get("p_photometric", 0.85))
+
+    # Label-exact, so ungated — see the module docstring.
+    dihedral = A.Compose([
+        A.HorizontalFlip(p=cfg.get("p_flip", 0.5)),
+        A.VerticalFlip(p=cfg.get("p_flip", 0.5)),
+        A.RandomRotate90(p=cfg.get("p_rot90", 0.5)),
+    ], p=1.0)
 
     geometric = A.Compose([
-        A.ShiftScaleRotate(
-            shift_limit=0.04,
-            scale_limit=cfg.get("scale_limit", 0.10),
-            rotate_limit=cfg.get("rotation_limit", 4),
-            border_mode=0,
+        # Affine, not ShiftScaleRotate: albumentations 2.x deprecates the
+        # latter as "a special case of Affine". Same three limits, same
+        # meaning - shift_limit is a fraction of the side, scale_limit is
+        # a delta about 1.0, rotate_limit is degrees either side of 0.
+        A.Affine(
+            translate_percent=_symmetric(cfg.get("shift_limit", 0.04)),
+            scale=_about_one(cfg.get("scale_limit", 0.10)),
+            rotate=_symmetric(cfg.get("rotation_limit", 4)),
+            border_mode=_BORDER_CONSTANT,
+            fill=0,
             p=0.5,
         ),
-        A.HorizontalFlip(p=0.5),
     ], p=cfg.get("p_geometric", 0.5))
 
+    camera = A.Compose([
+        A.OneOf([
+            A.MotionBlur(blur_limit=tuple(cfg.get("motion_blur_limit", (3, 11))),
+                         p=1.0),
+            A.Defocus(radius=tuple(cfg.get("defocus_radius", (1, 5))),
+                      alias_blur=(0.05, 0.35), p=1.0),
+        ], p=cfg.get("p_blur", 0.35)),
+        A.ISONoise(
+            color_shift=tuple(cfg.get("iso_color_shift", (0.01, 0.06))),
+            intensity=tuple(cfg.get("iso_noise_intensity", (0.1, 0.7))),
+            p=0.35,
+        ),
+        A.GaussNoise(
+            # Albumentations 2.x uses `std_range` in normalised units.
+            std_range=tuple(cfg.get("gauss_noise_std_range", (0.02, 0.14))),
+            p=0.35,
+        ),
+    ], p=cfg.get("p_camera", 0.6))
+
     return A.Compose(
-        [photometric, geometric],
+        [photometric, dihedral, geometric, camera],
         bbox_params=A.BboxParams(
             format="pascal_voc",
             label_fields=["class_labels"],
             min_visibility=0.25,
         ),
     )
+
+
+def _symmetric(limit):
+    """``0.04`` -> ``(-0.04, 0.04)``; an explicit pair passes through.
+
+    ShiftScaleRotate took one-sided limits and mirrored them; Affine takes
+    the range directly. This keeps the config keys meaning what they did.
+    """
+    if isinstance(limit, (list, tuple)):
+        return (float(limit[0]), float(limit[1]))
+    return (-abs(float(limit)), abs(float(limit)))
+
+
+def _about_one(limit):
+    """``0.10`` -> ``(0.9, 1.1)`` — ShiftScaleRotate's scale convention."""
+    if isinstance(limit, (list, tuple)):
+        return (float(limit[0]), float(limit[1]))
+    return (1.0 - abs(float(limit)), 1.0 + abs(float(limit)))
 
 
 def build_val_transform(cfg: Dict[str, Any]):

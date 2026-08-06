@@ -31,18 +31,49 @@ dataset:
   train_val_split: 0.85
 
 augmentation:
-  brightness_limit: 0.40
-  contrast_limit: 0.40
-  gamma_limit: [60, 140]
+  # --- illumination ------------------------------------------------------
+  # Widened from 0.40 / 0.40 / [60, 140]. Those were moderate: a scene could
+  # be a bit dim or a bit bright, never actually dark or actually blown out,
+  # so every training image sat in the same middle third of the tone range
+  # while the real photos do not. gamma is the one that reaches genuine
+  # darkness without crushing the black point - it rescales the tone curve
+  # rather than subtracting a constant, so shadow detail survives.
+  brightness_limit: 0.55
+  contrast_limit: 0.50
+  gamma_limit: [45, 190]
   hue_shift_limit: 15
-  sat_shift_limit: 25
-  val_shift_limit: 10
-  gauss_noise_var: [10.0, 50.0]
+  sat_shift_limit: 30
+  val_shift_limit: 20
   shadow_num_range: [1, 3]
-  rotation_limit: 4
+  # --- camera pose -------------------------------------------------------
+  # Consumed by augmentation.Affine (albumentations 2.x deprecates
+  # ShiftScaleRotate). One-sided limits, mirrored: 0.04 -> +/-4% of the side,
+  # 0.10 -> scale 0.90-1.10, 4 -> +/-4 degrees.
+  shift_limit: 0.04
   scale_limit: 0.10
-  p_photometric: 0.8
+  rotation_limit: 4
+  # --- camera / sensor degradation ---------------------------------------
+  # The renders are pin-sharp and noiseless; the real photos are handheld
+  # phone shots. Without these the detector can key on render sharpness,
+  # which nothing it will ever be shown at inference time has.
+  motion_blur_limit: [3, 11]
+  defocus_radius: [1, 5]
+  iso_color_shift: [0.01, 0.06]
+  iso_noise_intensity: [0.1, 0.7]
+  # Normalised units, as albumentations 2.x GaussNoise.std_range wants.
+  # Replaces the old `gauss_noise_var: [10.0, 50.0]`, which was dead config -
+  # nothing read it and the code hard-coded (0.05, 0.2).
+  gauss_noise_std_range: [0.02, 0.14]
+  # --- block probabilities -----------------------------------------------
+  # p_flip / p_rot90 are NOT multiplied by p_geometric: flips and 90-degree
+  # rotations are label-exact in this top-down axis-aligned domain, so they
+  # live in their own ungated block. See recog/augmentation.py.
+  p_photometric: 0.85
   p_geometric: 0.5
+  p_flip: 0.5
+  p_rot90: 0.5
+  p_blur: 0.35
+  p_camera: 0.6
 
 training:
   # 60 was tuned for the ~50-image cv2 synth set, where an epoch was 13 steps.
