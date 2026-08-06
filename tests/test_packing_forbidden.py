@@ -76,16 +76,55 @@ def test_next_free_x_result_actually_clears_the_mask():
     from common.packing import _overlaps_forbidden
 
     rng = np.random.default_rng(0)
+    hits = 0
     for _ in range(200):
         m = (rng.random((12, 30)) < 0.15).astype(np.uint8)
         # Test with both cell-aligned and fractional x_from values.
         x_from = rng.random() * 25.0
         x = _next_free_x(m, x_from, 0.0, 5.0, 4.0, CELL, 30.0, 1e-6)
         if x is not None:
+            hits += 1
             # Must clear the mask and satisfy x >= x_from and fit in strip.
             assert not _overlaps_forbidden(m, x, 0.0, 5.0, 4.0, CELL)
             assert x >= x_from - 1e-6
             assert x + 5.0 <= 30.0 + 1e-6
+
+    # Anti-vacuity guard: measured rate is 63/200 with this seed; floor is
+    # set with headroom below that so the test still fails loudly if a
+    # future change collapses reach toward zero.
+    assert hits > 40, f"test is vacuous: only {hits}/200 iterations exercised the assertions"
+
+
+def test_next_free_x_tol_is_millimetres_not_cells():
+    """`tol` is a millimetre tolerance and must be converted to cell space
+    (`tol / mm_per_cell`) before being subtracted from a value already in
+    cells (packing.py `_next_free_x`, FDR §6.3.1 fix). Reverting that
+    conversion back to a bare `tol` makes the effective scan-start slack
+    scale with `mm_per_cell` instead of staying in millimetres — the
+    difference is `tol * (mm_per_cell - 1)`. No other test in this file
+    catches that: they all use the tiny default `tol=1e-6`, at which the
+    bug is invisible, so this test uses an explicit large `tol` instead.
+
+    mm_per_cell=10, tol=2mm: the reverted line would let the scan start
+    2 cells (20 mm) early instead of ~2 mm early, picking up a clear
+    column well outside the tolerance and returning a position that
+    violates ``x >= x_from - tol``.
+    """
+    mm_per_cell = 10.0
+    tol = 2.0
+    m = np.ones((3, 20), dtype=np.uint8)
+    m[:, 8] = 0  # only clear column: 20 mm left of x_from, outside tol
+
+    x = _next_free_x(m, 100.0, 0.0, 10.0, 10.0, mm_per_cell, 200.0, tol)
+
+    # Columns 9..19 (x_from - tol = 98 mm onward) are all blocked, and the
+    # one clear column (8, at x=80 mm) is 20 mm left of x_from — well
+    # outside the 2 mm tolerance — so no valid position exists.
+    assert x is None, (
+        f"got x={x}: only reachable if `tol` was treated as cells instead "
+        "of millimetres, letting the scan start 2 cells (20mm) early "
+        "instead of ~2mm"
+    )
 
 
 def test_next_free_x_ieee754_truncation_regression():
@@ -155,7 +194,9 @@ def test_next_free_x_non_binary_cell_sizes_property(mm_per_cell):
     # silently re-hollow the test (drive hits to 0) and nothing would
     # complain, since `if x is not None:` bodies that never run still
     # make the test pass.
-    assert hits > 20, f"test is vacuous: only {hits}/200 iterations exercised the assertions"
+    # Measured hit rate is 200/200 at all three cell sizes, so a floor of
+    # 20 would pass silently even after a 90 % collapse in reach.
+    assert hits > 150, f"test is vacuous: only {hits}/200 iterations exercised the assertions"
 
 
 def test_shelf_survives_an_obstacle_instead_of_being_abandoned():

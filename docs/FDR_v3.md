@@ -610,7 +610,7 @@ function FFDH-Forbidden(items, strip_w, strip_h, mask, mm_per_cell):
                 x <- shelf.x_cursor
                 if Overlaps(mask, x, shelf.y, orient):
                     x <- NextFreeX(mask, x, shelf.y, orient, strip_w)
-                    if x is NONE: continue         # this shelf is exhausted
+                    if x is NONE: continue         # try the other orientation
                 place item at (x, shelf.y)
                 shelf.x_cursor <- x + orient.w
                 placed <- true; break
@@ -735,14 +735,16 @@ original generator script was never committed — only its output was
 (`scripts/forbidden_bench.py`). Its mask parameters were recovered
 from the recorded output rather than assumed: the grid size is fixed
 exactly by the recorded `actual_cov` denominators, and the blob-size
-and blob-count parameters are the unique choice matching both the
-mean and the standard deviation of the recorded forbidden-cell
-counts at all five non-zero coverage levels — which incidentally
-establishes that the "2–6 cell" blobs of the original description
-were drawn from `integers(2, 6)`, i.e. sides of 2 to 5 cells, and
-that the blob count was sized off the largest such blob rather than
-the mean, so realised coverage runs at roughly 47 % of the nominal
-target in both runs alike. Second, the
+and blob-count parameters were fixed by matching both the mean and
+the standard deviation of the recorded forbidden-cell counts at all
+five non-zero coverage levels. That is a two-parameter fit to two
+moments — not a uniqueness proof, and it does not establish
+provenance — but it is consistent with the "2–6 cell" blobs of the
+original description having been drawn from `integers(2, 6)`, i.e.
+sides of 2 to 5 cells, and with the blob count having been sized off
+the largest such blob rather than the mean, so realised coverage
+runs at roughly 47 % of the nominal target in both runs alike.
+Second, the
 reconstruction does not reproduce the original random stream
 seed-for-seed, so the two tables above rest on different mask draws
 from the same distribution. The control for this is the
@@ -798,7 +800,9 @@ original proposal implied, and the measured gain did not justify
 it.
 
 The measured delta is +11.11 cells at 2.5 % coverage (3.17 → 14.28)
-and +7.90 at 5.0 % (1.15 → 9.05), which brackets and exceeds the
+and +7.90 at 5.0 % (1.15 → 9.05) — both cross-run, different mask
+draws; see the reconstruction caveat above — which brackets and
+exceeds the
 4–7 cells-per-cartridge gain this section originally estimated for
 the project's actual cartridge geometry, where PCB obstructions
 typically occupy ≤ 5 % of the placement region. Note that the
@@ -817,7 +821,7 @@ improvement becomes operationally significant only on real factory
 imagery where PCB obstructions are non-trivial, and on the
 pixel-precise obstruction masks that §13.2(5) would introduce. The
 cost is wall-time. Within the post-fix run the aware arm takes
-0.35 ms per pack at 2.5 % coverage and peaks at 1.2 ms at 15 %,
+0.33 ms per pack at 2.5 % coverage and peaks at 1.14 ms at 15 %,
 against roughly 0.09 ms for the naive arm, because a blocked cursor
 now triggers a column scan instead of an immediate shelf
 abandonment — and because it does more work simply by placing more
@@ -1431,8 +1435,11 @@ baseline at every non-zero forbidden coverage; the cause was
 identified, fixed, and re-measured, and the variant now beats that
 baseline on every one of the 40 paired seeds at 2.5 % and 5 %
 coverage — the band that matters operationally — and on 29 of 40 at
-10 % (3.17 → 14.28 mean cells placed at 2.5 % coverage, a paired
-gain of +3.33 over the naive arm on identical masks). At 15 % and
+10 % (a paired gain of +3.33 over the naive arm on identical masks
+at 2.5 % coverage; the cross-run figure of 3.17 → 14.28 mean cells
+placed compares different mask draws from a reconstructed generator
+and is not paired — see the reconstruction caveat in §6.3.1). At
+15 % and
 25 % coverage the two arms remain indistinguishable. Both
 measurements are
 retained in §6.3.1, because the negative result and its correction
@@ -1466,7 +1473,8 @@ list-of-obstacles representation the packer now scans the mask on
 demand for the leftmost clear position and retries on the same
 shelf. The re-run benchmark is the "after the fix" table in §6.3.1:
 mean cells placed at 2.5 % forbidden coverage rises from 3.17 to
-14.28, and the variant beats the rejection-sampling baseline on
+14.28 (different mask draws; see the reconstruction caveat in
+§6.3.1), and the variant beats the rejection-sampling baseline on
 every paired seed at 2.5 % and 5 % coverage where it previously lost
 at all coverages; at 15 % and 25 % the two arms are statistically
 indistinguishable. Per

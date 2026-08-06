@@ -1,7 +1,15 @@
 """Forbidden-mask FFDH vs rejection-sampling FFDH — the FDR §6.3.1 benchmark.
 
 Regenerates ``docs/receipts/forbidden_bench.csv`` and
-``docs/receipts/forbidden_bench.txt``.
+``docs/receipts/forbidden_bench.txt``. Also writes
+``docs/receipts/forbidden_bench_timings.csv``, which is gitignored: the
+counts in the main CSV are fully deterministic (fixed seeds throughout),
+so that file verifies byte-identical across regenerations, but wall-clock
+timings are not deterministic and were previously interleaved into the
+same CSV — producing a spurious diff on every regeneration with no way to
+tell a real change from noise. The timings live in the separate,
+uncommitted file instead; the human-readable summary in
+``forbidden_bench.txt`` still reports the per-level mean timings.
 
 Two arms are compared on identical masks:
 
@@ -89,6 +97,10 @@ MASTER_SEED = 20260806
 REPO = Path(__file__).resolve().parents[1]
 CSV_PATH = REPO / "docs" / "receipts" / "forbidden_bench.csv"
 TXT_PATH = REPO / "docs" / "receipts" / "forbidden_bench.txt"
+# Wall-clock timings, not committed (see module docstring): they are
+# non-deterministic, so keeping them out of CSV_PATH is what lets CSV_PATH
+# verify byte-identical across regenerations.
+TIMINGS_CSV_PATH = REPO / "docs" / "receipts" / "forbidden_bench_timings.csv"
 
 N_ROWS = int(np.ceil(STRIP_H / MM_PER_CELL))
 N_COLS = int(np.ceil(STRIP_W / MM_PER_CELL))
@@ -269,11 +281,18 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     write = not args.no_write and args.seed == MASTER_SEED
     if write:
         CSV_PATH.parent.mkdir(parents=True, exist_ok=True)
+        # Deterministic columns only, so this file verifies byte-identical
+        # across regenerations. Timings go to TIMINGS_CSV_PATH instead.
         with CSV_PATH.open("w", newline="", encoding="utf-8") as fh:
             writer = csv.DictWriter(fh, fieldnames=[
-                "target_cov", "actual_cov", "seed",
-                "n_aware", "n_naive", "us_aware", "us_naive",
-            ], lineterminator="\n")
+                "target_cov", "actual_cov", "seed", "n_aware", "n_naive",
+            ], extrasaction="ignore", lineterminator="\n")
+            writer.writeheader()
+            writer.writerows(rows)
+        with TIMINGS_CSV_PATH.open("w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=[
+                "target_cov", "seed", "us_aware", "us_naive",
+            ], extrasaction="ignore", lineterminator="\n")
             writer.writeheader()
             writer.writerows(rows)
         with TXT_PATH.open("w", newline="\n", encoding="utf-8") as fh:

@@ -45,3 +45,7 @@ recog/sweeps/
 Thumbs.db
 .DS_Store
 recog/realtest/overlays/
+
+# Non-deterministic wall-clock timings from forbidden_bench.py; the
+# deterministic counts live in the committed forbidden_bench.csv.
+docs/receipts/forbidden_bench_timings.csv
