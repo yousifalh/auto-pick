@@ -79,7 +79,12 @@ training:
   # 60 was tuned for the ~50-image cv2 synth set, where an epoch was 13 steps.
   # The Blender set is 1000 images / 250 steps per epoch, so 25 epochs is
   # ~6250 steps — a comparable amount of optimisation, not 20x more.
-  epochs: 25
+  # 35, not 25: the 25-epoch schedule was tuned when albumentations was
+  # missing and training saw only the crude numpy fallback (brightness,
+  # contrast, noise). With the real pipeline plus flips/rotations and a much
+  # wider render-time lighting range, the effective dataset is far larger and
+  # 25 epochs under-fits.
+  epochs: 35
   # 2, not 4: at 1280x720 with 5 aspect ratios x 5 FPN levels, batch 4 peaks
   # near 6 GB and the RPN's filter_proposals then fails to find 256 MB
   # contiguous on a 12 GB card - a fragmentation OOM one second into epoch 0,
