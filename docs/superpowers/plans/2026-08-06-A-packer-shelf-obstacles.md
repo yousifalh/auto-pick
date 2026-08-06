@@ -340,19 +340,27 @@ Append to `tests/test_packing_forbidden.py`:
 def test_shelf_survives_an_obstacle_instead_of_being_abandoned():
     """The FDR §6.3.1 defect, reduced to its smallest reproduction.
 
-    A 100 x 10 mm strip with a 10 mm obstacle at x=0..10. Three 20 mm
-    items should pack at x=10, 30, 50 on one shelf. The old code placed
-    at most one, on a new shelf, because the first overlap at x=0 killed
-    the shelf for every item.
+    A 100 x 10 mm strip with a 10 mm obstacle at x=30..40. Item 0 opens
+    the shelf at x=0 unobstructed. Item 1's cursor lands at x=20, whose
+    footprint spans 20..40 and hits the obstacle: the old code abandoned
+    the whole shelf at that point, so items 1 and 2 were lost. The fix
+    advances the cursor past the obstacle and keeps packing.
+
+    The obstacle is deliberately NOT at x=0. An obstacle at the strip's
+    left edge is hit while OPENING a shelf, which is the new-shelf
+    branch's failure mode and is Task 3's test to write.
     """
-    mask = _mask(10, 100, [(0, 10, 0, 10)])
+    mask = _mask(10, 100, [(0, 10, 30, 40)])
     items = [Item(id=i, width=20.0, height=10.0) for i in range(3)]
     res = first_fit_decreasing(
         items, 100.0, 10.0, allow_rotation=False,
         forbidden_mask=mask, mm_per_cell=CELL,
     )
     assert res.count == 3
-    assert sorted(p.x for p in res.placements) == [10.0, 30.0, 50.0]
+    assert sorted(p.x for p in res.placements) == [0.0, 40.0, 60.0]
+    assert len({p.y for p in res.placements}) == 1, \
+        "all three must land on ONE shelf; a second shelf means the first " \
+        "was abandoned rather than advanced past"
 
 
 def test_no_placement_overlaps_the_forbidden_mask():
@@ -405,7 +413,7 @@ def test_unmasked_behaviour_is_unchanged():
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `pytest tests/test_packing_forbidden.py -v -k "shelf_survives or do_not_overlap"`
-Expected: `test_shelf_survives_an_obstacle_instead_of_being_abandoned` FAILS with `assert 1 == 3` (or similar low count). The others may pass already — they are invariants the fix must not break.
+Expected: `test_shelf_survives_an_obstacle_instead_of_being_abandoned` FAILS with `assert 1 == 3` — item 0 opens the shelf at x=0 and places; items 1 and 2 are lost because the old code abandons the whole shelf on the first overlap at x=20..40, rather than looking for a clear position further along it. The others may pass already — they are invariants the fix must not break.
 
 - [ ] **Step 3: Rewrite the first-fit loop**
 

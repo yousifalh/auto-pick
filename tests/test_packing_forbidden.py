@@ -156,3 +156,76 @@ def test_next_free_x_non_binary_cell_sizes_property(mm_per_cell):
     # complain, since `if x is not None:` bodies that never run still
     # make the test pass.
     assert hits > 20, f"test is vacuous: only {hits}/200 iterations exercised the assertions"
+
+
+def test_shelf_survives_an_obstacle_instead_of_being_abandoned():
+    """The FDR §6.3.1 defect, reduced to its smallest reproduction.
+
+    A 100 x 10 mm strip with a 10 mm obstacle at x=30..40. Item 0 opens
+    the shelf at x=0 unobstructed. Item 1's cursor lands at x=20, whose
+    footprint spans 20..40 and hits the obstacle: the old code abandoned
+    the whole shelf at that point, so items 1 and 2 were lost. The fix
+    advances the cursor past the obstacle and keeps packing.
+
+    The obstacle is deliberately NOT at x=0. An obstacle at the strip's
+    left edge is hit while OPENING a shelf, which is the new-shelf
+    branch's failure mode and is Task 3's test to write.
+    """
+    mask = _mask(10, 100, [(0, 10, 30, 40)])
+    items = [Item(id=i, width=20.0, height=10.0) for i in range(3)]
+    res = first_fit_decreasing(
+        items, 100.0, 10.0, allow_rotation=False,
+        forbidden_mask=mask, mm_per_cell=CELL,
+    )
+    assert res.count == 3
+    assert sorted(p.x for p in res.placements) == [0.0, 40.0, 60.0]
+    assert len({p.y for p in res.placements}) == 1, \
+        "all three must land on ONE shelf; a second shelf means the first " \
+        "was abandoned rather than advanced past"
+
+
+def test_no_placement_overlaps_the_forbidden_mask():
+    """The safety invariant: whatever gets placed must clear the mask."""
+    from common.packing import _overlaps_forbidden
+
+    rng = np.random.default_rng(7)
+    for seed in range(50):
+        mask = (rng.random((40, 60)) < 0.08).astype(np.uint8)
+        items = [Item(id=i, width=6.0, height=5.0) for i in range(30)]
+        res = first_fit_decreasing(
+            items, 60.0, 40.0, allow_rotation=True,
+            forbidden_mask=mask, mm_per_cell=CELL,
+        )
+        for p in res.placements:
+            assert not _overlaps_forbidden(
+                mask, p.x, p.y, p.width, p.height, CELL,
+            ), f"seed {seed}: placement at {p.x},{p.y} overlaps"
+
+
+def test_placements_do_not_overlap_each_other():
+    """Advancing the cursor must not let two items share space."""
+    mask = _mask(40, 60, [(0, 40, 10, 14), (0, 40, 30, 33)])
+    items = [Item(id=i, width=6.0, height=5.0) for i in range(20)]
+    res = first_fit_decreasing(
+        items, 60.0, 40.0, allow_rotation=False,
+        forbidden_mask=mask, mm_per_cell=CELL,
+    )
+    boxes = [(p.x, p.y, p.x + p.width, p.y + p.height)
+             for p in res.placements]
+    for i, a in enumerate(boxes):
+        for b in boxes[i + 1:]:
+            overlap_x = min(a[2], b[2]) - max(a[0], b[0])
+            overlap_y = min(a[3], b[3]) - max(a[1], b[1])
+            assert overlap_x <= 1e-6 or overlap_y <= 1e-6, f"{a} overlaps {b}"
+
+
+def test_unmasked_behaviour_is_unchanged():
+    """With no mask the fix must be inert."""
+    items = [Item(id=i, width=18.5, height=65.0) for i in range(12)]
+    a = first_fit_decreasing(items, 200.0, 150.0, allow_rotation=True)
+    b = first_fit_decreasing(
+        items, 200.0, 150.0, allow_rotation=True, forbidden_mask=None,
+    )
+    assert [(p.item.id, p.x, p.y, p.rotated) for p in a.placements] == \
+           [(p.item.id, p.x, p.y, p.rotated) for p in b.placements]
+    assert a.count == 12

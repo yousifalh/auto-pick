@@ -234,16 +234,32 @@ def _try_place_item(
     # (1) First-fit across existing shelves.
     for shelf_idx, (y0, sh_h, x_cursor) in enumerate(shelves):
         for (w, h, rot) in orientations:
-            if w > strip_width - x_cursor + tol:
-                continue
             if h > sh_h + tol:
                 continue
-            if forbidden_mask is not None and _overlaps_forbidden(
-                forbidden_mask, x_cursor, y0, w, h, mm_per_cell,
-            ):
+            if w > strip_width - x_cursor + tol:
                 continue
-            shelves[shelf_idx] = (y0, sh_h, x_cursor + w)
-            return PackedItem(item=item, x=x_cursor, y=y0, rotated=rot)
+
+            x = x_cursor
+            if forbidden_mask is not None and _overlaps_forbidden(
+                forbidden_mask, x, y0, w, h, mm_per_cell,
+            ):
+                # Advance past the obstacle rather than abandoning the
+                # shelf. FDR §6.3.1: abandoning cost 23.0 -> 3.2 cells
+                # placed at 2.5% forbidden coverage.
+                nxt = _next_free_x(
+                    forbidden_mask, x, y0, w, h,
+                    mm_per_cell, strip_width, tol,
+                )
+                if nxt is None:
+                    continue
+                x = nxt
+
+            # The shelf's cursor advances to x + w, not x_cursor + w: the
+            # region we skipped over to clear the obstacle is deliberately
+            # given up. Reclaiming it would need a per-shelf free-list,
+            # which this design explicitly avoids.
+            shelves[shelf_idx] = (y0, sh_h, x + w)
+            return PackedItem(item=item, x=x, y=y0, rotated=rot)
 
     # (2) Open a new shelf above the last one.
     last_y = shelves[-1][0] + shelves[-1][1] if shelves else 0.0
