@@ -6,8 +6,8 @@ import json
 import numpy as np
 import pytest
 
-from recog.synth3d.annotate import (masks_from_index, rle_decode, rle_encode,
-                                    write_coco_json)
+from recog.synth3d.annotate import (boxes_from_mask, masks_from_index,
+                                    rle_decode, rle_encode, write_coco_json)
 
 
 class _Cfg:
@@ -20,6 +20,7 @@ class _Cfg:
 
 SEG_IDS = {"battery": 1, "cartridge": 2, "electronics_module": 3,
            "placement_area": 4, "obstruction": 5}
+VOC_IDS = {"battery": 1, "cartridge": 2}
 
 
 def test_rle_round_trips_an_empty_mask():
@@ -165,6 +166,43 @@ def test_battery_and_cartridge_still_obey_max_aspect():
         anns, dropped = masks_from_index(ids, meta, SEG_IDS, _Cfg())
         assert anns == [], f"{cls} must still be dropped by max_aspect"
         assert dropped and dropped[0]["reason"].startswith("aspect>")
+
+
+def test_voc_and_seg_paths_agree_on_shared_classes():
+    """`_FILTER_EXEMPT` lives only in `masks_from_index`. A future entry
+    added there for `battery` or `cartridge` - the two classes SEG_CLASSES
+    shares with the VOC vocabulary - would silently desynchronise the VOC
+    and sidecar outputs for those classes with nothing to catch it. This
+    calls `boxes_from_mask` and `masks_from_index` on the SAME ids/id_meta
+    and asserts the kept pass_index sets are identical.
+
+    Three instances, chosen so every filter that could disagree actually
+    exercises something: pid 1 (battery) passes min_px but fails
+    max_aspect (30x6, aspect 5 > 4.0); pid 2 (cartridge) passes everything;
+    pid 3 (battery) is a 3x3=9px sliver that fails min_px (80) outright.
+    """
+    ids = np.zeros((60, 60), dtype=np.int32)
+    ids[2:32, 2:8] = 1      # 30x6 -> aspect 5, over max_aspect=4.0
+    ids[10:50, 20:50] = 2   # 40x30 -> clean, must survive
+    ids[0:3, 40:43] = 3     # 3x3=9px -> under min_px=80
+    id_meta = {
+        1: {"class": "battery", "asset": "A", "variant": "v"},
+        2: {"class": "cartridge", "asset": "A", "variant": "v"},
+        3: {"class": "battery", "asset": "A", "variant": "v"},
+    }
+    voc_anns, voc_dropped = boxes_from_mask(ids, id_meta, VOC_IDS, _Cfg())
+    seg_anns, seg_dropped = masks_from_index(ids, id_meta, SEG_IDS, _Cfg())
+
+    voc_kept = {a["pass_index"] for a in voc_anns}
+    seg_kept = {a["pass_index"] for a in seg_anns
+               if a["class"] in ("battery", "cartridge")}
+    assert voc_kept == seg_kept == {2}, (voc_kept, seg_kept)
+
+    voc_reasons = {d["pass_index"]: d["reason"] for d in voc_dropped}
+    seg_reasons = {d["pass_index"]: d["reason"] for d in seg_dropped
+                  if d["class"] in ("battery", "cartridge")}
+    assert voc_reasons == seg_reasons == {
+        1: "aspect>4.0", 3: "visible_px<80"}, (voc_reasons, seg_reasons)
 
 
 def test_electronics_module_still_obeys_max_aspect():

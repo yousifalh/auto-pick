@@ -41,7 +41,7 @@ _BPY_FREE_MODS = [m for m in _BPY_FREE_CANDIDATES
 
 def test_every_bpy_free_module_is_actually_checked():
     """The existence filter above was scaffolding from when these modules
-    landed one task at a time. All four exist now, so it must be a no-op:
+    landed one task at a time. All six exist now, so it must be a no-op:
     without this assertion, renaming or moving a module would silently drop
     it from the boundary check below and the parametrised test would still
     pass, having tested one fewer file."""

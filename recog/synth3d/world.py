@@ -799,8 +799,16 @@ def build_bay_proxy(placement, z: float, rng: random.Random,
     case and keeps sharing its edge with the module rectangle rather than
     drifting apart under rotation.
 
-    Sits 0.1mm above the shell top, 0.1mm above the PCB's own 0.08mm
-    offset, so it never z-fights with the shell or the board. It is
+    Sits 0.9mm above the shell top (`z + 0.0009`), only 0.1mm above the
+    PCB's own 0.8mm offset (`build_pcb`'s `z + 0.0008`), so it never
+    z-fights with the shell or the board. This is the number every OTHER
+    object placed in the bay - a seated cell, an obstruction, anything
+    added later - must clear: it has to rest strictly ABOVE `z + 0.0009` to
+    occlude this proxy at all. Something placed at or below it loses the
+    z-fight (or loses outright), and `annotate.boxes_from_mask`/
+    `masks_from_index` would keep reporting that floor as free placement
+    area while the object sits visibly on top of it - silently, since
+    nothing downstream can detect the failure from the mask alone. It is
     DELIBERATELY a visible, shaded object rather than an index-only
     helper: the placement area has to look like the inside of a
     cartridge, because the segmenter is asked to recognise it from
@@ -924,6 +932,46 @@ def build_obstructions(poses, z: float, rng: random.Random):
 # from the mask alone.
 SEATED_CELL_LIFT = 0.0012          # metres above the shell top
 
+# The 18650's lay_flat resting footprint, in metres: (short edge, long
+# edge) = (18.3mm, 65.0mm). scene.py's seated-cell capacity estimate and
+# the cell_w/cell_h it hands to bay.seated_cell_poses's packer BOTH need
+# this exact figure, but both run on the bpy-free side, before any cell
+# geometry is ever touched - they cannot measure it themselves. Previously
+# each hardcoded the same two literals separately (scene.py's build(),
+# before this constant existed); import this instead so there is exactly
+# one number to change. `_assert_seat_cell_footprint` below closes the gap
+# that leaves open: it measures the ACTUAL cloned-and-lay_flat'd template
+# the first time each asset seats a cell and raises if it disagrees with
+# this constant, turning what was (per the reviewer's own headless-Blender
+# check) a coincidental tie in `assets.lay_flat`'s `min()` - both non-Z
+# extents of a standing 18650 are 18.3mm, so which one loses that tie is
+# incidental, not guaranteed by anything - into a checked invariant.
+SEAT_CELL_FOOTPRINT_M = (0.0183, 0.065)
+
+_seat_cell_footprint_checked: set = set()
+
+
+def _assert_seat_cell_footprint(asset: str, lo: Vector, hi: Vector) -> None:
+    """Assert a freshly lay_flat'd cell clone's measured XY footprint
+    matches SEAT_CELL_FOOTPRINT_M, once per asset (not once per seated
+    cell - a group_bbox is already computed for placement regardless, so
+    this call is free, but the assets-seen cache still avoids repeating
+    the isclose/sort work for every one of possibly hundreds of seats
+    across a run for no further benefit once the first has passed).
+    """
+    if asset in _seat_cell_footprint_checked:
+        return
+    _seat_cell_footprint_checked.add(asset)
+    got = sorted((hi.x - lo.x, hi.y - lo.y))
+    want = sorted(SEAT_CELL_FOOTPRINT_M)
+    assert all(math.isclose(g, w, abs_tol=5e-4) for g, w in zip(got, want)), (
+        f"{asset}'s seated-cell template measures "
+        f"{got[0] * 1000:.2f}x{got[1] * 1000:.2f}mm after lay_flat, not the "
+        f"{want[0] * 1000:.2f}x{want[1] * 1000:.2f}mm SEAT_CELL_FOOTPRINT_M "
+        f"assumes - scene.py's packer call already sized and placed this "
+        f"cell's seat against the assumed figure, so the packing and the "
+        f"rendered geometry have desynced.")
+
 
 def seat_cells(library, asset: str, seats, z: float, rng: random.Random,
                cfg, backdrop_luma=None):
@@ -992,6 +1040,7 @@ def seat_cells(library, asset: str, seats, z: float, rng: random.Random,
         # lands exactly on the seat - the same drop-to-floor-then-lift
         # composition assets.place_item uses for a whole cartridge.
         lo, hi_obj = A.group_bbox([dup])
+        _assert_seat_cell_footprint(asset, lo, hi_obj)
         centre = Vector(((lo.x + hi_obj.x) / 2, (lo.y + hi_obj.y) / 2, 0.0))
         dup.location += Vector((x - centre.x, y - centre.y,
                                z + SEATED_CELL_LIFT - lo.z))

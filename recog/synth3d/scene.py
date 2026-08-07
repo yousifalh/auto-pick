@@ -326,16 +326,17 @@ def build(params: dict, rng: random.Random, library: A.AssetLibrary,
                 # seats fewer cells, or none; seated_cell_poses returns
                 # whatever fits with no error.
                 if rng.random() < cfg.layout.p_seated:
+                    cell_w, cell_h = W.SEAT_CELL_FOOTPRINT_M
                     cap = max(1, int(
                         (placement_rect[2] - placement_rect[0]) *
                         (placement_rect[3] - placement_rect[1]) /
-                        (0.0183 * 0.065)))
+                        (cell_w * cell_h)))
                     want = max(1, int(
                         cap * rng.uniform(*cfg.layout.seated_frac)))
                     forbidden = B.obstruction_forbidden_mask(
                         local_poses, placement_rect, B.SEAT_MM_PER_CELL)
                     local_seats = B.seated_cell_poses(
-                        placement_rect, 0.0183, 0.065, want, rng,
+                        placement_rect, cell_w, cell_h, want, rng,
                         forbidden_mask=forbidden,
                         mm_per_cell=B.SEAT_MM_PER_CELL)
                     world_seats = B.seated_cell_world_poses(

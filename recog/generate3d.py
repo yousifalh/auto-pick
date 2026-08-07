@@ -230,6 +230,16 @@ def main():
     ws, hs = [], []
     per_class = {c: 0 for c in CLASSES}
     per_variant, per_mode, n_drop, n_images = {}, {}, 0, 0
+    # Per-seg-class kept/dropped counts, the seg-path counterpart of
+    # `dropped`/`n_drop` above. Without this the three new classes were
+    # visible only as an undifferentiated "unmapped" count in the VOC
+    # `dropped` list - telling a reader nothing about WHICH of the three,
+    # or how many of each survived - which is exactly the blind spot that
+    # let filter.min_px silently delete ~85% of `obstruction` earlier in
+    # this plan (see progress.md, Task 7) before a human happened to
+    # compare a per-class count table against expectations.
+    per_seg_class_kept = {c: 0 for c in seg_ids}
+    per_seg_class_dropped = {c: 0 for c in seg_ids}
 
     # COCO segmentation sidecar, accumulated alongside the VOC boxes.
     #
@@ -279,7 +289,7 @@ def main():
             anns, dropped = annotate.boxes_from_mask(mask, id_meta, ids,
                                                      cfg.filter, full_areas)
             anns = annotate.merge_group_boxes(anns, groups, ids, cfg.filter)
-            seg_anns, _ = annotate.masks_from_index(
+            seg_anns, seg_dropped = annotate.masks_from_index(
                 mask, id_meta, seg_ids, cfg.filter, full_areas)
 
             if a.save_masks:
@@ -297,6 +307,7 @@ def main():
                          "width": W, "height": H, "annotations": anns,
                          "dropped": dropped, "classes": CLASSES,
                          "class_to_id": ids, "seg_annotations": seg_anns,
+                         "seg_dropped": seg_dropped,
                          "seg_classes": list(seg_ids), "seg_class_to_id": seg_ids})
             with open(meta_path, "w") as f:
                 json.dump(meta, f, indent=2)
@@ -325,21 +336,41 @@ def main():
             for sa in scene_seg_anns:
                 coco_annotations.append(dict(sa, image_id=image_id,
                                              id=len(coco_annotations) + 1))
+                per_seg_class_kept[sa["class"]] = (
+                    per_seg_class_kept.get(sa["class"], 0) + 1)
+            for sd in meta.get("seg_dropped") or []:
+                cls = sd.get("class")
+                if cls in per_seg_class_dropped:
+                    per_seg_class_dropped[cls] += 1
 
         print(f"[{i + 1}/{a.n}] {stem}  {len(meta['annotations'])} boxes  "
               f"({meta['params']['backdrop']}/{meta['params']['lighting']}"
               f"/{mode})")
 
+    seg_path = os.path.join(root, "instances_seg.json")
     if seg_incomplete:
+        # A pre-existing sidecar from an earlier (complete) run must not be
+        # left behind here: it would go on looking like a valid, complete
+        # instances_seg.json while actually under-covering the dataset,
+        # which is worse than having no sidecar at all - the exact silent
+        # failure this refusal exists to avoid. Remove it (or the caller
+        # would need to notice the file's mtime predates this run, which
+        # nothing does) rather than leave a stale file next to a fresh
+        # manifest.json that describes a different scene count.
+        removed = os.path.exists(seg_path)
+        if removed:
+            os.remove(seg_path)
         print("[warn] at least one scene's meta/*.json had no "
               "'seg_annotations' entry (written by a run that predates the "
               "segmentation sidecar, or reloaded via --resume from an older "
               "output dir) - instances_seg.json was NOT written, to avoid "
-              "emitting a silently-partial sidecar. Regenerate without "
-              "--resume, or point --out at a fresh directory, to produce a "
-              "complete one.")
+              "emitting a silently-partial sidecar."
+              + (f" Deleted the stale {seg_path} left by an earlier run so "
+                 "it cannot be mistaken for a complete one." if removed
+                 else "") +
+              " Regenerate without --resume, or point --out at a fresh "
+              "directory, to produce a complete one.")
     else:
-        seg_path = os.path.join(root, "instances_seg.json")
         annotate.write_coco_json(seg_path, coco_images, coco_annotations, seg_ids)
         print(f"[done] wrote {len(coco_annotations)} segmentation "
               f"annotations over {len(coco_images)} images -> {seg_path}")
@@ -351,6 +382,8 @@ def main():
         "per_variant": per_variant,
         "per_layout_mode": per_mode,
         "dropped_instances": n_drop,
+        "per_seg_class_kept": per_seg_class_kept,
+        "per_seg_class_dropped": per_seg_class_dropped,
         "box_w_px": {"min": min(ws, default=0), "max": max(ws, default=0),
                      "mean": round(statistics.fmean(ws), 1) if ws else 0},
         "box_h_px": {"min": min(hs, default=0), "max": max(hs, default=0),

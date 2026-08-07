@@ -322,6 +322,21 @@ def masks_from_index(ids: np.ndarray, id_meta: Dict[int, dict],
     Kept separate rather than folded into boxes_from_mask so the VOC
     detector path is provably untouched: it still calls the old function
     with the two-class map and gets byte-identical output.
+
+    NOTE on merge_group_boxes asymmetry, deliberately NOT fixed here: this
+    function receives no `groups` argument and performs no equivalent merge
+    step, so an assembled cartridge's occluded shell-BOTTOM half becomes its
+    own separate sidecar instance instead of being folded into the visible
+    top's box the way `merge_group_boxes` folds it for the VOC path. Parity
+    between the two outputs holds today only because that occluded bottom
+    half renders at 1-6px and is discarded by min_px/min_side before it
+    could ever surface as a second instance. That parity is coincidental,
+    not structural: lowering `filter.min_px`, raising `--res`, or tilting
+    the camera would let the bottom half survive, and the sidecar would then
+    report TWO cartridge instances (the second a crescent) for a scene the
+    VOC file still describes as one merged box. Whether the seg path needs
+    an analogous merge is a judgement call for whoever hits this in
+    practice - not implemented speculatively here.
     """
     H, W = ids.shape
     anns: List[dict] = []
