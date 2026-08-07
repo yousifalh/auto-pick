@@ -164,11 +164,30 @@ class FilterCfg:
 
 
 @dataclass
+class ObstructionCfg:
+    """Foreign matter in a cartridge bay. See bay.sample_obstructions.
+
+    IMG_4426 shows thermal adhesive, foam pads, tape crosses and printed
+    labels in every opened real bay; none of it is in the CAD.
+    """
+    p_none: float = 0.40           # fraction of bays left clean
+    n_adhesive: Tuple[int, int] = (0, 6)
+    n_foam: Tuple[int, int] = (0, 1)
+    n_tape: Tuple[int, int] = (0, 2)
+    n_label: Tuple[int, int] = (0, 1)
+    adhesive_frac: Tuple[float, float] = (0.04, 0.14)
+    foam_frac: Tuple[float, float] = (0.15, 0.35)
+    tape_frac: Tuple[float, float] = (0.05, 0.12)
+    label_frac: Tuple[float, float] = (0.10, 0.22)
+
+
+@dataclass
 class Config:
     render: RenderCfg = field(default_factory=RenderCfg)
     layout: LayoutCfg = field(default_factory=LayoutCfg)
     camera: CameraCfg = field(default_factory=CameraCfg)
     filter: FilterCfg = field(default_factory=FilterCfg)
+    obstruction: ObstructionCfg = field(default_factory=ObstructionCfg)
     param_space: Dict[str, Any] = field(default_factory=dict)
     backdrops: Dict[str, dict] = field(default_factory=dict)
     lighting: Dict[str, dict] = field(default_factory=dict)
@@ -189,10 +208,13 @@ def config_to_dict(cfg: Config) -> dict:
 # =========================================================================== #
 
 _SECTIONS = {"render": RenderCfg, "layout": LayoutCfg,
-             "camera": CameraCfg, "filter": FilterCfg}
+             "camera": CameraCfg, "filter": FilterCfg,
+             "obstruction": ObstructionCfg}
 _PASSTHROUGH = ("param_space", "backdrops", "lighting",
                 "materials", "role_materials")
-_TUPLE_FIELDS = {"res", "area", "margin_range", "shift_range", "jig_depth"}
+_TUPLE_FIELDS = {"res", "area", "margin_range", "shift_range", "jig_depth",
+                 "n_adhesive", "n_foam", "n_tape", "n_label",
+                 "adhesive_frac", "foam_frac", "tape_frac", "label_frac"}
 
 
 def default_config_path() -> Path:

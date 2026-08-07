@@ -838,3 +838,64 @@ def build_bay_proxy(placement, z: float, rng: random.Random,
                               @ Matrix.Translation(-pivot) @ proxy.matrix_world)
 
     return proxy, drawn
+
+
+def build_obstructions(poses, z: float, rng: random.Random):
+    """Realise `bay.ObstructionPose`s as geometry. Returns [(obj, meta), ...].
+
+    `poses` are already in WORLD space - `bay.obstruction_world_poses` has
+    rotated and translated them to match the cartridge's actual placement,
+    so this function only has to build shapes at the given (x, y) and spin
+    them by their own `rot_deg`; no pivot rotation is needed here the way
+    `build_pcb`/`build_bay_proxy` need one, because that composition already
+    happened on the bpy-free side.
+
+    Each gets its own pass_index from scene.py, so each is an instance.
+    They sit ON the bay proxy and therefore occlude it, which is what makes
+    placement_area the currently-free floor rather than the nominal one.
+    """
+    made = []
+    for i, p in enumerate(poses):
+        if p.kind == "adhesive":
+            bpy.ops.mesh.primitive_uv_sphere_add(
+                radius=p.w / 2, location=(p.x, p.y, z + 0.0012))
+            o = bpy.context.active_object
+            o.scale = (1.0, p.h / max(p.w, 1e-9), rng.uniform(0.35, 0.7))
+            base, rough, alpha = (0.92, 0.92, 0.90), 0.30, 0.85
+        elif p.kind == "foam":
+            bpy.ops.mesh.primitive_cube_add(
+                size=1, location=(p.x, p.y, z + 0.0022))
+            o = bpy.context.active_object
+            o.scale = (p.w, p.h, rng.uniform(0.002, 0.005))
+            base, rough, alpha = (0.88, 0.88, 0.86), 0.95, 1.0
+        elif p.kind == "tape":
+            bpy.ops.mesh.primitive_plane_add(
+                size=1, location=(p.x, p.y, z + 0.0011))
+            o = bpy.context.active_object
+            o.scale = (p.w, p.h, 1.0)
+            base, rough, alpha = (0.95, 0.95, 0.93), 0.45, 1.0
+        else:  # label
+            bpy.ops.mesh.primitive_plane_add(
+                size=1, location=(p.x, p.y, z + 0.0011))
+            o = bpy.context.active_object
+            o.scale = (p.w, p.h, 1.0)
+            base, rough, alpha = (0.90, 0.89, 0.84), 0.70, 1.0
+
+        o.name = f"Obs{i}_{p.kind}"
+        o.rotation_euler = (0.0, 0.0, math.radians(p.rot_deg))
+        bpy.ops.object.transform_apply(
+            location=False, rotation=False, scale=True)
+        o.pass_index = 0          # scene.py overrides
+
+        mat = bpy.data.materials.new(f"Obs{p.kind}")
+        mat.use_nodes = True
+        b = mat.node_tree.nodes.get("Principled BSDF")
+        set_input(b, "Base Color", base + (1.0,))
+        set_input(b, "Roughness", rough)
+        if alpha < 1.0:
+            set_input(b, "Alpha", alpha)
+            mat.blend_method = "BLEND"
+        o.data.materials.append(mat)
+        made.append((o, {"kind": p.kind, "w": p.w, "h": p.h,
+                         "rot_deg": p.rot_deg}))
+    return made

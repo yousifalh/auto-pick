@@ -169,6 +169,20 @@ filter:
   min_visibility: 0.25
   drop_truncated: false
 
+obstruction:
+  # Foreign matter in the bays. IMG_4426 has thermal adhesive, foam pads,
+  # tape crosses and printed labels in every opened case; none of it is in
+  # the CAD. p_none keeps clean bays in the distribution too.
+  p_none: 0.40
+  n_adhesive: [0, 6]
+  n_foam: [0, 1]
+  n_tape: [0, 2]
+  n_label: [0, 1]
+  adhesive_frac: [0.04, 0.14]
+  foam_frac: [0.15, 0.35]
+  tape_frac: [0.05, 0.12]
+  label_frac: [0.10, 0.22]
+
 param_space:
   n_assemblies: [1, 4]
   layout_mode:

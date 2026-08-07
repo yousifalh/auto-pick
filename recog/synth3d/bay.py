@@ -14,7 +14,9 @@ free.
 from __future__ import annotations
 
 import math
-from typing import Tuple
+import random
+from dataclasses import dataclass
+from typing import List, Tuple
 
 Rect = Tuple[float, float, float, float]     # x0, y0, x1, y1
 
@@ -198,3 +200,119 @@ def placement_world_placement(footprint: Tuple[float, float], bay_mm: Rect,
     wcx = translate[0] + lcx * cos_t - lcy * sin_t
     wcy = translate[1] + lcx * sin_t + lcy * cos_t
     return wcx, wcy, w, h
+
+
+# =========================================================================== #
+#  OBSTRUCTIONS
+#
+#  IMG_4426 shows thermal adhesive, foam pads, tape crosses and printed
+#  labels sitting in every opened real bay; none of it is in the CAD, and a
+#  placement mask trained only on clean bays would site a cell on a glue
+#  blob. They sit ON the bay proxy and occlude it (world.build_obstructions,
+#  scene.py), so they subtract themselves from `placement_area` with no mask
+#  arithmetic anywhere - the proxy's label is already "whatever is currently
+#  free floor", not "the nominal bay".
+# =========================================================================== #
+
+@dataclass(frozen=True)
+class ObstructionPose:
+    """A piece of foreign matter in a bay. Centre-based, caller's units."""
+    kind: str            # adhesive | foam | tape | label
+    x: float
+    y: float
+    w: float
+    h: float
+    rot_deg: float = 0.0
+
+
+def sample_obstructions(placement_rect: Rect, cfg,
+                        rng: random.Random) -> List[ObstructionPose]:
+    """Draw the foreign matter sitting in one bay, in the SAME frame as
+    `placement_rect`.
+
+    This is a pure function of a rect and a config - same pattern as
+    `module_rect_local`/`placement_rect_local` - so it works equally well
+    called on `placement_rect_local`'s LOCAL-frame result (the cartridge's
+    own pivot at the origin, before any placement rotation) as on a
+    world-space rect. The caller wants the local-frame case: `sample_
+    obstructions` never sees the cartridge's rotation, and `obstruction_
+    world_poses` below carries its output into world space afterwards,
+    exactly as `module_world_placement`/`placement_world_placement` do for
+    the module and placement rectangles.
+
+    IMG_4426 shows thermal adhesive, foam pads, tape crosses and printed
+    labels in the real bays. None of it is in the CAD, and a placement
+    mask that ignores it would site a cell on a glue blob.
+
+    `cfg.p_none` of bays come back empty so the network also sees clean
+    ones. Sizes are fractions of the SHORTER bay edge, so an obstruction
+    scales with the cartridge rather than being absolute.
+    """
+    x0, y0, x1, y1 = placement_rect
+    bw, bh = x1 - x0, y1 - y0
+    short = min(bw, bh)
+
+    if rng.random() < cfg.p_none:
+        return []
+
+    out: List[ObstructionPose] = []
+    for kind, count_range, frac_range in (
+        ("adhesive", cfg.n_adhesive, cfg.adhesive_frac),
+        ("foam", cfg.n_foam, cfg.foam_frac),
+        ("tape", cfg.n_tape, cfg.tape_frac),
+        ("label", cfg.n_label, cfg.label_frac),
+    ):
+        for _ in range(rng.randint(*count_range)):
+            w = short * rng.uniform(*frac_range)
+            h = w * rng.uniform(0.6, 1.8) if kind != "tape" \
+                else short * rng.uniform(0.5, 0.95)
+            # Clamp BEFORE sampling the centre below: `rng.uniform(a, b)`
+            # with a > b does not raise, it silently returns a value outside
+            # [a, b] - and an obstruction wider/taller than the bay produces
+            # exactly that inverted range on the next two lines otherwise.
+            w = min(w, bw)
+            h = min(h, bh)
+            out.append(ObstructionPose(
+                kind=kind,
+                x=rng.uniform(x0 + w / 2, x1 - w / 2),
+                y=rng.uniform(y0 + h / 2, y1 - h / 2),
+                w=w, h=h,
+                rot_deg=rng.uniform(-180, 180) if kind != "tape"
+                else rng.choice([0.0, 90.0]) + rng.uniform(-4, 4),
+            ))
+    return out
+
+
+def obstruction_world_poses(poses: List[ObstructionPose], rot_deg: float,
+                            translate: Tuple[float, float]
+                            ) -> List[ObstructionPose]:
+    """Carry LOCAL obstruction poses into world space.
+
+    Same contract and same reasoning as `module_world_placement` /
+    `placement_world_placement`: each obstruction's centre is a POINT in
+    the cartridge's own local frame (the frame `placement_rect_local`
+    returns), so rotating that point about the local origin by `rot_deg`
+    and then translating by `translate` is exact for ANY angle - a point
+    has no extent for the rotation to inflate, unlike lerping into a
+    rotated world AABB. `rot_deg` and `translate` are the SAME `layout.
+    Placement.rot_deg` and `(x, y)` the cartridge, the module board and the
+    placement proxy were placed with, so an obstruction rotates WITH its
+    cartridge: a glue blob drawn near one edge of a bay stays near that
+    same physical edge after the cartridge turns 90 degrees, instead of
+    staying at a fixed world (x, y) while the bay rotates out from under it.
+
+    `w`/`h` are unchanged - rotating a rectangle does not change its own
+    width or height - and each obstruction's own `rot_deg` (its tilt within
+    the bay) is added to the cartridge's, so a tape cross laid crosswise on
+    the local placement rect is still crosswise after the turn.
+    """
+    theta = math.radians(rot_deg)
+    cos_t, sin_t = math.cos(theta), math.sin(theta)
+    tx, ty = translate
+    out: List[ObstructionPose] = []
+    for p in poses:
+        wx = tx + p.x * cos_t - p.y * sin_t
+        wy = ty + p.x * sin_t + p.y * cos_t
+        out.append(ObstructionPose(kind=p.kind, x=wx, y=wy, w=p.w, h=p.h,
+                                   rot_deg=(p.rot_deg + rot_deg) % 360.0))
+    return out

@@ -280,6 +280,30 @@ def build(params: dict, rng: random.Random, library: A.AssetLibrary,
                 item.bay_object = proxy
                 meta.setdefault("bays", []).append(proxy_meta)
 
+                # Obstructions sitting on that same bay: real cartridges
+                # (IMG_4426) have thermal adhesive, foam pads, tape crosses
+                # and printed labels in the bay, none of which the CAD
+                # models. Sampled in the LOCAL frame `placement_placement`
+                # was built from - not in world space - and only carried
+                # into world coordinates by `obstruction_world_poses`, the
+                # same rotate-the-centre-point trick `placement_world_
+                # placement` uses, so a glue blob on a rotated cartridge
+                # rotates with it instead of staying at a fixed world (x, y)
+                # while the bay turns out from under it.
+                placement_rect = B.placement_rect_local(
+                    item.footprint,
+                    tuple(entry["module_bay_mm"]),
+                    tuple(entry["case_interior_mm"][:4]),
+                )
+                local_poses = B.sample_obstructions(
+                    placement_rect, cfg.obstruction, rng)
+                world_poses = B.obstruction_world_poses(
+                    local_poses, item.rot_deg, item.placed_xy)
+                built = W.build_obstructions(world_poses, hi.z, rng)
+                item.obstruction_objects = [o for o, _ in built]
+                meta.setdefault("obstructions", []).extend(
+                    m for _, m in built)
+
     # ---- pass indices ----------------------------------------------------- #
     for o in bpy.data.objects:
         o.pass_index = 0
@@ -333,6 +357,18 @@ def build(params: dict, rng: random.Random, library: A.AssetLibrary,
             id_meta[pid] = {"class": "placement_area", "asset": item.asset,
                             "variant": item.variant, "role": "placement_area"}
             objects_by_id[pid] = [item.bay_object]
+
+        # Obstructions sitting on the bay proxy: adhesive, foam, tape and
+        # labels. Each is its own instance - the segmenter is meant to
+        # learn individual blob/pad/strip shapes, not one glued-together
+        # region - so each gets its OWN pid rather than sharing the bay's
+        # or each other's.
+        for obj in getattr(item, "obstruction_objects", None) or []:
+            pid += 1
+            obj.pass_index = pid
+            id_meta[pid] = {"class": "obstruction", "asset": item.asset,
+                            "variant": item.variant, "role": "obstruction"}
+            objects_by_id[pid] = [obj]
 
     # ---- backdrop, camera, lighting --------------------------------------- #
     # Built AFTER the jig so it can be sunk below the plate. Pocket floors are

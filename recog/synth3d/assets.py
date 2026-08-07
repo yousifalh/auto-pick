@@ -48,6 +48,11 @@ class Item:
     # or None. Same reasoning as module_object: scene content, not a CAD
     # sub-part, so it gets its own pass_index and id_meta entry too.
     bay_object: object = None
+    # The obstruction objects (adhesive/foam/tape/label) scene.py built on
+    # this item's bay, or None. Same reasoning as bay_object: scene content,
+    # not a CAD sub-part. Unlike bay_object there can be several, and each
+    # is its OWN instance with its own pass_index and id_meta entry.
+    obstruction_objects: Optional[List[object]] = None
     # The rigid transform `layout.Placement` applied to this item - its
     # `rot_deg` and `(x, y)` - captured once the item is placed.
     # bay.module_world_placement needs both to put the electronics module

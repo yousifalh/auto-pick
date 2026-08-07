@@ -255,6 +255,123 @@ def test_placement_world_placement_centre_rotates_about_the_translate_point():
     assert (w, h) == pytest.approx((0.0817, 0.145))
 
 
+import random
+
+from recog.synth3d.bay import ObstructionPose, obstruction_world_poses, \
+    sample_obstructions
+
+
+class _ObsCfg:
+    p_none = 0.4
+    n_adhesive = (0, 6)
+    n_foam = (0, 1)
+    n_tape = (0, 2)
+    n_label = (0, 1)
+    adhesive_frac = (0.04, 0.14)
+    foam_frac = (0.15, 0.35)
+    tape_frac = (0.05, 0.12)
+    label_frac = (0.10, 0.22)
+
+
+RECT = (0.0, 0.0, 0.055, 0.065)
+
+
+def test_every_obstruction_lies_inside_the_placement_rect():
+    cfg = _ObsCfg()
+    hits = 0
+    for seed in range(300):
+        poses = sample_obstructions(RECT, cfg, random.Random(seed))
+        if poses:
+            hits += 1
+        for p in poses:
+            assert p.x - p.w / 2 >= RECT[0] - 1e-9, f"seed {seed}: {p}"
+            assert p.y - p.h / 2 >= RECT[1] - 1e-9, f"seed {seed}: {p}"
+            assert p.x + p.w / 2 <= RECT[2] + 1e-9, f"seed {seed}: {p}"
+            assert p.y + p.h / 2 <= RECT[3] + 1e-9, f"seed {seed}: {p}"
+
+    # Anti-vacuity guard: a property test that iterates 300 seeds but never
+    # gets a non-empty pose list back would pass with its assertion body
+    # never once executed. Measured 176/300 non-empty draws with this cfg
+    # and seed range; the floor below is well under that with headroom.
+    assert hits > 100, f"test is vacuous: only {hits}/300 seeds produced any pose"
+
+
+def test_roughly_forty_percent_of_bays_are_clean():
+    cfg = _ObsCfg()
+    empty = sum(1 for s in range(2000)
+                if not sample_obstructions(RECT, cfg, random.Random(s)))
+    assert 0.33 < empty / 2000 < 0.47, (
+        "the network must see clean bays too, or it learns that every "
+        "bay contains adhesive")
+
+
+def test_sampling_is_deterministic_for_a_seed():
+    cfg = _ObsCfg()
+    a = sample_obstructions(RECT, cfg, random.Random(42))
+    b = sample_obstructions(RECT, cfg, random.Random(42))
+    assert a == b
+
+
+def test_all_four_kinds_can_be_produced():
+    cfg = _ObsCfg()
+    kinds = set()
+    for s in range(500):
+        kinds.update(p.kind for p in sample_obstructions(
+            RECT, cfg, random.Random(s)))
+    assert kinds == {"adhesive", "foam", "tape", "label"}
+
+
+# ---- obstruction_world_poses: same rotate-the-centre-point contract as
+# module_world_placement/placement_world_placement, applied to individual
+# obstruction poses instead of a whole rect - see that pair's docstrings
+# for why a rotated world AABB is not an option (7.6% inflation measured at
+# 2 degrees of jitter on an 81.7x180mm case). These pin down that an
+# obstruction actually turns WITH its cartridge rather than staying fixed
+# in world space while the bay rotates under it.
+
+def test_obstruction_world_poses_is_identity_at_zero_rotation_and_no_translate():
+    poses = [ObstructionPose(kind="adhesive", x=0.01, y=-0.02,
+                             w=0.005, h=0.006, rot_deg=15.0)]
+    out = obstruction_world_poses(poses, 0.0, (0.0, 0.0))
+    assert out[0].x == pytest.approx(0.01)
+    assert out[0].y == pytest.approx(-0.02)
+    assert out[0].rot_deg == pytest.approx(15.0)
+    assert (out[0].w, out[0].h) == (0.005, 0.006)
+
+
+def test_obstruction_world_poses_translates_a_centred_obstruction():
+    poses = [ObstructionPose(kind="foam", x=0.0, y=0.0, w=0.01, h=0.01)]
+    out = obstruction_world_poses(poses, 0.0, (0.130, 0.245))
+    assert (out[0].x, out[0].y) == pytest.approx((0.130, 0.245))
+
+
+def test_obstruction_world_poses_rotates_the_local_point_about_the_origin():
+    # A point at local (0.02, 0.0); a +90 degree turn sends +x to +y.
+    poses = [ObstructionPose(kind="label", x=0.02, y=0.0, w=0.01, h=0.01,
+                             rot_deg=0.0)]
+    out = obstruction_world_poses(poses, 90.0, (0.0, 0.0))
+    assert (out[0].x, out[0].y) == pytest.approx((0.0, 0.02), abs=1e-9)
+    assert out[0].rot_deg == pytest.approx(90.0)
+
+
+def test_obstruction_world_poses_composes_rotation_and_translation():
+    poses = [ObstructionPose(kind="tape", x=0.02, y=0.0, w=0.01, h=0.03,
+                             rot_deg=90.0)]
+    out = obstruction_world_poses(poses, 90.0, (0.3, 0.2))
+    # Local point rotates to (0, 0.02), then translates by (0.3, 0.2).
+    assert (out[0].x, out[0].y) == pytest.approx((0.3, 0.22), abs=1e-9)
+    # The obstruction's own tilt (90) plus the cartridge's turn (90) = 180.
+    assert out[0].rot_deg == pytest.approx(180.0)
+
+
+def test_obstruction_world_poses_keeps_size_invariant_to_rotation_angle():
+    poses = [ObstructionPose(kind="adhesive", x=0.015, y=-0.01,
+                             w=0.006, h=0.009, rot_deg=-40.0)]
+    for rot_deg in (0.0, 2.0, 47.3, 90.0, 137.0, 358.0):
+        out = obstruction_world_poses(poses, rot_deg, (0.1, -0.2))
+        assert (out[0].w, out[0].h) == (0.006, 0.009)
+
+
 def test_placement_and_module_world_rects_do_not_overlap_after_rotation():
     """A rigid rotate-then-translate applied identically to two disjoint
     local rectangles cannot make them overlap; this pins that down at the
