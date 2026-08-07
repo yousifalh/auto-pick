@@ -46,7 +46,7 @@
   - `SEG_CHANNELS: Dict[str, int]` — `{"background": 0, "cartridge": 1, "bay": 2, "electronics": 3, "obstruction": 4, "battery": 5}`
   - `jitter_box(box, rng, frac) -> Tuple[int, int, int, int]`
   - `rasterise_crop(anns, box, out_size) -> np.ndarray` — `(out_size, out_size)` int64 label map
-  - `BaySegDataset(coco_path, img_dir, out_size=256, jitter_frac=0.06, train=True)` — duck-typed dataset (`__len__` / `__getitem__`, not a `torch.utils.data.Dataset` subclass, so the module imports without torch) yielding `(image_chw_float32, label_hw_int64)`
+  - `BaySegDataset(coco_path, img_dir, out_size=256, jitter_frac=0.06, train=True)` — one sample per **unit** (grouped by the sidecar's `unit_id`), not per `cartridge` annotation; duck-typed dataset (`__len__` / `__getitem__`, not a `torch.utils.data.Dataset` subclass, so the module imports without torch) yielding `(image_chw_float32, label_hw_int64)`
 
 The label map is painted in a fixed order so overlaps resolve deterministically: `cartridge` first, then `bay` over it, then `electronics`, `obstruction`, `battery` on top. Painting battery last is what makes a seated cell win over the bay floor it covers — which is the modal definition, encoded as a paint order.
 
@@ -313,13 +313,33 @@ class BaySegDataset:
                                 a["bbox"][1] + a["bbox"][3]]
             by_image.setdefault(a["image_id"], []).append(rec)
 
-        # One sample per cartridge. A frame with three cartridges is
-        # three crops, not one - the segmenter never sees a whole frame.
-        self.samples: List[Tuple[dict, List[dict], dict]] = []
+        # One sample per UNIT, not per `cartridge` annotation.
+        #
+        # This is not a stylistic choice. Plan B's Task 9 established that an
+        # OPEN cartridge has no surviving `cartridge` mask at all: the
+        # electronics module and bay proxy cover the shell's entire top face,
+        # so the index pass reports no shell pixels. Cropping to `cartridge`
+        # annotations therefore yields only SEALED units - measured before the
+        # fix as 43 crops containing zero bay, electronics or obstruction
+        # pixels. The segmenter would have trained on nothing.
+        #
+        # Every annotation now carries a `unit_id` linking the parts of one
+        # physical unit - its cartridge, module, bay, obstructions and any
+        # cells seated in it. A loose cell or loose module gets its own.
+        # Grouping by it and cropping the union of the group's boxes gives a
+        # crop that actually contains a bay: measured 6 of 6 after the fix.
+        self.samples: List[Tuple[dict, List[dict], Tuple[int, int, int, int]]] = []
         for img_id, anns in by_image.items():
+            by_unit: Dict[object, List[dict]] = {}
             for a in anns:
-                if a["class"] == "cartridge":
-                    self.samples.append((images[img_id], anns, a))
+                by_unit.setdefault(a.get("unit_id"), []).append(a)
+            for uid, unit in by_unit.items():
+                if not any(a["class"] == "placement_area" for a in unit):
+                    continue          # not a cartridge unit; nothing to segment
+                xs = [a["bbox_xyxy"] for a in unit]
+                box = (min(b[0] for b in xs), min(b[1] for b in xs),
+                       max(b[2] for b in xs), max(b[3] for b in xs))
+                self.samples.append((images[img_id], anns, box))
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -328,11 +348,11 @@ class BaySegDataset:
         import torch
         from PIL import Image
 
-        img_meta, anns, cart = self.samples[idx]
+        img_meta, anns, unit_box = self.samples[idx]
         path = os.path.join(self.img_dir, img_meta["file_name"])
         image = np.asarray(Image.open(path).convert("RGB"))
 
-        box = jitter_box(cart["bbox_xyxy"], self.rng, self.jitter_frac)
+        box = jitter_box(unit_box, self.rng, self.jitter_frac)
         label = rasterise_crop(anns, box, self.out_size)
 
         x0, y0, x1, y1 = box
