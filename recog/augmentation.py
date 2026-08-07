@@ -292,6 +292,11 @@ def build_seg_train_transform(cfg: Dict[str, Any]):
                 hue_shift_limit=cfg.get("hue_shift_limit", 15),
                 sat_shift_limit=cfg.get("sat_shift_limit", 30),
                 val_shift_limit=cfg.get("val_shift_limit", 20), p=0.5),
+            A.RandomShadow(
+                shadow_roi=(0, 0, 1, 1),
+                num_shadows_limit=tuple(cfg.get("shadow_num_range", (1, 3))),
+                shadow_dimension=5,
+                p=0.4),
         ], p=cfg.get("p_photometric", 0.85)),
         A.HorizontalFlip(p=cfg.get("p_flip", 0.5)),
         A.VerticalFlip(p=cfg.get("p_flip", 0.5)),
