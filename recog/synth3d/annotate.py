@@ -254,16 +254,63 @@ def rle_decode(rle: Dict[str, object]) -> np.ndarray:
     return flat.reshape((h, w), order="F")
 
 
-# Classes exempt from the size filters. See the spec's ruling 4: under the
-# modal definition a nearly-full cartridge has a small, thin, mostly-occluded
-# strip of free floor, which is exactly what min_px / min_side /
-# min_visibility discard - and exactly the cartridge where knowing the
-# remaining room matters most. Filtering it would teach the segmenter that a
-# nearly-full bay has NO placement area rather than a small one.
+# Per-class, per-filter exemptions. A filter tuned for one class's geometry
+# does not automatically transfer to another's - see the two cases below,
+# both found the same way: by measuring what a filter actually threw away
+# against the real construction of the class it was hitting.
 #
-# A bay with zero visible free floor still yields nothing, because it never
-# appears in np.unique. That case is correct: there is no room.
-_UNFILTERED = frozenset({"placement_area"})
+# placement_area is exempt from every filter (min_px, min_side, max_aspect,
+# min_visibility, and drop_truncated). See the spec's ruling 4: under the
+# modal definition a nearly-full cartridge has a small, thin, mostly-occluded
+# strip of free floor, which is exactly what those filters discard - and
+# exactly the cartridge where knowing the remaining room matters most.
+# Filtering it would teach the segmenter that a nearly-full bay has NO
+# placement area rather than a small one. A bay with zero visible free floor
+# still yields nothing, because it never appears in np.unique; that case is
+# correct, there is no room.
+#
+# obstruction is exempt from min_px and max_aspect ONLY - min_side and
+# min_visibility stay in force.
+#   min_px=500 (configs/synth3d.yaml) is a CELL-sized threshold: at the
+#   production 1280x720 render over an 800mm layout (1.6 px/mm), a battery
+#   (18.3x65mm) is ~29x104px = ~3000px^2, but an adhesive blob at
+#   adhesive_frac 0.04-0.14 of a ~55mm bay edge is 2-8mm i.e. 3-13px, or
+#   25-500px^2 - an order of magnitude smaller. Measured over the 27
+#   obstructions a 24-scene run built: 8/27 passed min_px, 19/27 failed, so
+#   min_px alone discarded ~85% of the class Task 5 exists to create, while
+#   the object stayed fully RENDERED - teaching the segmenter that glue is
+#   bay floor, the exact confusion the class was added to prevent. min_side
+#   stays in force because, unlike min_px, 6px (3.75mm at 1.6px/mm) is a
+#   legibility floor rather than a cell-sized one and rejects real noise on
+#   its own: the same measurement found 24/27 obstructions clearing it.
+#   max_aspect is tuned to 4.0 against battery cells' own aspect ratio (see
+#   _too_thin's docstring), and does NOT transfer to obstruction: `bay.
+#   sample_obstructions` draws a tape strip's width from 5-12% of the bay's
+#   short edge and its height from 50-95% of the SAME edge - an aspect
+#   ratio of ~4-19 BY CONSTRUCTION, not from frame truncation. Applying
+#   max_aspect here would discard most real tape, the identical mistake
+#   min_px made on the whole class, just for a different reason.
+#
+# battery and cartridge get no exemptions: SEG_CLASSES starts with CLASSES
+# specifically so ids 1 and 2 mean the same thing in both the VOC and the
+# seg files, and max_aspect applies to both here exactly as it does in
+# boxes_from_mask, so the two paths never disagree on these two classes by
+# omission.
+#
+# electronics_module also gets no exemptions. Unlike a scattered obstruction,
+# its true (untruncated) shape is fixed by the CAD: catalog.json's
+# module_bay_mm gives an aspect ratio of 2.16-3.05 across all four Anker
+# assemblies, safely under 4.0, so max_aspect only ever fires on a genuine
+# frame-truncation sliver here, the case it exists to catch.
+_FILTER_EXEMPT: Dict[str, frozenset] = {
+    "placement_area": frozenset(
+        {"min_px", "min_side", "max_aspect", "min_visibility", "truncated"}),
+    "obstruction": frozenset({"min_px", "max_aspect"}),
+}
+
+
+def _filter_exempt(cls: str, filt: str) -> bool:
+    return filt in _FILTER_EXEMPT.get(cls, frozenset())
 
 
 def masks_from_index(ids: np.ndarray, id_meta: Dict[int, dict],
@@ -306,15 +353,18 @@ def masks_from_index(ids: np.ndarray, id_meta: Dict[int, dict],
             vis_frac = round(visible_px / max(1, full_areas[pid]), 4)
 
         reason = None
-        if cls not in _UNFILTERED:
-            if visible_px < cfg.min_px:
-                reason = f"visible_px<{cfg.min_px}"
-            elif min(w, h) < cfg.min_side:
-                reason = f"side<{cfg.min_side}"
-            elif cfg.drop_truncated and truncated:
-                reason = "truncated"
-            elif vis_frac is not None and vis_frac < cfg.min_visibility:
-                reason = f"visibility<{cfg.min_visibility}"
+        if not _filter_exempt(cls, "min_px") and visible_px < cfg.min_px:
+            reason = f"visible_px<{cfg.min_px}"
+        elif not _filter_exempt(cls, "min_side") and min(w, h) < cfg.min_side:
+            reason = f"side<{cfg.min_side}"
+        elif not _filter_exempt(cls, "max_aspect") and _too_thin(w, h, cfg):
+            reason = f"aspect>{cfg.max_aspect}"
+        elif (not _filter_exempt(cls, "truncated")
+              and cfg.drop_truncated and truncated):
+            reason = "truncated"
+        elif (not _filter_exempt(cls, "min_visibility")
+              and vis_frac is not None and vis_frac < cfg.min_visibility):
+            reason = f"visibility<{cfg.min_visibility}"
         if reason:
             dropped.append({"pass_index": pid, "class": cls,
                             "reason": reason, "visible_px": visible_px})

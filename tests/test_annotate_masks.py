@@ -15,6 +15,7 @@ class _Cfg:
     min_side = 6
     min_visibility = 0.25
     drop_truncated = False
+    max_aspect = 4.0
 
 
 SEG_IDS = {"battery": 1, "cartridge": 2, "electronics_module": 3,
@@ -112,3 +113,67 @@ def test_coco_json_has_the_five_categories_and_parses(tmp_path):
     assert doc["annotations"][0]["segmentation"]["size"] == [20, 20]
     assert doc["annotations"][0]["iscrowd"] == 0
     assert doc["annotations"][0]["bbox"] == [2, 2, 16, 16]   # xywh
+
+
+# ------------------------------------------------------- per-class filter
+# exemptions (fix round 1): min_px=500 in production is a CELL-sized
+# threshold and silently discarded ~85% of real obstruction instances
+# (adhesive/foam/tape/label are an order of magnitude smaller than a
+# battery), while max_aspect=4.0 is tuned to battery cells and does not
+# transfer to tape, which bay.sample_obstructions draws with an aspect
+# ratio of ~4-19 BY CONSTRUCTION. Both are class-specific judgements, not a
+# blanket exemption, so each is tested in isolation below. -------------- #
+
+def test_obstruction_is_exempt_from_min_px_but_not_min_side():
+    """A real adhesive/foam/tape/label instance is an order of magnitude
+    smaller than min_px=500 (tuned for a battery cell), but must still be
+    legible: min_side stays in force."""
+    ids = np.zeros((40, 40), dtype=np.int32)
+    ids[10:16, 10:18] = 1              # 48 px, area < min_px=80, sides ok
+    meta = {1: {"class": "obstruction", "asset": "A", "variant": "v"}}
+    anns, dropped = masks_from_index(ids, meta, SEG_IDS, _Cfg())
+    assert len(anns) == 1, "obstruction below min_px must still survive"
+    assert dropped == []
+
+    ids2 = np.zeros((40, 40), dtype=np.int32)
+    ids2[10:13, 10:12] = 1             # 6 px, 2 px on the short side
+    anns2, dropped2 = masks_from_index(ids2, meta, SEG_IDS, _Cfg())
+    assert anns2 == [], "obstruction thinner than min_side must still drop"
+    assert dropped2 and dropped2[0]["reason"].startswith("side<")
+
+
+def test_obstruction_is_exempt_from_max_aspect():
+    """bay.sample_obstructions draws a tape strip's width from 5-12% of the
+    bay's short edge and its height from 50-95% of the same edge - an
+    aspect ratio of ~4-19 by construction. max_aspect must not drop it."""
+    ids = np.zeros((40, 40), dtype=np.int32)
+    ids[2:38, 10:16] = 1               # 36x6, aspect 6 > max_aspect=4.0
+    meta = {1: {"class": "obstruction", "asset": "A", "variant": "v"}}
+    anns, dropped = masks_from_index(ids, meta, SEG_IDS, _Cfg())
+    assert len(anns) == 1, "a tape-shaped obstruction must survive max_aspect"
+    assert dropped == []
+
+
+def test_battery_and_cartridge_still_obey_max_aspect():
+    """battery/cartridge get NO exemptions: they must filter identically to
+    boxes_from_mask, since SEG_CLASSES ids 1/2 mean the same thing as
+    CLASSES ids 1/2."""
+    ids = np.zeros((40, 40), dtype=np.int32)
+    ids[2:32, 10:16] = 1               # 30x6, aspect 5 > max_aspect=4.0
+    for cls in ("battery", "cartridge"):
+        meta = {1: {"class": cls, "asset": "A", "variant": "v"}}
+        anns, dropped = masks_from_index(ids, meta, SEG_IDS, _Cfg())
+        assert anns == [], f"{cls} must still be dropped by max_aspect"
+        assert dropped and dropped[0]["reason"].startswith("aspect>")
+
+
+def test_electronics_module_still_obeys_max_aspect():
+    """electronics_module's true (untruncated) shape is fixed by the CAD -
+    catalog.json's module_bay_mm never exceeds aspect 3.05 - so max_aspect
+    only ever fires on a genuine frame-truncation sliver here."""
+    ids = np.zeros((40, 40), dtype=np.int32)
+    ids[2:32, 10:16] = 1               # 30x6, aspect 5 > max_aspect=4.0
+    meta = {1: {"class": "electronics_module", "asset": "A", "variant": "v"}}
+    anns, dropped = masks_from_index(ids, meta, SEG_IDS, _Cfg())
+    assert anns == []
+    assert dropped and dropped[0]["reason"].startswith("aspect>")
