@@ -36,11 +36,44 @@ def test_module_bay_handles_the_gap_on_the_minus_y_side():
     assert bay == pytest.approx((0.0, 0.0, 60.0, 24.0))
 
 
-def test_module_bay_handles_the_gap_on_an_x_side():
+def test_module_bay_handles_the_gap_on_the_minus_x_side():
+    # Gaps: -x 24, +x 4, -y 4, +y 4. The -x gap wins.
     interior = (0.0, 0.0, 90.0, 60.0)
     cells = (24.0, 4.0, 86.0, 56.0)
     bay = module_bay_from_bounds(interior, cells)
     assert bay == pytest.approx((0.0, 0.0, 24.0, 60.0))
+
+
+def test_module_bay_handles_the_gap_on_the_plus_x_side():
+    # Interior 0..90 x 0..60; cells fill 4..66 x 4..56.
+    # Gaps: -x 4, +x 24, -y 4, +y 4. The +x gap wins, so the bay is the
+    # strip from the cells' far edge (x=66) to the interior's far wall
+    # (x=90), spanning the full y range (0..60) because the module runs
+    # wall to wall across the short side.
+    interior = (0.0, 0.0, 90.0, 60.0)
+    cells = (4.0, 4.0, 66.0, 56.0)
+    bay = module_bay_from_bounds(interior, cells)
+    assert bay == pytest.approx((66.0, 0.0, 90.0, 60.0))
+
+
+def test_module_bay_rejects_an_ambiguous_tie():
+    # Cells exactly centred: all four gaps equal 4. No side is unambiguously
+    # the bay, so this must raise rather than silently pick one by dict
+    # order.
+    interior = (0.0, 0.0, 60.0, 60.0)
+    cells = (4.0, 4.0, 56.0, 56.0)
+    with pytest.raises(ValueError):
+        module_bay_from_bounds(interior, cells)
+
+
+def test_module_bay_rejects_cells_outside_the_interior():
+    # A bad upstream measurement puts the cell union outside the case
+    # interior on the +x side; this must not silently produce a
+    # negative-width rectangle.
+    interior = (0.0, 0.0, 60.0, 90.0)
+    cells = (4.0, 4.0, 66.0, 66.0)
+    with pytest.raises(ValueError):
+        module_bay_from_bounds(interior, cells)
 
 
 @pytest.mark.skipif(not os.path.isfile(os.path.join(ASSETS, "catalog.json")),
