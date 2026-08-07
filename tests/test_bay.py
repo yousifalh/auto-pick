@@ -7,7 +7,7 @@ import os
 
 import pytest
 
-from recog.synth3d.bay import module_bay_from_bounds
+from recog.synth3d.bay import case_wall_from_bounds, module_bay_from_bounds
 
 ASSETS = os.path.join(os.path.dirname(__file__), "..",
                       "recog", "synth3d", "assets")
@@ -77,6 +77,75 @@ def test_module_bay_rejects_cells_outside_the_interior():
         module_bay_from_bounds(interior, cells)
 
 
+# ---- case_wall_from_bounds: the amendment's new wall-thickness measurement.
+# Fixture mirrors test_module_bay_picks_the_largest_gap_side's interior/cells
+# (bay on +y, symmetric 4.0mm ±x walls) so the two functions are pinned
+# against the SAME geometry.
+
+def test_case_wall_from_bounds_averages_the_non_bay_axis_gaps():
+    # Interior 0..60 x 0..90; cells 4..56 x 4..66. Bay is +y (24mm gap);
+    # the non-bay (x) axis gaps are 4.0 and 4.0.
+    interior = (0.0, 0.0, 60.0, 90.0)
+    cells = (4.0, 4.0, 56.0, 66.0)
+    assert case_wall_from_bounds(interior, cells) == pytest.approx(4.0)
+
+
+def test_case_wall_from_bounds_ignores_the_bay_axis_near_side():
+    # Same as above but the near (-y) gap is a DIFFERENT figure (2.45mm,
+    # like the real AnkerPowerCore10000) from the x walls (4.0mm) - the
+    # result must still be 4.0, not an average involving 2.45.
+    interior = (0.0, -2.45, 60.0, 87.55)
+    cells = (4.0, 0.0, 56.0, 62.0)
+    assert case_wall_from_bounds(interior, cells) == pytest.approx(4.0)
+
+
+def test_case_wall_from_bounds_handles_a_bay_on_the_x_axis():
+    # Gaps: -x 24, +x 4, -y 4, +y 4 (mirrors
+    # test_module_bay_handles_the_gap_on_the_minus_x_side). Bay is -x, so
+    # the wall is averaged from the y-axis gaps.
+    interior = (0.0, 0.0, 90.0, 60.0)
+    cells = (24.0, 4.0, 86.0, 56.0)
+    assert case_wall_from_bounds(interior, cells) == pytest.approx(4.0)
+
+
+def test_case_wall_from_bounds_matches_the_measured_anker_figures():
+    # The four real assemblies, catalog.json's rounded cell_union_mm /
+    # case_interior_mm (x, y only). Expected values from the amendment
+    # brief: 4.0 / 3.8 / 3.7 / 4.2 mm.
+    cases = [
+        ((-31.45, -45.45, 31.45, 45.45), (-27.45, -43.0, 27.45, 22.0), 4.0),
+        ((-40.35, -48.5, 40.35, 48.5), (-36.6, -43.0, 36.6, 22.0), 3.75),
+        ((-31.15, -83.9, 31.15, 83.9), (-27.45, -78.0, 27.45, 55.0), 3.7),
+        ((-40.85, -90.0, 40.85, 90.0), (-36.6, -85.0, 36.6, 55.0), 4.25),
+    ]
+    for interior, cells, expected in cases:
+        assert case_wall_from_bounds(interior, cells) == \
+            pytest.approx(expected, abs=0.01)
+
+
+def test_case_wall_from_bounds_rejects_an_ambiguous_tie():
+    interior = (0.0, 0.0, 60.0, 60.0)
+    cells = (4.0, 4.0, 56.0, 56.0)
+    with pytest.raises(ValueError):
+        case_wall_from_bounds(interior, cells)
+
+
+def test_case_wall_from_bounds_rejects_cells_outside_the_interior():
+    interior = (0.0, 0.0, 60.0, 90.0)
+    cells = (4.0, 4.0, 66.0, 66.0)
+    with pytest.raises(ValueError):
+        case_wall_from_bounds(interior, cells)
+
+
+def test_case_wall_from_bounds_rejects_an_asymmetric_wall():
+    # x walls of 4.0 and 10.0 disagree far beyond tessellation noise - the
+    # asset would not have the uniform wall this function assumes.
+    interior = (0.0, 0.0, 60.0, 90.0)
+    cells = (4.0, 4.0, 50.0, 66.0)
+    with pytest.raises(ValueError):
+        case_wall_from_bounds(interior, cells)
+
+
 @pytest.mark.skipif(not os.path.isfile(os.path.join(ASSETS, "catalog.json")),
                     reason="catalog.json not built")
 @pytest.mark.parametrize("name,depth", [
@@ -93,6 +162,22 @@ def test_catalog_records_the_measured_bay_depth(name, depth):
     x0, y0, x1, y1 = entry["module_bay_mm"]
     assert max(x1 - x0, y1 - y0) == pytest.approx(depth, abs=0.6) or \
            min(x1 - x0, y1 - y0) == pytest.approx(depth, abs=0.6)
+
+
+@pytest.mark.skipif(not os.path.isfile(os.path.join(ASSETS, "catalog.json")),
+                    reason="catalog.json not built")
+@pytest.mark.parametrize("name,wall", [
+    ("AnkerPowerCore10000", 4.0),
+    ("AnkerPowerCore13000", 3.8),
+    ("AnkerPowerCore20100", 3.7),
+    ("AnkerPowerCore26800", 4.2),
+])
+def test_catalog_records_the_measured_case_wall(name, wall):
+    with open(os.path.join(ASSETS, "catalog.json")) as fh:
+        cat = json.load(fh)
+    entry = next(a for a in cat["assets"] if a["name"] == name)
+    assert "case_wall_mm" in entry, "re-run: python -m recog.convert_cad"
+    assert entry["case_wall_mm"] == pytest.approx(wall, abs=0.1)
 
 
 from recog.synth3d.bay import (module_rect_local, module_world_placement,
@@ -133,6 +218,90 @@ def test_module_rect_local_is_a_strict_subset_of_the_local_footprint():
     fx0, fy0, fx1, fy1 = -fw / 2, -fh / 2, fw / 2, fh / 2
     assert fx0 - 1e-9 <= mx0 < mx1 <= fx1 + 1e-9
     assert fy0 - 1e-9 <= my0 < my1 <= fy1 + 1e-9
+
+
+# ---- wall_mm: the amendment's inset. Defaults to 0.0 everywhere (every
+# test above calls these functions with no wall_mm and is therefore an
+# unchanged regression pin for the pre-amendment behaviour); these tests
+# cover the non-zero case directly.
+
+def test_module_rect_local_wall_mm_zero_is_the_default_behaviour():
+    interior_mm = (0.0, 0.0, 60.0, 90.0)
+    bay_mm = (0.0, 66.0, 60.0, 90.0)
+    footprint = (0.060, 0.090)
+    assert module_rect_local(footprint, bay_mm, interior_mm, 0.0) == \
+        pytest.approx(module_rect_local(footprint, bay_mm, interior_mm))
+
+
+def test_module_rect_local_insets_by_wall_mm():
+    interior_mm = (0.0, 0.0, 60.0, 90.0)
+    bay_mm = (0.0, 66.0, 60.0, 90.0)
+    footprint = (0.060, 0.090)
+    x0, y0, x1, y1 = module_rect_local(footprint, bay_mm, interior_mm,
+                                       wall_mm=3.0)
+    assert (x0, x1) == pytest.approx((-0.027, 0.027))
+    assert (y0, y1) == pytest.approx((0.0196, 0.042))
+
+
+def test_placement_rect_local_insets_by_wall_mm():
+    interior_mm = (0.0, 0.0, 60.0, 90.0)
+    bay_mm = (0.0, 66.0, 60.0, 90.0)
+    footprint = (0.060, 0.090)
+    x0, y0, x1, y1 = placement_rect_local(footprint, bay_mm, interior_mm,
+                                          wall_mm=3.0)
+    assert (x0, x1) == pytest.approx((-0.027, 0.027))
+    assert (y0, y1) == pytest.approx((-0.042, 0.0196))
+
+
+def test_wall_mm_leaves_a_rim_around_all_four_sides_of_the_true_footprint():
+    """The whole point of the amendment: module + placement no longer tile
+    the cartridge's true physical footprint completely, so the case's own
+    shell mesh shows through on every side by exactly wall_mm."""
+    interior_mm = (0.0, 0.0, 60.0, 90.0)
+    bay_mm = (0.0, 66.0, 60.0, 90.0)
+    footprint = (0.060, 0.090)
+    wall_mm = 3.0
+    wall_m = wall_mm / 1000.0
+    fw, fh = footprint
+    true_fx0, true_fy0 = -fw / 2, -fh / 2
+    true_fx1, true_fy1 = fw / 2, fh / 2
+
+    m = module_rect_local(footprint, bay_mm, interior_mm, wall_mm)
+    p = placement_rect_local(footprint, bay_mm, interior_mm, wall_mm)
+
+    # Both sides of the x axis are inset (module and placement share the
+    # same x span, since the bay is on the y axis here).
+    assert m[0] == p[0] == pytest.approx(true_fx0 + wall_m)
+    assert m[2] == p[2] == pytest.approx(true_fx1 - wall_m)
+    # module owns the far (+y) edge, placement owns the near (-y) edge.
+    assert m[3] == pytest.approx(true_fy1 - wall_m)
+    assert p[1] == pytest.approx(true_fy0 + wall_m)
+
+
+def test_module_and_placement_tile_only_the_inset_footprint_with_wall_mm():
+    interior_mm = (0.0, 0.0, 60.0, 90.0)
+    bay_mm = (0.0, 66.0, 60.0, 90.0)
+    footprint = (0.060, 0.090)
+    wall_mm = 3.0
+    wall_m = wall_mm / 1000.0
+    fw, fh = footprint
+
+    m = module_rect_local(footprint, bay_mm, interior_mm, wall_mm)
+    p = placement_rect_local(footprint, bay_mm, interior_mm, wall_mm)
+    area = lambda r: (r[2] - r[0]) * (r[3] - r[1])
+    inset_area = (fw - 2 * wall_m) * (fh - 2 * wall_m)
+    assert area(m) + area(p) == pytest.approx(inset_area)
+    # ... and strictly less than the un-inset footprint, i.e. some area was
+    # actually reserved for the shell rim.
+    assert area(m) + area(p) < fw * fh
+
+
+def test_wall_mm_too_large_for_the_footprint_raises():
+    interior_mm = (0.0, 0.0, 60.0, 90.0)
+    bay_mm = (0.0, 66.0, 60.0, 90.0)
+    footprint = (0.060, 0.090)
+    with pytest.raises(ValueError):
+        module_rect_local(footprint, bay_mm, interior_mm, wall_mm=31.0)
 
 
 def test_placement_rect_local_is_the_complement_of_the_module_rect():
@@ -195,6 +364,27 @@ def test_module_world_placement_centre_rotates_about_the_translate_point():
     # Local centre is (0, 0.0725); a +90 degree turn sends +y to -x.
     assert (cx, cy) == pytest.approx((-0.0725, 0.0), abs=1e-6)
     assert (w, h) == pytest.approx((0.0817, 0.035))
+
+
+def test_module_world_placement_wall_mm_shrinks_size_but_stays_rotation_invariant():
+    # Same AnkerPowerCore26800 fixture, with its measured case_wall_mm
+    # (4.2mm). The x axis is inset by the wall on both sides exactly
+    # (0.0817 - 2*0.0042 = 0.0733: the module always spans interior's full
+    # perpendicular axis, which is now the inset local width). The y axis
+    # shrinks too, but not by a simple 2*wall - it is the SAME proportional
+    # lerp as before, now mapping into a smaller destination span; 0.03337
+    # is that lerp's exact result, not a rounded approximation. Either way
+    # w, h stay invariant to rotation - the point-rotation argument does
+    # not care how "local" was computed.
+    footprint = (0.0817, 0.180)
+    bay_mm = (-40.85, 55.0, 40.85, 90.0)
+    interior_mm = (-40.85, -90.0, 40.85, 90.0)
+    for rot_deg in (0.0, 2.0, 47.3, 90.0, 137.0, 358.0):
+        _, _, w, h = module_world_placement(
+            footprint, bay_mm, interior_mm, rot_deg, (0.0, 0.0),
+            wall_mm=4.2)
+        assert w == pytest.approx(0.0733, abs=1e-9)
+        assert h == pytest.approx(0.033366666666666656, abs=1e-9)
 
 
 # ---- proxy geometry: the placement_area label is the complementary

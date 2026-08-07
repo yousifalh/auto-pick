@@ -253,6 +253,16 @@ def build(params: dict, rng: random.Random, library: A.AssetLibrary,
                 role_of(o.name) == "case" for o in item.objects):
             lo, hi = A.group_bbox(item.objects)
             entry = library.catalog_entry(item.asset)
+            # case_wall_mm (catalog.json, task 10): the module and bay
+            # proxy below are inset from the cartridge's own footprint by
+            # this much on every side, so a rim of the case's own shell
+            # mesh survives as `cartridge` pixels instead of being
+            # completely covered - see bay.py's module docstring.
+            # `.get(..., 0.0) or 0.0` degrades a catalog written before
+            # this field existed to the old (uninset, whole-footprint)
+            # behaviour rather than crashing on a missing key.
+            wall_mm = (entry.get("case_wall_mm", 0.0) or 0.0) if entry \
+                else 0.0
             module_placement = None
             if entry and entry.get("module_bay_mm") \
                     and entry.get("case_interior_mm"):
@@ -261,6 +271,7 @@ def build(params: dict, rng: random.Random, library: A.AssetLibrary,
                     tuple(entry["module_bay_mm"]),
                     tuple(entry["case_interior_mm"][:4]),
                     item.rot_deg, item.placed_xy,
+                    wall_mm=wall_mm,
                 )
             board, pcb_meta = W.build_pcb(
                 (lo.x, lo.y, hi.x, hi.y), hi.z, rng,
@@ -281,6 +292,7 @@ def build(params: dict, rng: random.Random, library: A.AssetLibrary,
                     tuple(entry["module_bay_mm"]),
                     tuple(entry["case_interior_mm"][:4]),
                     item.rot_deg, item.placed_xy,
+                    wall_mm=wall_mm,
                 )
                 proxy, proxy_meta = W.build_bay_proxy(
                     placement_placement, hi.z, rng, rot_deg=item.rot_deg)
@@ -301,6 +313,7 @@ def build(params: dict, rng: random.Random, library: A.AssetLibrary,
                     item.footprint,
                     tuple(entry["module_bay_mm"]),
                     tuple(entry["case_interior_mm"][:4]),
+                    wall_mm=wall_mm,
                 )
                 local_poses = B.sample_obstructions(
                     placement_rect, cfg.obstruction, rng)

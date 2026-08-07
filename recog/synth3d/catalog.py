@@ -66,7 +66,7 @@ def inspect_glb(path: str) -> dict:
     import numpy as np
     import trimesh
 
-    from .bay import module_bay_from_bounds
+    from .bay import case_wall_from_bounds, module_bay_from_bounds
 
     scene = trimesh.load(path)
 
@@ -115,6 +115,8 @@ def inspect_glb(path: str) -> dict:
         "case_interior_mm": case_interior,
     }
     if cell_union and case_interior:
+        out["case_wall_mm"] = round(case_wall_from_bounds(
+            tuple(case_interior[:4]), tuple(cell_union[:4])), 2)
         out["module_bay_mm"] = [
             round(v, 2) for v in module_bay_from_bounds(
                 tuple(case_interior[:4]), tuple(cell_union[:4]))
