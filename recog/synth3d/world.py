@@ -1,15 +1,22 @@
 """
 recog.synth3d.world - backdrop, lighting, the overhead camera, and the two
-pieces of UNLABELLED scene furniture (the jig plate and the PCB). Requires bpy.
+pieces of scene furniture (the jig plate and the PCB). Requires bpy.
 
 Presets are not module globals: they are read off the loaded config, so
 `build_backdrop` and `setup_lighting` take a `cfg` (a `config.Config`).
 
-The jig plate and the PCB both carry `pass_index = 0` on purpose. They are
-scene content, not classes: they must occlude correctly in the index pass but
-must never produce an annotation. Keeping them at 0 is what makes that work -
+The jig plate carries `pass_index = 0` on purpose. It is scene content, not
+a class: it must occlude correctly in the index pass but must never produce
+an annotation. Keeping it at 0 is what makes that work -
 `annotate.boxes_from_mask` skips id 0 as background, and any NON-zero id that
 had no `id_meta` entry would be dropped silently and without an audit trail.
+
+The PCB built by `build_pcb` also carries `pass_index = 0` here, but that is
+a placeholder, not the final word: scene.py assigns it a real id and an
+`electronics_module` id_meta entry once it knows the board object, so its
+mask is real ground truth rather than occlusion-only furniture. Its child
+ports and inductor are given the SAME id as the board, not left at 0 - see
+scene.py's pass-index loop for why.
 """
 
 from __future__ import annotations
@@ -19,6 +26,7 @@ import os
 import random
 
 import bpy
+from mathutils import Matrix, Vector
 
 from .lightrig import off_axis_placement, shadow_direction
 from .materials import set_input, rng_range
@@ -599,35 +607,60 @@ def build_jig(pockets, rng: random.Random):
     return plate, drawn
 
 
-def build_pcb(bounds_xy, z: float, rng: random.Random):
+def build_pcb(bounds_xy, z: float, rng: random.Random, module_placement=None,
+             rot_deg: float = 0.0):
     """
-    Green PCB with a few extruded components, for the open_case variant.
+    Green PCB with extruded components, for the open_case variant.
 
-    The CAD has no PCB, but it is the most distinctive thing inside an opened
-    case in the real photos. `z` is the shell's TOP, so the board is laid on
-    top of the shell rather than modelled inside it: from a bird's-eye camera
-    the two read the same, and this needs no interior geometry. UNLABELLED
-    (pass_index 0) - it is scene content, not a class, and it correctly
-    shrinks the case's visible silhouette the way a real board would.
+    The CAD has no PCB part, but it reserves the space: every assembly
+    leaves a 23-35mm strip on one short side (catalog.json's
+    module_bay_mm). `module_placement` is `(cx, cy, w, h)` - that strip's
+    TRUE centre and size in world metres, from
+    `bay.module_world_placement`. Pass it and the board lands where the
+    hardware puts it, at its real, un-inflated size regardless of how the
+    cartridge is rotated. `rot_deg` is the SAME `layout.Placement.rot_deg`
+    the cartridge itself was placed with; the board (and everything
+    parented to it) is rotated to match at the end of this function, via
+    `matrix_world` rather than `rotation_euler` for the same reason
+    `assets.place_item` does - see its own comment.
+
+    Omit `module_placement` and the board is centred, which is what this
+    function did before and what every real photograph contradicts.
+    Centring is box-safe - boxes_from_mask takes min/max of visible
+    pixels, so a hole in the middle of a case does not move its box - but
+    it is not what the detector should be learning to see. `rot_deg`
+    still applies in this path, so the centred fallback also turns with
+    the case rather than staying axis-aligned against a rotated one.
+
+    `z` is the shell's TOP: the board is laid on top of the shell rather
+    than modelled inside it. There is no interior geometry in these
+    assemblies at all. From the near-orthographic bird's-eye camera the
+    two read the same.
+
+    Returns (board_object, drawn_meta). The caller assigns pass_index.
     """
     x0, y0, x1, y1 = bounds_xy
-    w = (x1 - x0) * rng.uniform(0.55, 0.80)
-    h = (y1 - y0) * rng.uniform(0.20, 0.38)
-    cx = (x0 + x1) / 2 + rng.uniform(-0.004, 0.004)
-    cy = (y0 + y1) / 2 + rng.uniform(-0.010, 0.010)
+    if module_placement is not None:
+        cx, cy, w, h = module_placement
+    else:
+        w = (x1 - x0) * rng.uniform(0.55, 0.80)
+        h = (y1 - y0) * rng.uniform(0.20, 0.38)
+        cx = (x0 + x1) / 2 + rng.uniform(-0.004, 0.004)
+        cy = (y0 + y1) / 2 + rng.uniform(-0.010, 0.010)
 
     bpy.ops.mesh.primitive_cube_add(size=1, location=(cx, cy, z + 0.0008))
     board = bpy.context.active_object
     board.name = "PCB"
     board.scale = (w, h, 0.0016)
     bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
-    board.pass_index = 0
+    board.pass_index = 0          # scene.py overrides this
 
     drawn = {"w": w, "h": h,
              "color": [rng.uniform(0.02, 0.06), rng.uniform(0.16, 0.30),
                        rng.uniform(0.04, 0.10)],
              "roughness": rng.uniform(0.25, 0.50),
-             "n_components": rng.randint(3, 7)}
+             "n_components": rng.randint(3, 7),
+             "anchored": module_placement is not None, "rot_deg": rot_deg}
 
     mat = bpy.data.materials.new("PCBGreen")
     mat.use_nodes = True
@@ -670,5 +703,71 @@ def build_pcb(bounds_xy, z: float, rng: random.Random):
         # (measured displacement 0.0).
         c.parent = board
         c.matrix_parent_inverse = board.matrix_world.inverted()
+
+    # Gold USB shells along the board's outward edge, and one copper
+    # inductor. These are the module's two most recognisable features in
+    # the real photographs and the dark cuboids above have neither.
+    gold = bpy.data.materials.new("PCBGold")
+    gold.use_nodes = True
+    gb = gold.node_tree.nodes.get("Principled BSDF")
+    set_input(gb, "Base Color", (0.75, 0.60, 0.22, 1.0))
+    set_input(gb, "Metallic", 1.0)
+    set_input(gb, "Roughness", rng.uniform(0.20, 0.35))
+
+    n_ports = rng.randint(1, 4)
+    port_w, port_h, port_z = 0.013, 0.006, 0.005
+    for k in range(n_ports):
+        span = n_ports * port_w * 1.3
+        bpy.ops.mesh.primitive_cube_add(
+            size=1,
+            location=(cx - span / 2 + port_w * 1.3 * (k + 0.5),
+                      cy + h / 2 - port_h,
+                      z + 0.0016 + port_z / 2))
+        p = bpy.context.active_object
+        p.name = f"PCBPort{k}"
+        p.scale = (port_w, port_h, port_z)
+        bpy.ops.object.transform_apply(
+            location=False, rotation=False, scale=True)
+        p.pass_index = 0
+        p.data.materials.append(gold)
+        p.parent = board
+        p.matrix_parent_inverse = board.matrix_world.inverted()
+
+    copper = bpy.data.materials.new("PCBCopper")
+    copper.use_nodes = True
+    cb2 = copper.node_tree.nodes.get("Principled BSDF")
+    set_input(cb2, "Base Color", (0.72, 0.35, 0.18, 1.0))
+    set_input(cb2, "Metallic", 1.0)
+    set_input(cb2, "Roughness", rng.uniform(0.35, 0.55))
+    bpy.ops.mesh.primitive_cylinder_add(
+        radius=rng.uniform(0.004, 0.007), depth=0.006,
+        location=(cx + rng.uniform(-w / 4, w / 4),
+                  cy + rng.uniform(-h / 4, h / 4), z + 0.0016 + 0.003))
+    ind = bpy.context.active_object
+    ind.name = "PCBInductor"
+    ind.pass_index = 0
+    ind.data.materials.append(copper)
+    ind.parent = board
+    ind.matrix_parent_inverse = board.matrix_world.inverted()
+
+    drawn["n_ports"] = n_ports
+
+    # Rotate the board to match the cartridge's actual placement rotation.
+    # The board (and its ports/inductor, built above at cx, cy with no
+    # rotation of their own) was built axis-aligned; for a 90/180/270
+    # degree turn - or the few degrees of jitter layout.plan adds on top
+    # of every turn - an axis-aligned board would sit crosswise across a
+    # turned case. This rotates ABOUT (cx, cy, z), the board's own centre
+    # (also its own origin, since the cube was built there), so its
+    # position from module_placement is preserved and only its
+    # orientation changes. Ports and the inductor are parented to `board`
+    # with matrix_parent_inverse already set, so they turn rigidly with
+    # it through the normal parent/child transform - no separate rotation
+    # needed for them.
+    if rot_deg:
+        pivot = Vector((cx, cy, 0.0))
+        R = Matrix.Rotation(math.radians(rot_deg), 4, "Z")
+        board.matrix_world = (Matrix.Translation(pivot) @ R
+                              @ Matrix.Translation(-pivot) @ board.matrix_world)
 
     return board, drawn

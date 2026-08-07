@@ -30,6 +30,7 @@ from typing import Dict, List, Tuple
 import bpy
 
 from . import assets as A
+from . import bay as B
 from . import layout as L
 from . import materials as M
 from . import world as W
@@ -213,6 +214,8 @@ def build(params: dict, rng: random.Random, library: A.AssetLibrary,
                 bpy.data.objects.remove(o, do_unlink=True)
             continue
         A.place_item(item, plc, rng)
+        item.rot_deg = plc.rot_deg
+        item.placed_xy = (plc.x, plc.y)
         kept.append(item)
         meta["items"].append({"asset": item.asset, "variant": item.variant,
                               "objects": [o.name for o in item.objects],
@@ -222,11 +225,14 @@ def build(params: dict, rng: random.Random, library: A.AssetLibrary,
     if not items:
         return {}, {}, meta
 
-    # ---- unlabelled scene geometry ---------------------------------------- #
-    # Both carry pass_index 0, so they never produce an annotation but do
-    # occlude correctly. Built BEFORE pass indices are assigned so the
-    # "for o in bpy.data.objects: o.pass_index = 0" reset covers them even if a
-    # future edit forgets to set it explicitly.
+    # ---- jig plate and electronics module ---------------------------------- #
+    # Both are built here, before pass indices are assigned, so the
+    # "for o in bpy.data.objects: o.pass_index = 0" reset below covers them
+    # even if a future edit forgets to set one explicitly. The jig plate
+    # stays at 0 (unlabelled furniture: it must occlude correctly but never
+    # produce an annotation). The PCB does NOT stay at 0 - the pass-index
+    # loop below gives item.module_object a real id, because unlike the jig
+    # plate it is a class the segmenter is meant to learn, not backdrop.
     #
     # `pockets` is non-empty only in jig mode, and only for items that actually
     # got packed - it is parallel to the non-None placements, which is exactly
@@ -239,7 +245,20 @@ def build(params: dict, rng: random.Random, library: A.AssetLibrary,
         if item.variant == "open_case" and any(
                 role_of(o.name) == "case" for o in item.objects):
             lo, hi = A.group_bbox(item.objects)
-            _, pcb_meta = W.build_pcb((lo.x, lo.y, hi.x, hi.y), hi.z, rng)
+            entry = library.catalog_entry(item.asset)
+            module_placement = None
+            if entry and entry.get("module_bay_mm") \
+                    and entry.get("case_interior_mm"):
+                module_placement = B.module_world_placement(
+                    item.footprint,
+                    tuple(entry["module_bay_mm"]),
+                    tuple(entry["case_interior_mm"][:4]),
+                    item.rot_deg, item.placed_xy,
+                )
+            board, pcb_meta = W.build_pcb(
+                (lo.x, lo.y, hi.x, hi.y), hi.z, rng,
+                module_placement=module_placement, rot_deg=item.rot_deg)
+            item.module_object = board
             meta.setdefault("pcbs", []).append(pcb_meta)
 
     # ---- pass indices ----------------------------------------------------- #
@@ -262,6 +281,28 @@ def build(params: dict, rng: random.Random, library: A.AssetLibrary,
             objects_by_id[pid] = [obj]
             if item.merge:
                 groups[pid] = gid
+
+        # The electronics module (world.build_pcb's board) is scene
+        # content built here rather than a CAD sub-part, so it is not in
+        # item.objects/labels and gets its own pid instead of going
+        # through the loop above. Its gold ports and copper inductor are
+        # given the SAME pid as the board rather than staying at the 0
+        # build_pcb left them on: annotate.boxes_from_mask keys the
+        # instance mask by pass_index, so a different (or zero) id on a
+        # child would cut a hole out of the board's mask exactly where its
+        # most recognisable features are - the opposite of what "label it"
+        # is for. A shared id also needs no merge-group entry: one id
+        # already renders as one connected mask, unlike the per-sub-part
+        # ids the case/cell loop above merges by box only.
+        if item.module_object is not None:
+            pid += 1
+            item.module_object.pass_index = pid
+            children = list(item.module_object.children)
+            for child in children:
+                child.pass_index = pid
+            id_meta[pid] = {"class": "electronics_module", "asset": item.asset,
+                            "variant": item.variant, "role": "module"}
+            objects_by_id[pid] = [item.module_object] + children
 
     # ---- backdrop, camera, lighting --------------------------------------- #
     # Built AFTER the jig so it can be sunk below the plate. Pocket floors are

@@ -92,3 +92,105 @@ def test_catalog_records_the_measured_bay_depth(name, depth):
     x0, y0, x1, y1 = entry["module_bay_mm"]
     assert max(x1 - x0, y1 - y0) == pytest.approx(depth, abs=0.6) or \
            min(x1 - x0, y1 - y0) == pytest.approx(depth, abs=0.6)
+
+
+from recog.synth3d.bay import (module_rect_local, module_world_placement,
+                               placement_rect_local)
+
+# `footprint` for these is `assets.Item.footprint`: the cartridge's own
+# UN-ROTATED (size_x, size_y) in metres - not a world AABB. See
+# `module_world_placement`'s docstring for why that distinction is load
+# bearing: a world AABB is inflated by rotation, an un-rotated footprint is
+# not.
+
+
+def test_module_rect_local_anchors_to_the_plus_y_side_and_scales():
+    # Catalog: interior 0..60 x 0..90 mm, bay is the +y strip 66..90.
+    interior_mm = (0.0, 0.0, 60.0, 90.0)
+    bay_mm = (0.0, 66.0, 60.0, 90.0)
+    footprint = (0.060, 0.090)         # same proportions, 1000x smaller
+    x0, y0, x1, y1 = module_rect_local(footprint, bay_mm, interior_mm)
+    assert (x0, x1) == pytest.approx((-0.030, 0.030))       # full width
+    assert (y0, y1) == pytest.approx((0.021, 0.045))        # +y strip
+
+
+def test_module_rect_local_anchors_to_the_minus_x_side():
+    interior_mm = (0.0, 0.0, 90.0, 60.0)
+    bay_mm = (0.0, 0.0, 24.0, 60.0)
+    footprint = (0.090, 0.060)
+    x0, y0, x1, y1 = module_rect_local(footprint, bay_mm, interior_mm)
+    assert (x0, x1) == pytest.approx((-0.045, -0.021))
+    assert (y0, y1) == pytest.approx((-0.030, 0.030))
+
+
+def test_module_rect_local_is_a_strict_subset_of_the_local_footprint():
+    interior_mm = (0.0, 0.0, 60.0, 90.0)
+    bay_mm = (0.0, 66.0, 60.0, 90.0)
+    footprint = (0.060, 0.090)
+    mx0, my0, mx1, my1 = module_rect_local(footprint, bay_mm, interior_mm)
+    fw, fh = footprint
+    fx0, fy0, fx1, fy1 = -fw / 2, -fh / 2, fw / 2, fh / 2
+    assert fx0 - 1e-9 <= mx0 < mx1 <= fx1 + 1e-9
+    assert fy0 - 1e-9 <= my0 < my1 <= fy1 + 1e-9
+
+
+def test_placement_rect_local_is_the_complement_of_the_module_rect():
+    interior_mm = (0.0, 0.0, 60.0, 90.0)
+    bay_mm = (0.0, 66.0, 60.0, 90.0)
+    footprint = (0.060, 0.090)
+
+    m = module_rect_local(footprint, bay_mm, interior_mm)
+    p = placement_rect_local(footprint, bay_mm, interior_mm)
+
+    # Disjoint, adjacent, and together they tile the footprint.
+    assert p[3] == pytest.approx(m[1])
+    fw, fh = footprint
+    assert (p[0], p[1], p[2]) == pytest.approx((-fw / 2, -fh / 2, fw / 2))
+    area = lambda r: (r[2] - r[0]) * (r[3] - r[1])
+    assert area(m) + area(p) == pytest.approx(fw * fh)
+
+
+# ---- module_world_placement: `layout.plan` rotates by quarter*90 + a few
+# degrees of jitter, and a naive lerp into the ROTATED case's world AABB
+# (what `module_rect_local`'s predecessor did) inflates the module, because
+# the AABB of a rotated rectangle is larger than the rectangle. These pin
+# down that the fix - rotating the LOCAL centre as a point, which has no
+# extent to inflate - keeps the module's true size for ANY rotation angle,
+# not just the k*90 multiples the old quarter-only fix handled.
+
+def test_module_world_placement_size_is_invariant_to_rotation_angle():
+    # AnkerPowerCore26800's real numbers: 81.7mm-wide interior, a 35.0mm
+    # bay on the +y end - the case measured on the contact sheet as
+    # overhanging by 3.3% at ~2 degrees of jitter under the old lerp.
+    footprint = (0.0817, 0.180)
+    bay_mm = (-40.85, 55.0, 40.85, 90.0)
+    interior_mm = (-40.85, -90.0, 40.85, 90.0)
+    for rot_deg in (0.0, 2.0, 47.3, 90.0, 91.7, 137.0, 180.0, 270.0, 358.0):
+        _, _, w, h = module_world_placement(
+            footprint, bay_mm, interior_mm, rot_deg, (0.0, 0.0))
+        assert w == pytest.approx(0.0817, abs=1e-9)
+        assert h == pytest.approx(0.035, abs=1e-9)
+
+
+def test_module_world_placement_matches_the_local_case_at_zero_rotation():
+    footprint = (0.060, 0.090)
+    bay_mm = (0.0, 66.0, 60.0, 90.0)
+    interior_mm = (0.0, 0.0, 60.0, 90.0)
+    # A cartridge placed with its centre at (0.130, 0.245) sits at world
+    # AABB 0.100..0.160 x 0.200..0.290 - the same case the un-rotated
+    # module_rect tests above use.
+    cx, cy, w, h = module_world_placement(
+        footprint, bay_mm, interior_mm, 0.0, (0.130, 0.245))
+    assert (w, h) == pytest.approx((0.060, 0.024))
+    assert (cx, cy) == pytest.approx((0.130, 0.278))
+
+
+def test_module_world_placement_centre_rotates_about_the_translate_point():
+    footprint = (0.0817, 0.180)
+    bay_mm = (-40.85, 55.0, 40.85, 90.0)
+    interior_mm = (-40.85, -90.0, 40.85, 90.0)
+    cx, cy, w, h = module_world_placement(
+        footprint, bay_mm, interior_mm, 90.0, (0.0, 0.0))
+    # Local centre is (0, 0.0725); a +90 degree turn sends +y to -x.
+    assert (cx, cy) == pytest.approx((-0.0725, 0.0), abs=1e-6)
+    assert (w, h) == pytest.approx((0.0817, 0.035))

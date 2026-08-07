@@ -18,7 +18,7 @@ import math
 import os
 import random
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import bpy
 from mathutils import Matrix, Vector
@@ -39,6 +39,19 @@ class Item:
     asset: str = ""
     variant: str = ""
     footprint: Tuple[float, float] = (0.0, 0.0)
+    # The electronics-module board scene.py built for an open_case item, or
+    # None. Not in `objects`/`labels`: it is not a CAD sub-part, so it gets
+    # its own pass_index and id_meta entry in scene.py rather than going
+    # through the per-item labelling loop.
+    module_object: object = None
+    # The rigid transform `layout.Placement` applied to this item - its
+    # `rot_deg` and `(x, y)` - captured once the item is placed.
+    # bay.module_world_placement needs both to put the electronics module
+    # exactly where the case itself ended up: rotating the module's local
+    # centre by the same angle and translating by the same offset, rather
+    # than approximating from the case's rotation-inflated world AABB.
+    rot_deg: float = 0.0
+    placed_xy: Tuple[float, float] = (0.0, 0.0)
 
 
 # --------------------------------------------------------------------------- #
@@ -130,6 +143,10 @@ class AssetLibrary:
 
     def names(self) -> List[str]:
         return sorted(self.assets)
+
+    def catalog_entry(self, name: str) -> Optional[dict]:
+        """The raw catalog.json entry for `name`, or None if unknown."""
+        return self.assets.get(name)
 
     # ---- import once ------------------------------------------------------ #
     def _load_template(self, name: str) -> Dict[str, list]:
