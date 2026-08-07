@@ -316,6 +316,15 @@ def build(params: dict, rng: random.Random, library: A.AssetLibrary,
                 # so a seated cell turns WITH its cartridge instead of
                 # staying axis-aligned to the world while the bay rotates
                 # under it.
+                #
+                # `local_poses` (the obstructions just sampled above, in the
+                # SAME local frame) are rasterised into a forbidden-cell grid
+                # and handed to the packer, so a seated cell cannot land on
+                # top of adhesive/foam/tape/a label - physically impossible,
+                # and it is the exact case obstructions exist to teach the
+                # segmenter to avoid. A densely obstructed bay legitimately
+                # seats fewer cells, or none; seated_cell_poses returns
+                # whatever fits with no error.
                 if rng.random() < cfg.layout.p_seated:
                     cap = max(1, int(
                         (placement_rect[2] - placement_rect[0]) *
@@ -323,8 +332,12 @@ def build(params: dict, rng: random.Random, library: A.AssetLibrary,
                         (0.0183 * 0.065)))
                     want = max(1, int(
                         cap * rng.uniform(*cfg.layout.seated_frac)))
+                    forbidden = B.obstruction_forbidden_mask(
+                        local_poses, placement_rect, B.SEAT_MM_PER_CELL)
                     local_seats = B.seated_cell_poses(
-                        placement_rect, 0.0183, 0.065, want, rng)
+                        placement_rect, 0.0183, 0.065, want, rng,
+                        forbidden_mask=forbidden,
+                        mm_per_cell=B.SEAT_MM_PER_CELL)
                     world_seats = B.seated_cell_world_poses(
                         local_seats, item.rot_deg, item.placed_xy)
                     item.seated_objects = W.seat_cells(

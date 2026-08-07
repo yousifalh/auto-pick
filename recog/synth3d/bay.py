@@ -16,7 +16,9 @@ from __future__ import annotations
 import math
 import random
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List, Optional, Tuple
+
+import numpy as np
 
 Rect = Tuple[float, float, float, float]     # x0, y0, x1, y1
 
@@ -335,10 +337,92 @@ def obstruction_world_poses(poses: List[ObstructionPose], rot_deg: float,
 #  sit ON the bay proxy and occlude it (world.seat_cells, scene.py), exactly
 #  the mechanism sample_obstructions/obstruction_world_poses established:
 #  placement_area shrinks to the free floor with no mask arithmetic anywhere.
+#
+#  Obstructions and seated cells are sampled against the SAME placement_rect,
+#  independently - so a bay containing both must keep them apart, or a cell
+#  would render sitting spatially on top of physical foreign matter, which is
+#  impossible and undermines the whole reason obstructions exist (a mask that
+#  never saw a clean bay-vs-glue-blob distinction would learn nothing from
+#  one). `obstruction_forbidden_mask` rasterises obstruction footprints into
+#  the SAME forbidden-cell grid `first_fit_decreasing` already knows how to
+#  pack around (it now advances past a forbidden cell and keeps packing the
+#  shelf, rather than abandoning it - see common.packing's own docstring),
+#  so `seated_cell_poses` seats cells on the free floor around foreign
+#  matter, matching what the real packer would have to do too.
 # =========================================================================== #
 
+# Forbidden-grid resolution for seated_cell_poses's obstruction avoidance, in
+# the SAME metres this module uses throughout - NOT first_fit_decreasing's
+# own default of 1.5 taken literally, which is calibrated for the REAL
+# planner working in millimetres; passed straight through here that would
+# mean a 1.5-METRE grid cell, dozens of times larger than the whole bay.
+# 1.5mm (0.0015) keeps the SAME physical resolution the real planner already
+# uses for the identical algorithm: fine enough that a seated cell's
+# stand-off from a rasterised obstruction is sub-millimetre quantisation
+# error, not centimetres, and coarse enough that a bay's grid stays a few
+# dozen cells on a side (0.055m / 0.0015m ~ 37 columns) rather than
+# thousands.
+SEAT_MM_PER_CELL = 0.0015
+
+
+def obstruction_forbidden_mask(poses: List[ObstructionPose],
+                               placement_rect: Rect,
+                               mm_per_cell: float = SEAT_MM_PER_CELL
+                               ) -> np.ndarray:
+    """Rasterise obstruction footprints into a `first_fit_decreasing`
+    forbidden-cell grid over `placement_rect`, so `seated_cell_poses` can be
+    told to seat cells around foreign matter instead of on top of it.
+
+    `poses` must be in the SAME frame as `placement_rect` - the local frame
+    `sample_obstructions` returns, before `obstruction_world_poses` carries
+    them into world space. `seated_cell_poses` samples in that same local
+    frame for the same reason (see its own docstring), so the two compose
+    directly with no extra conversion.
+
+    Each obstruction is rasterised as its AXIS-ALIGNED BOUNDING BOX, not its
+    exact rotated footprint. `first_fit_decreasing`'s forbidden_mask is
+    itself a grid of axis-aligned cells, so an exact rotated polygon could
+    only ever be approximated by that same grid anyway - and a bounding box
+    is a conservative (never smaller) approximation: a cell packed clear of
+    an obstruction's AABB is provably clear of its exact rotated shape too.
+    The cost is that a cell may stand off a heavily-rotated obstruction by a
+    bit more than strictly necessary; the alternative (a tighter but
+    non-conservative approximation) could let a cell corner clip a rotated
+    obstruction's real footprint, which is the exact failure this function
+    exists to rule out.
+
+    Grid indexed `[row, col]` the way `first_fit_decreasing` expects: row is
+    the Y axis, col is the X axis, both aligned to `placement_rect`'s own
+    `(x0, y0)` origin - the SAME origin `seated_cell_poses` already measures
+    the packer's strip from.
+    """
+    x0, y0, x1, y1 = placement_rect
+    strip_w, strip_h = x1 - x0, y1 - y0
+    n_cols = max(1, int(math.ceil(strip_w / mm_per_cell)))
+    n_rows = max(1, int(math.ceil(strip_h / mm_per_cell)))
+    mask = np.zeros((n_rows, n_cols), dtype=bool)
+
+    for p in poses:
+        # Half-extent of the rotated rectangle's AABB: the standard
+        # |cos|*w/2 + |sin|*h/2 projection, applied on both axes.
+        theta = math.radians(p.rot_deg)
+        cos_t, sin_t = abs(math.cos(theta)), abs(math.sin(theta))
+        half_w = (p.w * cos_t + p.h * sin_t) / 2
+        half_h = (p.w * sin_t + p.h * cos_t) / 2
+        c0 = max(0, int(math.floor((p.x - half_w - x0) / mm_per_cell)))
+        c1 = min(n_cols, int(math.ceil((p.x + half_w - x0) / mm_per_cell)))
+        r0 = max(0, int(math.floor((p.y - half_h - y0) / mm_per_cell)))
+        r1 = min(n_rows, int(math.ceil((p.y + half_h - y0) / mm_per_cell)))
+        if c1 > c0 and r1 > r0:
+            mask[r0:r1, c0:c1] = True
+    return mask
+
+
 def seated_cell_poses(placement_rect: Rect, cell_w: float, cell_h: float,
-                      n: int, rng: random.Random) -> List[Tuple[float, float, float]]:
+                      n: int, rng: random.Random,
+                      forbidden_mask: Optional[np.ndarray] = None,
+                      mm_per_cell: float = SEAT_MM_PER_CELL
+                      ) -> List[Tuple[float, float, float]]:
     """Up to `n` cell centres seated in the bay at the packer's own pitch.
 
     Same frame contract as `sample_obstructions`: this is a pure function of
@@ -351,15 +435,24 @@ def seated_cell_poses(placement_rect: Rect, cell_w: float, cell_h: float,
     Positions come from the SAME FFDH packer `common.packing` exposes to the
     real planner (`first_fit_decreasing`), so the synthetic partly-filled bay
     matches what the packer would actually produce rather than an invented
-    arrangement. No `forbidden_mask` is passed, so the packer's obstacle-
-    advancing behaviour never engages here - every shelf is a clean strip of
-    `placement_rect`.
+    arrangement.
+
+    `forbidden_mask`, if given, is `obstruction_forbidden_mask`'s output
+    over this SAME `placement_rect` - cells are then packed around it rather
+    than on top of it, using the packer's own obstacle-advancing behaviour
+    (it advances past a forbidden cell and keeps packing the same shelf,
+    rather than abandoning it - see common.packing's docstring). Omit it
+    (the default) and every shelf is a clean strip of `placement_rect`, as
+    before obstructions existed. `mm_per_cell` must match whatever
+    resolution `forbidden_mask` was built at; the default is
+    `SEAT_MM_PER_CELL`.
 
     Returns `[(x, y, rot_deg), ...]` with `rot_deg` in {0, 90} - the cell's
     OWN pitch orientation from the packer, in the same LOCAL frame as
     `placement_rect`. Fewer than `n` come back when the bay cannot hold that
-    many; `first_fit_decreasing` reports the rest as unplaced rather than
-    overlapping them.
+    many - including a bay so densely obstructed that none fit at all, which
+    is correct behaviour, not a failure: `first_fit_decreasing` reports the
+    rest as unplaced rather than overlapping them or raising.
     """
     from common.packing import Item as _PackItem
     from common.packing import first_fit_decreasing
@@ -371,7 +464,9 @@ def seated_cell_poses(placement_rect: Rect, cell_w: float, cell_h: float,
     strip_w, strip_h = x1 - x0, y1 - y0
 
     items = [_PackItem(i, cell_w, cell_h) for i in range(n)]
-    res = first_fit_decreasing(items, strip_w, strip_h, allow_rotation=True)
+    res = first_fit_decreasing(items, strip_w, strip_h, allow_rotation=True,
+                               forbidden_mask=forbidden_mask,
+                               mm_per_cell=mm_per_cell)
 
     out = []
     for p in res.placements:

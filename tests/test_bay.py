@@ -419,6 +419,106 @@ def test_zero_requested_returns_empty():
     assert seated_cell_poses(rect, CELL_W, CELL_H, 0, random.Random(0)) == []
 
 
+# ---- obstruction_forbidden_mask / seated_cell_poses(forbidden_mask=...):
+# a bay can carry BOTH obstructions and seated cells (sampled independently
+# against the same placement_rect), so a seated cell must be kept off any
+# obstruction footprint - it is physically impossible for a real cell to
+# rest on top of a glue blob, and the whole reason obstructions exist is to
+# teach the segmenter that distinction. Rasterising obstructions into a
+# forbidden grid and handing it to the SAME FFDH packer (which now advances
+# past a forbidden cell instead of abandoning the shelf) keeps that
+# guarantee without inventing a second collision system.
+
+from recog.synth3d.bay import SEAT_MM_PER_CELL, obstruction_forbidden_mask
+
+
+def _boxes_overlap(a, b, tol=1e-9):
+    ox = min(a[2], b[2]) - max(a[0], b[0])
+    oy = min(a[3], b[3]) - max(a[1], b[1])
+    return ox > tol and oy > tol
+
+
+def test_seated_cells_avoid_a_forbidden_obstruction_footprint():
+    rect = (0.0, 0.0, 0.055, 0.065)
+    # Centred exactly on the first 18.3mm column - precisely where an
+    # obstruction-unaware packer's first shelf cursor (x=0) would place the
+    # first cell. Without the mask this WILL overlap (see the next test,
+    # which pins that down as the pre-fix failure).
+    obstruction = ObstructionPose(kind="foam", x=0.00915, y=0.0325,
+                                  w=0.0183, h=0.065, rot_deg=0.0)
+    obs_box = (obstruction.x - obstruction.w / 2, obstruction.y - obstruction.h / 2,
+              obstruction.x + obstruction.w / 2, obstruction.y + obstruction.h / 2)
+
+    mask = obstruction_forbidden_mask([obstruction], rect, SEAT_MM_PER_CELL)
+    poses = seated_cell_poses(rect, CELL_W, CELL_H, 3, random.Random(0),
+                              forbidden_mask=mask, mm_per_cell=SEAT_MM_PER_CELL)
+
+    assert poses, "test is vacuous: the packer placed nothing at all"
+    for x, y, rot in poses:
+        hw, hh = (CELL_W / 2, CELL_H / 2) if rot % 180 == 0 \
+            else (CELL_H / 2, CELL_W / 2)
+        cell_box = (x - hw, y - hh, x + hw, y + hh)
+        assert not _boxes_overlap(cell_box, obs_box), \
+            f"seated cell at ({x}, {y}) overlaps the obstruction {obs_box}"
+
+
+def test_without_the_mask_the_same_scene_actually_overlaps():
+    """Pins down that the test above is not vacuous: the identical bay,
+    packed with no forbidden_mask (the code's behaviour before this fix),
+    really does seat a cell on top of the obstruction. If a future change
+    makes this start failing, the fix above has stopped doing anything."""
+    rect = (0.0, 0.0, 0.055, 0.065)
+    obstruction = ObstructionPose(kind="foam", x=0.00915, y=0.0325,
+                                  w=0.0183, h=0.065, rot_deg=0.0)
+    obs_box = (obstruction.x - obstruction.w / 2, obstruction.y - obstruction.h / 2,
+              obstruction.x + obstruction.w / 2, obstruction.y + obstruction.h / 2)
+
+    poses = seated_cell_poses(rect, CELL_W, CELL_H, 3, random.Random(0))
+    hits = [(x, y, rot) for x, y, rot in poses
+            if _boxes_overlap(
+                (x - (CELL_W / 2 if rot % 180 == 0 else CELL_H / 2),
+                 y - (CELL_H / 2 if rot % 180 == 0 else CELL_W / 2),
+                 x + (CELL_W / 2 if rot % 180 == 0 else CELL_H / 2),
+                 y + (CELL_H / 2 if rot % 180 == 0 else CELL_W / 2)),
+                obs_box)]
+    assert hits, "expected the mask-unaware packer to overlap the obstruction"
+
+
+def test_dense_obstruction_coverage_yields_fewer_or_no_seated_cells_without_raising():
+    rect = (0.0, 0.0, 0.055, 0.065)
+    # One obstruction covering the whole bay.
+    obstruction = ObstructionPose(kind="foam", x=0.0275, y=0.0325,
+                                  w=0.055, h=0.065, rot_deg=0.0)
+    mask = obstruction_forbidden_mask([obstruction], rect, SEAT_MM_PER_CELL)
+    poses = seated_cell_poses(rect, CELL_W, CELL_H, 3, random.Random(0),
+                              forbidden_mask=mask, mm_per_cell=SEAT_MM_PER_CELL)
+    assert poses == []
+
+
+def test_obstruction_forbidden_mask_is_empty_for_no_obstructions():
+    rect = (0.0, 0.0, 0.055, 0.065)
+    mask = obstruction_forbidden_mask([], rect, SEAT_MM_PER_CELL)
+    assert mask.any() == False
+    assert mask.shape == (
+        max(1, __import__("math").ceil(0.065 / SEAT_MM_PER_CELL)),
+        max(1, __import__("math").ceil(0.055 / SEAT_MM_PER_CELL)),
+    )
+
+
+def test_obstruction_forbidden_mask_marks_the_obstructions_own_cells():
+    rect = (0.0, 0.0, 0.055, 0.065)
+    obstruction = ObstructionPose(kind="label", x=0.00915, y=0.0325,
+                                  w=0.0183, h=0.01, rot_deg=0.0)
+    mask = obstruction_forbidden_mask([obstruction], rect, SEAT_MM_PER_CELL)
+    assert mask.any()
+    # The centre cell of the obstruction must be forbidden.
+    col = int(obstruction.x / SEAT_MM_PER_CELL)
+    row = int(obstruction.y / SEAT_MM_PER_CELL)
+    assert mask[row, col]
+    # A far corner of the bay, well outside the obstruction, must be free.
+    assert not mask[-1, -1]
+
+
 # ---- seated_cell_world_poses: same rotate-the-centre-point contract as
 # obstruction_world_poses, applied to seated_cell_poses's (x, y, rot_deg)
 # tuples instead of an ObstructionPose - a seated cell must turn WITH its
