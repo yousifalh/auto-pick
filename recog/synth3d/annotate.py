@@ -172,8 +172,125 @@ def merge_group_boxes(anns: List[dict], groups: Dict[int, str],
             "variant": members[0].get("variant"),
             "iscrowd": 0,
             "merged_from": [m["pass_index"] for m in members],
+            # The group key itself, not just the merged pass_indexes - lets
+            # extend_group_boxes find this entry by `groups[pid]` without
+            # re-deriving it from merged_from. Harmless extra key: write_voc_xml
+            # reads only class/truncated/bbox_xyxy, so nothing downstream of the
+            # XML notices it.
+            "group_id": gid,
         })
     return out
+
+
+def extend_group_boxes(anns: List[dict], ids: np.ndarray,
+                       id_meta: Dict[int, dict], groups: Dict[int, str],
+                       class_ids: Dict[str, int], cfg) -> List[dict]:
+    """
+    Rebuild an open unit's cartridge box as the union of ITS OWN raw pixels
+    across every pass_index `groups` assigns to it - the case shell AND the
+    classes that never get their own VOC annotation (electronics_module,
+    placement_area, any obstruction) - so the box matches the silhouette a
+    human annotator draws (recog/realtest/'s convention: the whole unit, PCB
+    and bay included), not just whatever the shell contributed on its own.
+
+    Why "rebuild", not "grow the box merge_group_boxes already made": for an
+    open unit the module and bay proxy are rendered flush with the shell's
+    OWN top surface and exactly cover its interior footprint (world.
+    build_pcb: "z is the shell's TOP: the board is laid on top of the shell
+    ... there is no interior geometry in these assemblies at all" - and
+    build_bay_proxy places the complementary strip of the SAME interior).
+    Camera-facing, that leaves only the shell's outer rim visible, which is
+    at or below `cfg.min_px` far more often than not - MEASURED over a
+    32-scene run, 13 open units, 0 of them had a shell that individually
+    passed boxes_from_mask's per-object filter, so merge_group_boxes never
+    had a box for any of them to extend. Building the union straight from
+    `ids`, and applying `cfg` (the SAME min_px/min_side/max_aspect check
+    merge_group_boxes applies to its own merged box) to that union ONCE
+    rather than to the shell alone first, is what actually fixes it: a
+    shell that is individually a rim too thin to pass on its own still
+    combines with its module and bay into a box that does.
+
+    A gid is only ever rebuilt when it has BOTH a pass_index whose class IS
+    in `class_ids` (a real case/cartridge - `groups` only ever maps that
+    class from an item scene.build actually gave `merge=True`) AND at least
+    one pass_index whose class is NOT (module/bay/obstruction) - i.e. only
+    for a genuine open unit. That is what keeps a loose module - or a
+    bay/obstruction whose gid has no cartridge-class member at all, which
+    cannot happen through scene.build but could through a hand-built
+    `groups` - from ever inventing a cartridge that was never there: with no
+    qualifying gid, this function is a no-op and returns `anns` unchanged.
+    Sealed (`assembled`) units never have a module/proxy/obstruction pid at
+    all (scene.build guards those on the `open_case` variant), so their gid
+    never qualifies either - the sealed-cartridge box stays exactly what
+    merge_group_boxes alone produced, byte-identical.
+
+    Replaces (never duplicates) any existing merged entry for a rebuilt gid,
+    identified by `merge_group_boxes`' "group_id" field.
+    """
+    cartridge_pid_of: Dict[str, int] = {}
+    extra_gids = set()
+    for pid, gid in groups.items():
+        meta = id_meta.get(pid)
+        if meta is None:
+            continue
+        if meta.get("class") in class_ids:
+            cartridge_pid_of.setdefault(gid, pid)
+        else:
+            extra_gids.add(gid)
+    target_gids = extra_gids & set(cartridge_pid_of)
+    if not target_gids:
+        return anns
+
+    H, W = ids.shape
+    rebuilt: Dict[str, dict] = {}
+    for pid, gid in groups.items():
+        if gid not in target_gids:
+            continue
+        ys, xs = np.nonzero(ids == pid)
+        if xs.size == 0:
+            continue
+        x0, x1 = int(xs.min()), int(xs.max()) + 1
+        y0, y1 = int(ys.min()), int(ys.max()) + 1
+        truncated = bool(x0 == 0 or y0 == 0 or x1 == W or y1 == H)
+        r = rebuilt.get(gid)
+        if r is None:
+            rebuilt[gid] = {"x0": x0, "y0": y0, "x1": x1, "y1": y1,
+                            "area": int(xs.size), "truncated": truncated,
+                            "pids": [pid]}
+        else:
+            r["x0"] = min(r["x0"], x0)
+            r["y0"] = min(r["y0"], y0)
+            r["x1"] = max(r["x1"], x1)
+            r["y1"] = max(r["y1"], y1)
+            r["area"] += int(xs.size)
+            r["truncated"] = r["truncated"] or truncated
+            r["pids"].append(pid)
+
+    kept = [a for a in anns if a.get("group_id") not in target_gids]
+    for gid, r in rebuilt.items():
+        w, h = r["x1"] - r["x0"], r["y1"] - r["y0"]
+        if (r["area"] < cfg.min_px or min(w, h) < cfg.min_side
+                or _too_thin(w, h, cfg)):
+            continue
+        pid = cartridge_pid_of[gid]
+        meta = id_meta[pid]
+        cls = meta["class"]
+        kept.append({
+            "pass_index": pid,
+            "class": cls,
+            "category_id": class_ids[cls],
+            "bbox_xyxy": [r["x0"], r["y0"], r["x1"], r["y1"]],
+            "bbox_xywh": [r["x0"], r["y0"], w, h],
+            "area": r["area"],
+            "truncated": r["truncated"],
+            "visible_fraction": None,
+            "asset": meta.get("asset"),
+            "variant": meta.get("variant"),
+            "iscrowd": 0,
+            "merged_from": r["pids"],
+            "group_id": gid,
+        })
+    return kept
 
 
 def write_voc_xml(path: str, filename: str, width: int, height: int,
@@ -398,6 +515,17 @@ def masks_from_index(ids: np.ndarray, id_meta: Dict[int, dict],
             "asset": meta.get("asset"),
             "variant": meta.get("variant"),
             "iscrowd": 0,
+            # Links this instance to the other annotations of the same
+            # physical unit (its cartridge shell, module, bay proxy,
+            # obstructions, and any cells seated in it), so a consumer can
+            # assemble one crop per unit instead of per instance. Set by
+            # scene.build on every id_meta entry; a loose cell or a loose
+            # module gets one that belongs to no other annotation. Read
+            # through .get(), not [], so callers that build id_meta by hand
+            # (every test in this file) do not have to supply it - they get
+            # None, which is still a value every annotation "carries", just
+            # not a useful one for grouping.
+            "unit_id": meta.get("unit_id"),
         })
     return anns, dropped
 
@@ -422,7 +550,8 @@ def write_coco_json(path: str, images: Sequence[dict],
             {"id": a["id"], "image_id": a["image_id"],
              "category_id": a["category_id"],
              "bbox": a["bbox_xywh"], "area": a["area"],
-             "segmentation": a["segmentation"], "iscrowd": a.get("iscrowd", 0)}
+             "segmentation": a["segmentation"], "iscrowd": a.get("iscrowd", 0),
+             "unit_id": a.get("unit_id")}
             for a in annotations
         ],
     }

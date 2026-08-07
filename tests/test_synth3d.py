@@ -921,6 +921,165 @@ def test_unmapped_class_is_dropped():
     assert dropped[0]["reason"] == "unmapped"
 
 
+# ------------------------------------------------- unit-scoped cartridge
+# boxes (Task 9): boxes_from_mask drops electronics_module/placement_area/
+# obstruction as "unmapped" before merge_group_boxes ever runs, so an open
+# unit's box has to be rebuilt from the raw mask, after merge_group_boxes -
+# that is what extend_group_boxes does. It REBUILDS rather than grows an
+# existing box because in practice there rarely IS one: the module/bay are
+# rendered flush with the shell's own top surface and cover its whole
+# interior (world.build_pcb), so an open unit's shell silhouette is at or
+# below the size filter far more often than not - measured over a 32-scene
+# run, 0 of 13 open units had a shell that individually passed
+# boxes_from_mask on its own. -------------------------------------------- #
+
+def test_merged_box_carries_its_group_id():
+    """extend_group_boxes locates/replaces a merged box by `groups[pid]` ==
+    `ann["group_id"]`; guard the field it depends on directly."""
+    ids = np.zeros((40, 40), dtype=np.int32)
+    ids[5:15, 5:15] = 1
+    ids[20:30, 20:30] = 2
+    meta = {1: _meta(**{"class": "cartridge"}), 2: _meta(**{"class": "cartridge"})}
+    cfg = C.FilterCfg(min_px=1, min_side=1)
+    anns, _ = A.boxes_from_mask(ids, meta, C.class_ids(), cfg)
+    merged = A.merge_group_boxes(anns, {1: "item0", 2: "item0"}, C.class_ids(), cfg)
+    assert merged[0]["group_id"] == "item0"
+
+
+def test_extend_group_boxes_is_a_noop_for_a_sealed_cartridge():
+    """A sealed unit never has a module/bay/obstruction pid mapped into
+    `groups` at all (scene.build only builds those for open_case), so no gid
+    ever qualifies as a rebuild target and extend_group_boxes must return
+    the merged box exactly as merge_group_boxes produced it - the
+    byte-identical-boxes requirement."""
+    ids = np.zeros((40, 40), dtype=np.int32)
+    ids[5:15, 5:15] = 1
+    ids[20:30, 20:30] = 2
+    meta = {1: _meta(**{"class": "cartridge"}), 2: _meta(**{"class": "cartridge"})}
+    groups = {1: "item0", 2: "item0"}
+    cfg = C.FilterCfg(min_px=1, min_side=1)
+    anns, _ = A.boxes_from_mask(ids, meta, C.class_ids(), cfg)
+    merged = A.merge_group_boxes(anns, groups, C.class_ids(), cfg)
+    before_bbox, before_area = merged[0]["bbox_xyxy"], merged[0]["area"]
+    extended = A.extend_group_boxes(merged, ids, meta, groups, C.class_ids(), cfg)
+    assert extended is merged, "must return the SAME list object untouched"
+    assert extended[0]["bbox_xyxy"] == before_bbox == [5, 5, 30, 30]
+    assert extended[0]["area"] == before_area == 200
+
+
+def test_open_cartridge_box_spans_its_module_bay_and_obstruction():
+    """The required outcome, end to end: one cartridge box whose extent is
+    the union of the shell, module, bay proxy and an obstruction - matching
+    what a human draws in recog/realtest/ - not one box per contributing
+    part, and not merely the shell's own (here, filter-failing) box."""
+    ids = np.zeros((40, 40), dtype=np.int32)
+    ids[5:9, 5:9] = 1           # cartridge shell: 4x4=16px, fails min_px alone
+    ids[5:12, 16:24] = 2        # electronics_module, OUTSIDE the shell box
+    ids[16:24, 5:24] = 3        # placement_area (bay), also outside
+    ids[2:4, 2:4] = 4           # obstruction, sticking out the other way
+    meta = {
+        1: _meta(**{"class": "cartridge"}),
+        2: _meta(**{"class": "electronics_module"}),
+        3: _meta(**{"class": "placement_area"}),
+        4: _meta(**{"class": "obstruction"}),
+    }
+    groups = {1: "item0", 2: "item0", 3: "item0", 4: "item0"}
+    cfg = C.FilterCfg(min_px=80, min_side=1)     # 16px shell alone fails this
+    anns, dropped = A.boxes_from_mask(ids, meta, C.class_ids(), cfg)
+    assert {d["class"] for d in dropped} == {
+        "cartridge", "electronics_module", "placement_area", "obstruction"}, (
+        "control: the shell itself fails min_px on its own, and the other "
+        "three are dropped from `anns` as unmapped - the VOC file must "
+        "still contain only battery/cartridge, never their own boxes")
+    merged = A.merge_group_boxes(anns, groups, C.class_ids(), cfg)
+    assert merged == [], "control: no shell survived, so nothing to merge"
+
+    extended = A.extend_group_boxes(merged, ids, meta, groups, C.class_ids(), cfg)
+    assert len(extended) == 1, "one cartridge box per unit, not per part"
+    assert extended[0]["class"] == "cartridge"
+    assert extended[0]["category_id"] == C.class_ids()["cartridge"]
+    assert extended[0]["bbox_xyxy"] == [2, 2, 24, 24]
+    # explicitly the containment property the spec asks for
+    mx0, my0, mx1, my1 = 16, 5, 24, 12          # module's own box
+    bx0, by0, bx1, by1 = 5, 16, 24, 24          # bay's own box
+    ex0, ey0, ex1, ey1 = extended[0]["bbox_xyxy"]
+    assert ex0 <= mx0 and ey0 <= my0 and ex1 >= mx1 and ey1 >= my1
+    assert ex0 <= bx0 and ey0 <= by0 and ex1 >= bx1 and ey1 >= by1
+
+
+def test_open_cartridge_box_is_built_even_when_the_shell_is_fully_invisible():
+    """The dominant real case (see the module comment above): the shell
+    contributes ZERO pixels at all (never appears in `ids`, so it never even
+    reaches `dropped`) because the module+bay proxy sit flush with its top
+    and cover its whole interior. The unit's box must still be built, from
+    the module and bay alone."""
+    ids = np.zeros((40, 40), dtype=np.int32)
+    # pid 1 (the shell) never appears in `ids` at all - fully occluded.
+    ids[5:12, 16:24] = 2        # electronics_module
+    ids[16:24, 5:24] = 3        # placement_area (bay)
+    meta = {
+        1: _meta(**{"class": "cartridge"}),
+        2: _meta(**{"class": "electronics_module"}),
+        3: _meta(**{"class": "placement_area"}),
+    }
+    groups = {1: "item0", 2: "item0", 3: "item0"}
+    cfg = C.FilterCfg(min_px=80, min_side=1, max_aspect=4.0)
+    anns, dropped = A.boxes_from_mask(ids, meta, C.class_ids(), cfg)
+    assert {d["pass_index"] for d in dropped} == {2, 3}, (
+        "pid 1 (the shell) never appears in np.unique(ids) at all, so it is "
+        "never even a `dropped` entry - unlike pid 2/3, which DO render and "
+        "are dropped only as unmapped, this one is simply absent")
+    merged = A.merge_group_boxes(anns, groups, C.class_ids(), cfg)
+    assert merged == []
+
+    extended = A.extend_group_boxes(merged, ids, meta, groups, C.class_ids(), cfg)
+    assert len(extended) == 1
+    assert extended[0]["class"] == "cartridge"
+    assert extended[0]["bbox_xyxy"] == [5, 5, 24, 24]     # union of 2 and 3 only
+    assert extended[0]["merged_from"] == [2, 3]
+
+
+def test_a_loose_module_with_no_case_produces_no_cartridge_box():
+    """A module (or bay/obstruction) whose gid has no cartridge-class member
+    at all must not invent one. This is the guard against a loose module
+    becoming a spurious cartridge - it cannot happen through scene.build
+    (module/bay/obstruction pids are only ever added to `groups` alongside a
+    real case item's own pids), but extend_group_boxes must not rely on
+    that; it checks directly."""
+    ids = np.zeros((40, 40), dtype=np.int32)
+    ids[5:15, 5:15] = 1
+    meta = {1: _meta(**{"class": "electronics_module"})}
+    cfg = C.FilterCfg(min_px=1, min_side=1)
+    anns, dropped = A.boxes_from_mask(ids, meta, C.class_ids(), cfg)
+    assert anns == [] and dropped[0]["reason"] == "unmapped"
+
+    for groups in ({1: "item0"}, {}):
+        merged = A.merge_group_boxes(anns, groups, C.class_ids(), cfg)
+        assert merged == []
+        extended = A.extend_group_boxes(merged, ids, meta, groups, C.class_ids(), cfg)
+        assert extended == []
+
+
+def test_extend_group_boxes_below_min_px_is_dropped():
+    """The union-level filter still applies: a module+bay too small even
+    combined must not produce a box, the same way merge_group_boxes' own
+    merged-box filter already works for the shell-only case."""
+    ids = np.zeros((40, 40), dtype=np.int32)
+    ids[5:7, 5:7] = 2            # electronics_module: 4px
+    ids[10:12, 10:12] = 3        # placement_area: 4px -> union area 8
+    meta = {
+        1: _meta(**{"class": "cartridge"}),   # never rendered - fine
+        2: _meta(**{"class": "electronics_module"}),
+        3: _meta(**{"class": "placement_area"}),
+    }
+    groups = {1: "item0", 2: "item0", 3: "item0"}
+    cfg = C.FilterCfg(min_px=80, min_side=1)
+    anns, _ = A.boxes_from_mask(ids, meta, C.class_ids(), cfg)
+    merged = A.merge_group_boxes(anns, groups, C.class_ids(), cfg)
+    extended = A.extend_group_boxes(merged, ids, meta, groups, C.class_ids(), cfg)
+    assert extended == []
+
+
 def test_visible_fraction_is_visible_over_full_area():
     """Guards against the ratio being accidentally inverted to full/visible."""
     ids = np.zeros((20, 20), dtype=np.int32)

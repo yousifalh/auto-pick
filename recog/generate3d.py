@@ -289,6 +289,12 @@ def main():
             anns, dropped = annotate.boxes_from_mask(mask, id_meta, ids,
                                                      cfg.filter, full_areas)
             anns = annotate.merge_group_boxes(anns, groups, ids, cfg.filter)
+            # Rebuild each open unit's cartridge box as the union of its own
+            # raw pixels (shell + module + bay + obstructions) - see
+            # extend_group_boxes. A no-op for sealed units, which have none
+            # of those built.
+            anns = annotate.extend_group_boxes(anns, mask, id_meta, groups,
+                                               ids, cfg.filter)
             seg_anns, seg_dropped = annotate.masks_from_index(
                 mask, id_meta, seg_ids, cfg.filter, full_areas)
 

@@ -148,9 +148,16 @@ def build(params: dict, rng: random.Random, library: A.AssetLibrary,
     Construct a complete scene.
 
     Returns:
-        id_meta   pass_index -> {"class", "asset", "variant", "role"}
-        groups    pass_index -> group key, for merging an assembly's sub-part
-                  boxes into a single box
+        id_meta   pass_index -> {"class", "asset", "variant", "role",
+                  "unit_id"}. `unit_id` links every annotation that belongs
+                  to the same physical unit - a cartridge's shell, module,
+                  bay proxy, obstructions, and any cells seated in it all
+                  share one; a loose cell or loose module gets one of its
+                  own, distinct from every other annotation's.
+        groups    pass_index -> group key, for merging one unit's VOC boxes
+                  (shell + module + bay proxy + obstructions, NOT seated
+                  cells - see the comment above the pass-index loop) into a
+                  single box. A strict subset of what shares a `unit_id`.
         meta      everything drawn, for the sidecar JSON
     """
     reset_scene()
@@ -353,6 +360,16 @@ def build(params: dict, rng: random.Random, library: A.AssetLibrary,
     id_meta: Dict[int, dict] = {}
     groups: Dict[int, str] = {}
     objects_by_id: Dict[int, list] = {}
+    # Seated cells belong to the unit for `unit_id` purposes (see below) but
+    # must NOT go into `groups`: `groups` is merge_group_boxes' input, and a
+    # merged box adopts members[0]["class"] for the WHOLE box - mixing a
+    # "battery" pass_index into a "cartridge" group would either mislabel the
+    # merged box or, since the cartridge's own shell pids always sort first,
+    # silently swallow the seated cell's box into the cartridge's and delete
+    # its standalone "battery" annotation. Battery handling (loose or seated)
+    # is unchanged by this task, so seated cells are tracked separately and
+    # folded only into `unit_id`, never into `groups`.
+    seated_unit_of: Dict[int, str] = {}
     pid = 0
     for gi, item in enumerate(items):
         gid = f"item{gi}"
@@ -389,6 +406,17 @@ def build(params: dict, rng: random.Random, library: A.AssetLibrary,
             id_meta[pid] = {"class": "electronics_module", "asset": item.asset,
                             "variant": item.variant, "role": "module"}
             objects_by_id[pid] = [item.module_object] + children
+            # Folded into the case's merge group. boxes_from_mask still drops
+            # electronics_module as "unmapped" (it is not in the VOC
+            # class_ids), so this alone would do nothing; annotate.
+            # extend_group_boxes is what actually reads `groups` for this pid
+            # and widens the merged cartridge box with its pixels - see that
+            # function for why. This item only ever reaches here when
+            # `item.variant == "open_case"` (guarded above), whose case role
+            # is always built with merge=True (assets.py), so `gid` already
+            # names a real merge group; there is no path that hands a module
+            # a gid with no case behind it.
+            groups[pid] = gid
 
         # The placement_area proxy is scene content built here too, not a
         # CAD sub-part, so it gets its own pid for the same reason the
@@ -400,6 +428,7 @@ def build(params: dict, rng: random.Random, library: A.AssetLibrary,
             id_meta[pid] = {"class": "placement_area", "asset": item.asset,
                             "variant": item.variant, "role": "placement_area"}
             objects_by_id[pid] = [item.bay_object]
+            groups[pid] = gid          # see the module's comment above
 
         # Obstructions sitting on the bay proxy: adhesive, foam, tape and
         # labels. Each is its own instance - the segmenter is meant to
@@ -412,6 +441,7 @@ def build(params: dict, rng: random.Random, library: A.AssetLibrary,
             id_meta[pid] = {"class": "obstruction", "asset": item.asset,
                             "variant": item.variant, "role": "obstruction"}
             objects_by_id[pid] = [obj]
+            groups[pid] = gid          # see the module's comment above
 
         # Cells seated in the bay: real 18650 geometry, so they carry the
         # SAME "battery" class as a loose cell - the deployed camera cannot
@@ -424,6 +454,9 @@ def build(params: dict, rng: random.Random, library: A.AssetLibrary,
             id_meta[pid] = {"class": "battery", "asset": item.asset,
                             "variant": item.variant, "role": "cell"}
             objects_by_id[pid] = [obj]
+            # `unit_id` only, deliberately NOT `groups` - see the dict's
+            # docstring above the pass-index loop.
+            seated_unit_of[pid] = gid
 
     # ---- backdrop, camera, lighting --------------------------------------- #
     # Built AFTER the jig so it can be sunk below the plate. Pocket floors are
@@ -446,6 +479,20 @@ def build(params: dict, rng: random.Random, library: A.AssetLibrary,
                                         cfg)
     meta["objects_by_id"] = {k: [o.name for o in v]
                              for k, v in objects_by_id.items()}
+
+    # `unit_id`: the sidecar's identifier linking every annotation of one
+    # physical unit (cartridge shell, module, bay proxy, obstructions, AND
+    # any cells seated in it - the one set `groups` deliberately excludes
+    # seated cells from, see above). `groups` already covers everything else
+    # a unit can contain, so a unit's id is just its gid; anything with no
+    # gid and no seat (a loose cells_only battery, or a loose module if one
+    # is ever built) is not part of any unit and gets an id derived from its
+    # own pass_index instead - unique by construction, so it can never
+    # collide with another loose part's id or with a real gid ("item{n}").
+    units = dict(groups)
+    units.update(seated_unit_of)
+    for pid, entry in id_meta.items():
+        entry["unit_id"] = units.get(pid, f"solo{pid}")
 
     # The backdrop is created after the reset loop above and sets its own
     # pass_index to 0; this is the belt-and-braces check that nothing else did.
