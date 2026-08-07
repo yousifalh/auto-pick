@@ -303,3 +303,58 @@ def _find_transform(t, name):
         if type(s).__name__ == name:
             return s
     raise AssertionError(f"{name} not found in the pipeline")
+
+
+# --------------------------------------------------------- mask-aware path --
+
+def test_apply_with_mask_moves_image_and_mask_together():
+    import numpy as np
+
+    from recog.augmentation import (apply_with_mask,
+                                    build_seg_train_transform)
+
+    # A quadrant-coded image and a mask marking the same quadrant.
+    img = np.zeros((64, 64, 3), np.uint8)
+    img[:32, :32] = 255
+    mask = np.zeros((64, 64), np.int64)
+    mask[:32, :32] = 2
+
+    t = build_seg_train_transform({"p_flip": 1.0, "p_rot90": 0.0,
+                                   "p_photometric": 0.0,
+                                   "p_geometric": 0.0})
+    out = apply_with_mask(t, img, mask)
+    bright = out["image"].reshape(-1, 3).max(axis=1) > 127
+    labelled = out["mask"].reshape(-1) == 2
+    agree = (bright == labelled).mean()
+    assert agree > 0.97, f"image and mask diverged: {agree:.3f} agreement"
+
+
+def test_apply_with_mask_never_invents_a_class():
+    import numpy as np
+
+    from recog.augmentation import (apply_with_mask,
+                                    build_seg_train_transform)
+
+    img = np.zeros((64, 64, 3), np.uint8)
+    mask = np.zeros((64, 64), np.int64)
+    mask[:32] = 2
+    mask[32:] = 4
+
+    t = build_seg_train_transform({})
+    for _ in range(30):
+        out = apply_with_mask(t, img, mask)
+        assert set(np.unique(out["mask"])) <= {0, 2, 4}, (
+            "an interpolated mask produced class 3, which is a different "
+            "object entirely")
+
+
+def test_seg_val_transform_is_geometrically_identity():
+    import numpy as np
+
+    from recog.augmentation import apply_with_mask, build_seg_val_transform
+
+    mask = np.zeros((32, 32), np.int64)
+    mask[:16, :16] = 5
+    img = np.zeros((32, 32, 3), np.uint8)
+    out = apply_with_mask(build_seg_val_transform({}), img, mask)
+    assert np.array_equal(out["mask"], mask)
