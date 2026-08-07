@@ -63,6 +63,26 @@ def combined_loss(logits, target, num_classes: int,
             + dice_weight * dice_loss(logits, target, num_classes))
 
 
+def checkpoint_state_dict(model) -> Dict[str, Any]:
+    """The subset of `model.state_dict()` a checkpoint should carry.
+
+    Training builds the model with `pretrained=True` because the aux
+    classifier regularises during training (see
+    recog.bay_segmenter.build_segmenter). BaySegmenter, given a
+    checkpoint, builds with `pretrained=False` - the aux head has no
+    inference role and costs latency in a 50ms budget - so its model
+    instance has no `aux_classifier` submodule at all. Saving the aux
+    weights anyway makes the checkpoint unloadable by the only inference
+    path in the project: `load_state_dict` is strict, and there is
+    nowhere for those keys to go. Stripping them here, once, at the
+    point a checkpoint is written, keeps every consumer of the file
+    (BaySegmenter today, whatever reads it next) simply strict-loadable
+    with no special-casing on their end.
+    """
+    return {k: v for k, v in model.state_dict().items()
+            if not k.startswith("aux_classifier.")}
+
+
 # ---------------------------------------------------------- torch guard --
 
 def _require_torch() -> None:
@@ -383,7 +403,7 @@ def train(cfg: Dict[str, Any]) -> None:
             best_iou = selection
             torch.save(
                 {
-                    "model": model.state_dict(),
+                    "model": checkpoint_state_dict(model),
                     "epoch": epoch,
                     "ious": ious,
                     "selected_mean_iou": selection,
@@ -401,7 +421,7 @@ def train(cfg: Dict[str, Any]) -> None:
         # bug is just as easy to reintroduce here.
         torch.save(
             {
-                "model": model.state_dict(),
+                "model": checkpoint_state_dict(model),
                 "epoch": epoch,
                 "ious": ious,
                 "selected_mean_iou": selection,
@@ -431,6 +451,7 @@ if __name__ == "__main__":  # pragma: no cover
 __all__ = [
     "dice_loss",
     "combined_loss",
+    "checkpoint_state_dict",
     "train",
     "evaluate_model",
     "selected_mean_iou",

@@ -59,6 +59,39 @@ def test_half_precision_is_refused_on_cpu():
     assert seg.half is False
 
 
+def test_baysegmenter_loads_a_checkpoint_the_training_loop_wrote(tmp_path):
+    """The train -> save -> load -> infer round trip Plan D depends on.
+
+    Training builds the model with `pretrained=True` (the aux classifier
+    regularises), so its state_dict carries aux_classifier.* keys.
+    BaySegmenter, given a checkpoint, builds with `pretrained=False` (no
+    inference-time role for aux - see the module docstring), so those
+    keys have nowhere to land and load_state_dict's strict check raises.
+    None of the other tests in this file catch it: they all construct
+    BaySegmenter(checkpoint=None), which never exercises loading a real
+    checkpoint at all.
+    """
+    from recog.bay_segmenter import BaySegmenter, build_segmenter
+    from recog.seg_training import checkpoint_state_dict
+
+    # Mirrors exactly how recog.seg_training.train() builds and saves a
+    # checkpoint - same constructor call, same save helper - so this test
+    # exercises the production code path rather than a re-implementation
+    # of it that could silently drift out of sync.
+    model = build_segmenter(num_classes=6, pretrained=True)
+    ckpt_path = tmp_path / "roundtrip.pt"
+    torch.save({"model": checkpoint_state_dict(model)}, ckpt_path)
+
+    seg = BaySegmenter(checkpoint=str(ckpt_path), device="cpu",
+                       crop_size=64, half=False)
+    crop = np.zeros((48, 64, 3), np.uint8)
+    out = seg.segment_batch([crop])
+
+    assert out[0].shape == (48, 64)
+    assert out[0].dtype == np.int8
+    assert 0 <= int(out[0].min()) and int(out[0].max()) < 6
+
+
 def test_dice_loss_is_zero_for_a_perfect_prediction():
     from recog.seg_training import dice_loss
 
