@@ -372,6 +372,93 @@ def test_obstruction_world_poses_keeps_size_invariant_to_rotation_angle():
         assert (out[0].w, out[0].h) == (0.006, 0.009)
 
 
+# ---- seated_cell_poses: cells the packer would seat in the bay itself,
+# axis-aligned, at FFDH pitch - the deployed system's partly-filled case
+# rather than the empty-or-sealed cases the generator produced before this.
+
+from recog.synth3d.bay import seated_cell_poses, seated_cell_world_poses
+
+CELL_W, CELL_H = 0.0183, 0.065          # 18650 in metres
+
+
+def test_seated_cells_lie_inside_the_placement_rect():
+    rect = (0.0, 0.0, 0.055, 0.065)
+    for seed in range(100):
+        poses = seated_cell_poses(rect, CELL_W, CELL_H, 3,
+                                  random.Random(seed))
+        for x, y, rot in poses:
+            hw, hh = (CELL_W / 2, CELL_H / 2) if rot % 180 == 0 \
+                else (CELL_H / 2, CELL_W / 2)
+            assert rect[0] - 1e-9 <= x - hw and x + hw <= rect[2] + 1e-9
+            assert rect[1] - 1e-9 <= y - hh and y + hh <= rect[3] + 1e-9
+
+
+def test_seated_cells_do_not_overlap_each_other():
+    rect = (0.0, 0.0, 0.055, 0.065)
+    poses = seated_cell_poses(rect, CELL_W, CELL_H, 3, random.Random(0))
+    boxes = []
+    for x, y, rot in poses:
+        hw, hh = (CELL_W / 2, CELL_H / 2) if rot % 180 == 0 \
+            else (CELL_H / 2, CELL_W / 2)
+        boxes.append((x - hw, y - hh, x + hw, y + hh))
+    for i, a in enumerate(boxes):
+        for b in boxes[i + 1:]:
+            ox = min(a[2], b[2]) - max(a[0], b[0])
+            oy = min(a[3], b[3]) - max(a[1], b[1])
+            assert ox <= 1e-9 or oy <= 1e-9
+
+
+def test_requesting_more_cells_than_fit_returns_only_what_fits():
+    rect = (0.0, 0.0, 0.055, 0.065)
+    poses = seated_cell_poses(rect, CELL_W, CELL_H, 99, random.Random(0))
+    assert 0 < len(poses) <= 3          # 55mm / 18.3mm = 3 across
+
+
+def test_zero_requested_returns_empty():
+    rect = (0.0, 0.0, 0.055, 0.065)
+    assert seated_cell_poses(rect, CELL_W, CELL_H, 0, random.Random(0)) == []
+
+
+# ---- seated_cell_world_poses: same rotate-the-centre-point contract as
+# obstruction_world_poses, applied to seated_cell_poses's (x, y, rot_deg)
+# tuples instead of an ObstructionPose - a seated cell must turn WITH its
+# cartridge, staying axis-aligned to the BAY rather than to the world, or a
+# rotated cartridge would show cells crossing its own bay walls.
+
+def test_seated_cell_world_poses_is_identity_at_zero_rotation_and_no_translate():
+    poses = [(0.01, -0.02, 90.0)]
+    out = seated_cell_world_poses(poses, 0.0, (0.0, 0.0))
+    assert out[0][:2] == pytest.approx((0.01, -0.02))
+    assert out[0][2] == pytest.approx(90.0)
+
+
+def test_seated_cell_world_poses_translates_a_centred_cell():
+    poses = [(0.0, 0.0, 0.0)]
+    out = seated_cell_world_poses(poses, 0.0, (0.130, 0.245))
+    assert out[0][:2] == pytest.approx((0.130, 0.245))
+
+
+def test_seated_cell_world_poses_rotates_the_local_point_about_the_origin():
+    # A point at local (0.02, 0.0); a +90 degree turn sends +x to +y.
+    poses = [(0.02, 0.0, 0.0)]
+    out = seated_cell_world_poses(poses, 90.0, (0.0, 0.0))
+    assert out[0][:2] == pytest.approx((0.0, 0.02), abs=1e-9)
+    assert out[0][2] == pytest.approx(90.0)
+
+
+def test_seated_cell_world_poses_composes_rotation_and_translation():
+    poses = [(0.02, 0.0, 90.0)]
+    out = seated_cell_world_poses(poses, 90.0, (0.3, 0.2))
+    # Local point rotates to (0, 0.02), then translates by (0.3, 0.2).
+    assert out[0][:2] == pytest.approx((0.3, 0.22), abs=1e-9)
+    # The cell's own pitch orientation (90) plus the cartridge's turn (90).
+    assert out[0][2] == pytest.approx(180.0)
+
+
+def test_seated_cell_world_poses_empty_in_empty_out():
+    assert seated_cell_world_poses([], 37.0, (0.1, 0.2)) == []
+
+
 def test_placement_and_module_world_rects_do_not_overlap_after_rotation():
     """A rigid rotate-then-translate applied identically to two disjoint
     local rectangles cannot make them overlap; this pins that down at the

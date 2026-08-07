@@ -304,6 +304,35 @@ def build(params: dict, rng: random.Random, library: A.AssetLibrary,
                 meta.setdefault("obstructions", []).extend(
                     m for _, m in built)
 
+                # Cells seated in the SAME bay, at the packer's own pitch.
+                # The deployed robot fills a cartridge one cell at a time, so
+                # its camera sees partly-filled bays for most of every run -
+                # a generator that only ever produced empty or sealed cases
+                # never showed the segmenter the case it exists to handle.
+                # Sampled in the SAME local frame `placement_rect` above is
+                # already in, then carried into world space by
+                # `seated_cell_world_poses` - the identical local-then-world
+                # split `sample_obstructions`/`obstruction_world_poses` use,
+                # so a seated cell turns WITH its cartridge instead of
+                # staying axis-aligned to the world while the bay rotates
+                # under it.
+                if rng.random() < cfg.layout.p_seated:
+                    cap = max(1, int(
+                        (placement_rect[2] - placement_rect[0]) *
+                        (placement_rect[3] - placement_rect[1]) /
+                        (0.0183 * 0.065)))
+                    want = max(1, int(
+                        cap * rng.uniform(*cfg.layout.seated_frac)))
+                    local_seats = B.seated_cell_poses(
+                        placement_rect, 0.0183, 0.065, want, rng)
+                    world_seats = B.seated_cell_world_poses(
+                        local_seats, item.rot_deg, item.placed_xy)
+                    item.seated_objects = W.seat_cells(
+                        library, item.asset, world_seats, hi.z, rng,
+                        cfg, backdrop_luma=backdrop_luma)
+                    meta.setdefault("seated_cells", []).append(
+                        {"asset": item.asset, "n": len(item.seated_objects)})
+
     # ---- pass indices ----------------------------------------------------- #
     for o in bpy.data.objects:
         o.pass_index = 0
@@ -368,6 +397,18 @@ def build(params: dict, rng: random.Random, library: A.AssetLibrary,
             obj.pass_index = pid
             id_meta[pid] = {"class": "obstruction", "asset": item.asset,
                             "variant": item.variant, "role": "obstruction"}
+            objects_by_id[pid] = [obj]
+
+        # Cells seated in the bay: real 18650 geometry, so they carry the
+        # SAME "battery" class as a loose cell - the deployed camera cannot
+        # tell a seated cell from a loose one, and neither should the
+        # segmenter's label set. Each is its own instance, same reasoning
+        # as obstructions above (no shared/merged id).
+        for obj in getattr(item, "seated_objects", None) or []:
+            pid += 1
+            obj.pass_index = pid
+            id_meta[pid] = {"class": "battery", "asset": item.asset,
+                            "variant": item.variant, "role": "cell"}
             objects_by_id[pid] = [obj]
 
     # ---- backdrop, camera, lighting --------------------------------------- #

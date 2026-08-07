@@ -141,6 +141,12 @@ class LayoutCfg:
     jig_jitter_deg: float = 1.0
     jig_depth: Tuple[float, float] = (0.006, 0.012)
     jig_wall: float = 0.003     # metres of plate material left between pockets
+    # Fraction of open cartridges that get cells seated in the bay, and how
+    # full those bays are. The deployed camera sees partly-filled cartridges
+    # for most of every run; a set of only-empty bays would not contain the
+    # case the segmenter exists to handle.
+    p_seated: float = 0.5
+    seated_frac: Tuple[float, float] = (0.15, 0.85)
 
 
 @dataclass
@@ -214,7 +220,8 @@ _PASSTHROUGH = ("param_space", "backdrops", "lighting",
                 "materials", "role_materials")
 _TUPLE_FIELDS = {"res", "area", "margin_range", "shift_range", "jig_depth",
                  "n_adhesive", "n_foam", "n_tape", "n_label",
-                 "adhesive_frac", "foam_frac", "tape_frac", "label_frac"}
+                 "adhesive_frac", "foam_frac", "tape_frac", "label_frac",
+                 "seated_frac"}
 
 
 def default_config_path() -> Path:

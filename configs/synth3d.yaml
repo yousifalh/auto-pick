@@ -83,6 +83,13 @@ layout:
   jig_jitter_deg: 1.0       # smaller than scatter: must stay inside the pocket
   jig_depth: [0.006, 0.012]
   jig_wall: 0.003           # metres of plate material left between pockets
+  # Fraction of open cartridges that get cells seated in the bay, and how
+  # full those bays are. The deployed robot fills a cartridge one cell at a
+  # time, so its camera sees partly-filled bays for most of every run; a
+  # generator that only ever produced empty or sealed cases would never show
+  # the segmenter the exact case it exists to handle.
+  p_seated: 0.5
+  seated_frac: [0.15, 0.85]
 
 camera:
   ortho: true

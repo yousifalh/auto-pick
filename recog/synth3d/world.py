@@ -28,8 +28,9 @@ import random
 import bpy
 from mathutils import Matrix, Vector
 
+from . import assets as A
 from .lightrig import off_axis_placement, shadow_direction
-from .materials import set_input, rng_range
+from .materials import apply_to_object, for_role, set_input, rng_range
 
 
 # --------------------------------------------------------------------------- #
@@ -898,4 +899,120 @@ def build_obstructions(poses, z: float, rng: random.Random):
         o.data.materials.append(mat)
         made.append((o, {"kind": p.kind, "w": p.w, "h": p.h,
                          "rot_deg": p.rot_deg}))
+    return made
+
+
+# --------------------------------------------------------------------------- #
+#  seated cells
+#
+#  The deployed robot fills a cartridge one cell at a time, so its camera
+#  sees PARTLY-FILLED bays for most of every run. `bay.seated_cell_poses`
+#  draws where the packer itself would put them; this realises those poses
+#  as the asset's own 18650 geometry, cloned rather than a new cylinder, so
+#  a seated cell matches the loose cells the detector already sees.
+# --------------------------------------------------------------------------- #
+
+# Clearance above the shell top (hi.z), matching build_bay_proxy's own
+# z + 0.0009 offset plus a further 0.3mm - the SAME margin build_obstructions
+# gives an adhesive blob. A seated cell's bottom has to sit strictly ABOVE
+# the proxy's z, not merely at or below it: the proxy is what carries the
+# placement_area label, and annotate.boxes_from_mask reports only what
+# stayed VISIBLE in the id pass. A cell at or below the proxy's z would lose
+# the z-fight (or lose outright) and placement_area would still claim that
+# floor is free while a cell visibly occupies it - the exact failure this
+# task exists to prevent, silently, because nothing downstream can detect it
+# from the mask alone.
+SEATED_CELL_LIFT = 0.0012          # metres above the shell top
+
+
+def seat_cells(library, asset: str, seats, z: float, rng: random.Random,
+               cfg, backdrop_luma=None):
+    """Clone the asset's own 18650 cell template into the bay, seated.
+
+    `seats` are `(x, y, rot_deg)` WORLD centres from
+    `bay.seated_cell_world_poses` - already rotated and translated to match
+    the cartridge's actual placement - so this only has to clone, orient and
+    position each cell; no pivot rotation for the cartridge's own turn is
+    needed here, the same simplification `build_obstructions` makes for the
+    same reason (that composition already happened on the bpy-free side).
+
+    Cloned from `library._templates[asset]["cell"]` - the asset's own
+    already-imported 18650 mesh - via `assets.clone`, rather than a new
+    primitive, so a seated cell matches the loose ("battery") cells the
+    detector already sees: same geometry, and the same
+    `materials.for_role("cell", ...)` draw every other cell instance gets
+    (a template object carries no material of its own - it is never
+    rendered directly, only cloned - so this must draw and apply one
+    explicitly, the same call `scene.build`'s per-item materials loop makes
+    for every other cell).
+
+    Each clone is put through the SAME reset-then-lay_flat recipe
+    `AssetLibrary.instantiate` uses to rest a standalone loose cell on its
+    side (reset transform to identity, then `assets.lay_flat` on the single
+    object) rather than inventing a new one - that recipe is what already
+    correctly orients every loose cell in the dataset, and a seated cell has
+    to end up in the exact same resting orientation.
+
+    Rests each cell's bottom at `z + SEATED_CELL_LIFT`, strictly above the
+    bay proxy's own `z + 0.0009` (`build_bay_proxy`) - see SEATED_CELL_LIFT's
+    comment for why that separation is the entire mechanism this function
+    exists for. Occlusion does the rest: annotate.boxes_from_mask reports
+    only what stayed visible in the id pass, so placement_area shrinks to
+    the free floor around the seated cells with no mask arithmetic
+    anywhere, the same trick build_obstructions already uses for foreign
+    matter in the bay.
+
+    Returns the list of new cell objects. The caller assigns pass_index.
+    """
+    if not seats:
+        return []
+    templates = (library._templates.get(asset) or {}).get("cell")
+    if not templates:
+        return []
+    template = templates[0]
+
+    made = []
+    for i, (x, y, rot_deg) in enumerate(seats):
+        dup = A.clone(template)
+        # Reset to identity and re-flatten the single object exactly as
+        # AssetLibrary.instantiate does for a standalone loose cell - see
+        # assets.lay_flat's docstring for why a bare rotation_euler write
+        # would silently do nothing under the glTF importer's quaternion
+        # rotation mode. This clone was just duplicated from a template
+        # that carries the whole assembly's own lay_flat rotation baked in;
+        # lay_flat has to measure THIS object's own raw extents, not the
+        # assembly's, to rest it on its side correctly in isolation.
+        dup.rotation_euler = (0.0, 0.0, 0.0)
+        dup.location = (0.0, 0.0, 0.0)
+        bpy.context.view_layer.update()
+        A.lay_flat([dup])
+
+        # Measure rather than assume where lay_flat left it, then translate
+        # so the cell's own XY centroid lands at (x, y) and its bottom Z
+        # lands exactly on the seat - the same drop-to-floor-then-lift
+        # composition assets.place_item uses for a whole cartridge.
+        lo, hi_obj = A.group_bbox([dup])
+        centre = Vector(((lo.x + hi_obj.x) / 2, (lo.y + hi_obj.y) / 2, 0.0))
+        dup.location += Vector((x - centre.x, y - centre.y,
+                               z + SEATED_CELL_LIFT - lo.z))
+        bpy.context.view_layer.update()
+
+        # Spin about the cell's OWN centre (x, y) - a Z-axis rotation, so
+        # the Z rest position just established is untouched - matching the
+        # pivot-conjugated matrix_world composition assets.place_item and
+        # build_pcb use for the same reason: a bare rotation_euler write
+        # would be a silent no-op under the importer's quaternion mode.
+        if rot_deg:
+            pivot = Vector((x, y, 0.0))
+            R = Matrix.Rotation(math.radians(rot_deg), 4, "Z")
+            dup.matrix_world = (Matrix.Translation(pivot) @ R
+                                @ Matrix.Translation(-pivot) @ dup.matrix_world)
+            bpy.context.view_layer.update()
+
+        mat, _drawn = for_role("cell", rng, cfg, avoid_luma=backdrop_luma)
+        apply_to_object(dup, mat)
+
+        dup.name = f"SeatedCell{i}"
+        dup.pass_index = 0        # scene.py overrides
+        made.append(dup)
     return made

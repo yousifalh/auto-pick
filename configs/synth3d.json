@@ -32,7 +32,12 @@
       0.006,
       0.012
     ],
-    "jig_wall": 0.003
+    "jig_wall": 0.003,
+    "p_seated": 0.5,
+    "seated_frac": [
+      0.15,
+      0.85
+    ]
   },
   "camera": {
     "ortho": true,

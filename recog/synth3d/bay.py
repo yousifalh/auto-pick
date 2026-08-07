@@ -316,3 +316,103 @@ def obstruction_world_poses(poses: List[ObstructionPose], rot_deg: float,
         out.append(ObstructionPose(kind=p.kind, x=wx, y=wy, w=p.w, h=p.h,
                                    rot_deg=(p.rot_deg + rot_deg) % 360.0))
     return out
+
+
+# =========================================================================== #
+#  SEATED CELLS
+#
+#  The deployed robot fills a cartridge one cell at a time, so its camera
+#  sees PARTLY-FILLED bays for most of every run - not the empty-or-sealed
+#  cases the generator produced before this. `layout.plan` already lets parts
+#  overlap and lifts them via Placement.z (max_overlap_iou in
+#  configs/synth3d.yaml), so cells already landed on cartridges, but at
+#  random positions and angles. What was missing is the SEATED case:
+#  axis-aligned, inside the bay, at the pitch the packer itself would choose.
+#
+#  Positions come from the SAME FFDH packer common.packing exposes to the
+#  real planner, so the synthetic partly-filled bay matches what the packer
+#  would actually produce rather than an invented arrangement. Seated cells
+#  sit ON the bay proxy and occlude it (world.seat_cells, scene.py), exactly
+#  the mechanism sample_obstructions/obstruction_world_poses established:
+#  placement_area shrinks to the free floor with no mask arithmetic anywhere.
+# =========================================================================== #
+
+def seated_cell_poses(placement_rect: Rect, cell_w: float, cell_h: float,
+                      n: int, rng: random.Random) -> List[Tuple[float, float, float]]:
+    """Up to `n` cell centres seated in the bay at the packer's own pitch.
+
+    Same frame contract as `sample_obstructions`: this is a pure function of
+    whatever rect it is given, so the caller passes `placement_rect_local`'s
+    LOCAL-frame result (the cartridge's own pivot at the origin, before any
+    placement rotation) and carries the output into world space afterwards
+    with `seated_cell_world_poses`, exactly as `obstruction_world_poses`
+    does for obstructions.
+
+    Positions come from the SAME FFDH packer `common.packing` exposes to the
+    real planner (`first_fit_decreasing`), so the synthetic partly-filled bay
+    matches what the packer would actually produce rather than an invented
+    arrangement. No `forbidden_mask` is passed, so the packer's obstacle-
+    advancing behaviour never engages here - every shelf is a clean strip of
+    `placement_rect`.
+
+    Returns `[(x, y, rot_deg), ...]` with `rot_deg` in {0, 90} - the cell's
+    OWN pitch orientation from the packer, in the same LOCAL frame as
+    `placement_rect`. Fewer than `n` come back when the bay cannot hold that
+    many; `first_fit_decreasing` reports the rest as unplaced rather than
+    overlapping them.
+    """
+    from common.packing import Item as _PackItem
+    from common.packing import first_fit_decreasing
+
+    if n <= 0:
+        return []
+
+    x0, y0, x1, y1 = placement_rect
+    strip_w, strip_h = x1 - x0, y1 - y0
+
+    items = [_PackItem(i, cell_w, cell_h) for i in range(n)]
+    res = first_fit_decreasing(items, strip_w, strip_h, allow_rotation=True)
+
+    out = []
+    for p in res.placements:
+        out.append((
+            x0 + p.x + p.width / 2,
+            y0 + p.y + p.height / 2,
+            90.0 if p.rotated else 0.0,
+        ))
+    rng.shuffle(out)
+    return out[:n]
+
+
+def seated_cell_world_poses(poses: List[Tuple[float, float, float]],
+                            rot_deg: float, translate: Tuple[float, float]
+                            ) -> List[Tuple[float, float, float]]:
+    """Carry LOCAL `seated_cell_poses` output into world space.
+
+    Same contract and same reasoning as `obstruction_world_poses`: each
+    (x, y) is a POINT in the cartridge's own local frame (the frame
+    `placement_rect_local` returns, which is what `seated_cell_poses`'s
+    `placement_rect` argument must be called against), so rotating that
+    point about the local origin by `rot_deg` and translating by `translate`
+    is exact for ANY angle - a point has no extent for the rotation to
+    inflate, unlike lerping into a rotated world AABB. `rot_deg` and
+    `translate` are the SAME `layout.Placement.rot_deg` and `(x, y)` the
+    cartridge, the module board, the bay proxy and any obstructions were
+    placed with, so a seated cell turns WITH its cartridge: it stays
+    axis-aligned to the BAY it was packed into rather than to the world,
+    instead of staying axis-aligned to the world while the bay rotates out
+    from under it.
+
+    Each cell's own pitch orientation from the packer (0 or 90) is added to
+    the cartridge's `rot_deg`, the same composition
+    `obstruction_world_poses` uses for a tape cross's own tilt.
+    """
+    theta = math.radians(rot_deg)
+    cos_t, sin_t = math.cos(theta), math.sin(theta)
+    tx, ty = translate
+    out = []
+    for x, y, r in poses:
+        wx = tx + x * cos_t - y * sin_t
+        wy = ty + x * sin_t + y * cos_t
+        out.append((wx, wy, (r + rot_deg) % 360.0))
+    return out

@@ -53,6 +53,12 @@ class Item:
     # not a CAD sub-part. Unlike bay_object there can be several, and each
     # is its OWN instance with its own pass_index and id_meta entry.
     obstruction_objects: Optional[List[object]] = None
+    # Cells seated in this item's bay (the packer's own pitch, axis-aligned
+    # - see bay.seated_cell_poses/world.seat_cells), or None. Same reasoning
+    # as obstruction_objects: scene content built here, not a CAD sub-part,
+    # so each gets its own pass_index/id_meta entry rather than going
+    # through the per-item labelling loop.
+    seated_objects: Optional[List[object]] = None
     # The rigid transform `layout.Placement` applied to this item - its
     # `rot_deg` and `(x, y)` - captured once the item is placed.
     # bay.module_world_placement needs both to put the electronics module
@@ -136,6 +142,32 @@ def drop_to_floor(objects):
         o.location.z -= lo.z
 
 
+def clone(src, target=None):
+    """Linked duplicate of `src`: shares mesh data (see the module
+    docstring on template import cost) but gets independent per-instance
+    materials, because material slots are linked to the OBJECT rather than
+    the mesh.
+
+    `target` defaults to the active scene collection. Module-level (not a
+    closure inside `AssetLibrary.instantiate`) so `world.seat_cells` can
+    clone straight from a `library._templates[asset]["cell"]` template too,
+    the same way `instantiate` clones every other role - a seated cell has
+    to be the asset's own 18650 geometry, not a new primitive, or it will
+    not match the loose cells the detector already sees.
+    """
+    if target is None:
+        target = bpy.context.scene.collection
+    dup = src.copy()                 # linked duplicate: shares mesh data
+    dup.data = src.data
+    target.objects.link(dup)
+    dup.hide_render = False
+    dup.location = src.location.copy()
+    dup.rotation_euler = src.rotation_euler.copy()
+    for slot in dup.material_slots:
+        slot.link = "OBJECT"
+    return dup
+
+
 # --------------------------------------------------------------------------- #
 #  library
 # --------------------------------------------------------------------------- #
@@ -212,19 +244,7 @@ class AssetLibrary:
         by_role = self._load_template(name)
         target = bpy.context.scene.collection
 
-        def clone(src):
-            dup = src.copy()                 # linked duplicate: shares mesh data
-            dup.data = src.data
-            target.objects.link(dup)
-            dup.hide_render = False
-            dup.location = src.location.copy()
-            dup.rotation_euler = src.rotation_euler.copy()
-            # per-instance materials despite shared mesh data
-            for slot in dup.material_slots:
-                slot.link = "OBJECT"
-            return dup
-
-        kept = {r: [clone(o) for o in objs]
+        kept = {r: [clone(o, target) for o in objs]
                 for r, objs in by_role.items() if r in variant.keep_roles}
         if not any(kept.values()):
             return []
