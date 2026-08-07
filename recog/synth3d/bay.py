@@ -171,3 +171,30 @@ def module_world_placement(footprint: Tuple[float, float], bay_mm: Rect,
     wcx = translate[0] + lcx * cos_t - lcy * sin_t
     wcy = translate[1] + lcx * sin_t + lcy * cos_t
     return wcx, wcy, w, h
+
+
+def placement_world_placement(footprint: Tuple[float, float], bay_mm: Rect,
+                              interior_mm: Rect, rot_deg: float,
+                              translate: Tuple[float, float]
+                              ) -> Tuple[float, float, float, float]:
+    """The placement area's centre and TRUE size in world space.
+
+    Identical contract and identical reasoning to `module_world_placement`
+    - same `(cx, cy, w, h)` shape, same rotate-the-centre-POINT approach for
+    the same reason (a rotated world AABB would inflate this rectangle just
+    as it would the module's) - applied to `placement_rect_local` instead
+    of `module_rect_local`. This is the proxy's half of the interior: the
+    module and the placement area are complementary rectangles in the same
+    local frame, so carrying each through this same one-rotate-one-translate
+    pipeline keeps them exact AND keeps them adjacent-not-overlapping after
+    a `layout.plan` jitter, because a rigid transform applied identically to
+    two disjoint rectangles cannot make them overlap.
+    """
+    lx0, ly0, lx1, ly1 = placement_rect_local(footprint, bay_mm, interior_mm)
+    w, h = lx1 - lx0, ly1 - ly0
+    lcx, lcy = (lx0 + lx1) / 2, (ly0 + ly1) / 2
+    theta = math.radians(rot_deg)
+    cos_t, sin_t = math.cos(theta), math.sin(theta)
+    wcx = translate[0] + lcx * cos_t - lcy * sin_t
+    wcy = translate[1] + lcx * sin_t + lcy * cos_t
+    return wcx, wcy, w, h

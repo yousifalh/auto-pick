@@ -261,6 +261,25 @@ def build(params: dict, rng: random.Random, library: A.AssetLibrary,
             item.module_object = board
             meta.setdefault("pcbs", []).append(pcb_meta)
 
+            # The placement_area proxy: the complementary strip of the same
+            # interior, built off the same catalog data the module used
+            # just above. Guarded the same way module_placement is - only
+            # when the real bay side is known - because the centred
+            # module_placement=None fallback has no true bay side for this
+            # to be the complement OF.
+            if entry and entry.get("module_bay_mm") \
+                    and entry.get("case_interior_mm"):
+                placement_placement = B.placement_world_placement(
+                    item.footprint,
+                    tuple(entry["module_bay_mm"]),
+                    tuple(entry["case_interior_mm"][:4]),
+                    item.rot_deg, item.placed_xy,
+                )
+                proxy, proxy_meta = W.build_bay_proxy(
+                    placement_placement, hi.z, rng, rot_deg=item.rot_deg)
+                item.bay_object = proxy
+                meta.setdefault("bays", []).append(proxy_meta)
+
     # ---- pass indices ----------------------------------------------------- #
     for o in bpy.data.objects:
         o.pass_index = 0
@@ -303,6 +322,17 @@ def build(params: dict, rng: random.Random, library: A.AssetLibrary,
             id_meta[pid] = {"class": "electronics_module", "asset": item.asset,
                             "variant": item.variant, "role": "module"}
             objects_by_id[pid] = [item.module_object] + children
+
+        # The placement_area proxy is scene content built here too, not a
+        # CAD sub-part, so it gets its own pid for the same reason the
+        # module does. Unlike the module it has no children to fold in - it
+        # is a single plane.
+        if item.bay_object is not None:
+            pid += 1
+            item.bay_object.pass_index = pid
+            id_meta[pid] = {"class": "placement_area", "asset": item.asset,
+                            "variant": item.variant, "role": "placement_area"}
+            objects_by_id[pid] = [item.bay_object]
 
     # ---- backdrop, camera, lighting --------------------------------------- #
     # Built AFTER the jig so it can be sunk below the plate. Pocket floors are

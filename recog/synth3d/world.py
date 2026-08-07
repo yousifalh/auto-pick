@@ -771,3 +771,70 @@ def build_pcb(bounds_xy, z: float, rng: random.Random, module_placement=None,
                               @ Matrix.Translation(-pivot) @ board.matrix_world)
 
     return board, drawn
+
+
+def build_bay_proxy(placement, z: float, rng: random.Random,
+                    rot_deg: float = 0.0):
+    """
+    The plane that carries the `placement_area` label.
+
+    Coplanar with the PCB, on the shell TOP - these assemblies have no
+    interior geometry at all, so there is no floor to sit on. Under the
+    bird's-eye camera the two read the same, the same trick `build_pcb`
+    already relies on.
+
+    `placement` is `(cx, cy, w, h)` - the placement rectangle's TRUE centre
+    and size in world metres, from `bay.placement_world_placement`. Same
+    contract and same reason as `build_pcb`'s `module_placement`: computed
+    in the cartridge's own local frame and rotated as a POINT rather than
+    lerped into a rotated world AABB, so the proxy is exact at any
+    `layout.plan` jitter angle instead of oversized by rotation - see
+    `bay.module_world_placement`'s docstring for the measured 7.6%-at-2-
+    degrees AABB error this sidesteps. `rot_deg` is the SAME
+    `layout.Placement.rot_deg` the cartridge (and the module board) were
+    placed with; the plane is built axis-aligned at `(cx, cy)` and then
+    rotated about that same point via `matrix_world`, exactly as
+    `build_pcb` rotates the board - so the proxy turns rigidly with the
+    case and keeps sharing its edge with the module rectangle rather than
+    drifting apart under rotation.
+
+    Sits 0.1mm above the shell top, 0.1mm above the PCB's own 0.08mm
+    offset, so it never z-fights with the shell or the board. It is
+    DELIBERATELY a visible, shaded object rather than an index-only
+    helper: the placement area has to look like the inside of a
+    cartridge, because the segmenter is asked to recognise it from
+    appearance, not from a hidden id alone.
+
+    Occlusion does the rest. A cell seated on this plane, an obstruction
+    stuck to it, or the module beside it all hide their own pixels, and
+    `annotate.boxes_from_mask` reports only what stayed visible - so the
+    label is the CURRENTLY FREE floor with no set arithmetic anywhere.
+
+    Returns (proxy_object, drawn_meta). The caller assigns pass_index.
+    """
+    cx, cy, w, h = placement
+    bpy.ops.mesh.primitive_plane_add(size=1, location=(cx, cy, z + 0.0009))
+    proxy = bpy.context.active_object
+    proxy.name = "BayProxy"
+    proxy.scale = (w, h, 1.0)
+    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+    proxy.pass_index = 0          # scene.py overrides
+
+    drawn = {"w": w, "h": h,
+             "color": [rng.uniform(0.02, 0.05)] * 3,
+             "roughness": rng.uniform(0.55, 0.85), "rot_deg": rot_deg}
+
+    mat = bpy.data.materials.new("BayFloor")
+    mat.use_nodes = True
+    bsdf = mat.node_tree.nodes.get("Principled BSDF")
+    set_input(bsdf, "Base Color", tuple(drawn["color"]) + (1.0,))
+    set_input(bsdf, "Roughness", drawn["roughness"])
+    proxy.data.materials.append(mat)
+
+    if rot_deg:
+        pivot = Vector((cx, cy, 0.0))
+        R = Matrix.Rotation(math.radians(rot_deg), 4, "Z")
+        proxy.matrix_world = (Matrix.Translation(pivot) @ R
+                              @ Matrix.Translation(-pivot) @ proxy.matrix_world)
+
+    return proxy, drawn

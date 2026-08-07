@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 
 import pytest
@@ -95,7 +96,7 @@ def test_catalog_records_the_measured_bay_depth(name, depth):
 
 
 from recog.synth3d.bay import (module_rect_local, module_world_placement,
-                               placement_rect_local)
+                               placement_rect_local, placement_world_placement)
 
 # `footprint` for these is `assets.Item.footprint`: the cartridge's own
 # UN-ROTATED (size_x, size_y) in metres - not a world AABB. See
@@ -194,3 +195,82 @@ def test_module_world_placement_centre_rotates_about_the_translate_point():
     # Local centre is (0, 0.0725); a +90 degree turn sends +y to -x.
     assert (cx, cy) == pytest.approx((-0.0725, 0.0), abs=1e-6)
     assert (w, h) == pytest.approx((0.0817, 0.035))
+
+
+# ---- proxy geometry: the placement_area label is the complementary
+# rectangle to the module, carried through the same local-frame ->
+# rotate-the-centre-point pipeline `module_world_placement` uses. See that
+# function's docstring for why a rotated world AABB is not an option here
+# either: the same 7.6%-at-2-degrees inflation would oversize the proxy and
+# claim placement space the case does not physically have.
+
+def test_module_and_placement_local_rects_do_not_overlap():
+    """The proxy must not be drawn under the module, or the two labels
+    would fight for the same pixels and the winner would be z-order."""
+    interior_mm = (0.0, 0.0, 62.9, 90.9)
+    bay_mm = (0.0, 67.4, 62.9, 90.9)
+    footprint = (0.0629, 0.0909)
+
+    m = module_rect_local(footprint, bay_mm, interior_mm)
+    p = placement_rect_local(footprint, bay_mm, interior_mm)
+
+    ox = min(m[2], p[2]) - max(m[0], p[0])
+    oy = min(m[3], p[3]) - max(m[1], p[1])
+    assert ox <= 1e-9 or oy <= 1e-9, "module and placement rects overlap"
+
+
+def test_placement_world_placement_size_is_invariant_to_rotation_angle():
+    # Same fixture as module_world_placement's rotation-invariance test:
+    # AnkerPowerCore26800, 81.7mm interior, a 35.0mm bay on the +y end.
+    # The complement is the 90 - 35 = 55.0mm strip on the -y side.
+    footprint = (0.0817, 0.180)
+    bay_mm = (-40.85, 55.0, 40.85, 90.0)
+    interior_mm = (-40.85, -90.0, 40.85, 90.0)
+    for rot_deg in (0.0, 2.0, 47.3, 90.0, 91.7, 137.0, 180.0, 270.0, 358.0):
+        _, _, w, h = placement_world_placement(
+            footprint, bay_mm, interior_mm, rot_deg, (0.0, 0.0))
+        assert w == pytest.approx(0.0817, abs=1e-9)
+        assert h == pytest.approx(0.145, abs=1e-9)
+
+
+def test_placement_world_placement_matches_the_local_case_at_zero_rotation():
+    footprint = (0.060, 0.090)
+    bay_mm = (0.0, 66.0, 60.0, 90.0)
+    interior_mm = (0.0, 0.0, 60.0, 90.0)
+    cx, cy, w, h = placement_world_placement(
+        footprint, bay_mm, interior_mm, 0.0, (0.130, 0.245))
+    assert (w, h) == pytest.approx((0.060, 0.066))
+    assert (cx, cy) == pytest.approx((0.130, 0.233))
+
+
+def test_placement_world_placement_centre_rotates_about_the_translate_point():
+    footprint = (0.0817, 0.180)
+    bay_mm = (-40.85, 55.0, 40.85, 90.0)
+    interior_mm = (-40.85, -90.0, 40.85, 90.0)
+    cx, cy, w, h = placement_world_placement(
+        footprint, bay_mm, interior_mm, 90.0, (0.0, 0.0))
+    # placement_rect_local's centre here is (0, -0.0175); a +90 degree turn
+    # sends +y to -x, so (lcx, lcy) = (0, -0.0175) -> (0.0175, 0).
+    assert (cx, cy) == pytest.approx((0.0175, 0.0), abs=1e-6)
+    assert (w, h) == pytest.approx((0.0817, 0.145))
+
+
+def test_placement_and_module_world_rects_do_not_overlap_after_rotation():
+    """A rigid rotate-then-translate applied identically to two disjoint
+    local rectangles cannot make them overlap; this pins that down at the
+    world-placement level, not just the local-frame level."""
+    footprint = (0.0817, 0.180)
+    bay_mm = (-40.85, 55.0, 40.85, 90.0)
+    interior_mm = (-40.85, -90.0, 40.85, 90.0)
+    for rot_deg in (0.0, 2.0, 47.3, 90.0, 137.0, 358.0):
+        mcx, mcy, mw, mh = module_world_placement(
+            footprint, bay_mm, interior_mm, rot_deg, (0.3, 0.2))
+        pcx, pcy, pw, ph = placement_world_placement(
+            footprint, bay_mm, interior_mm, rot_deg, (0.3, 0.2))
+        # Both rectangles keep their true, un-rotated size; the join across
+        # their shared edge is invariant to the rigid transform, so the
+        # distance between centres along the local bay axis must equal
+        # half of each rect's extent on that axis, for any rotation.
+        dist = math.hypot(mcx - pcx, mcy - pcy)
+        assert dist == pytest.approx((mh + ph) / 2 if
+                                     abs(mw - pw) < 1e-9 else (mw + pw) / 2)

@@ -44,6 +44,10 @@ class Item:
     # its own pass_index and id_meta entry in scene.py rather than going
     # through the per-item labelling loop.
     module_object: object = None
+    # The placement_area proxy plane scene.py built for an open_case item,
+    # or None. Same reasoning as module_object: scene content, not a CAD
+    # sub-part, so it gets its own pass_index and id_meta entry too.
+    bay_object: object = None
     # The rigid transform `layout.Placement` applied to this item - its
     # `rot_deg` and `(x, y)` - captured once the item is placed.
     # bay.module_world_placement needs both to put the electronics module
