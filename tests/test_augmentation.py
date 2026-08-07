@@ -321,7 +321,7 @@ def test_apply_with_mask_moves_image_and_mask_together():
 
     t = build_seg_train_transform({"p_flip": 1.0, "p_rot90": 0.0,
                                    "p_photometric": 0.0,
-                                   "p_geometric": 0.0})
+                                   "p_geometric": 0.0, "p_camera": 0.0})
     out = apply_with_mask(t, img, mask)
     bright = out["image"].reshape(-1, 3).max(axis=1) > 127
     labelled = out["mask"].reshape(-1) == 2
