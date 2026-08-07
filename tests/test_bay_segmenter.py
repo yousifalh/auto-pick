@@ -125,3 +125,75 @@ def test_dice_loss_ignores_classes_absent_from_the_batch():
     logits = torch.full((1, 6, 4, 4), -20.0)
     logits[:, 0] = 20.0
     assert float(dice_loss(logits, target, 6)) < 0.02
+
+
+def test_signed_area_error_separates_optimistic_from_conservative():
+    """Optimistic error puts a cell where one cannot go - a damage
+    event. Conservative error refuses where one can - a lost cell. Only
+    the first is a safety issue and a single unsigned number hides it."""
+    import numpy as np
+
+    from recog.seg_evaluate import signed_area_error_mm2
+
+    target = np.zeros((20, 20), np.int8)
+    target[5:15, 5:15] = 2                 # 100 px of true bay
+    pred = np.zeros((20, 20), np.int8)
+    pred[5:15, 5:17] = 2                   # 20 px too many, all optimistic
+
+    opt, cons = signed_area_error_mm2(pred, target, cls=2, mm_per_px=0.5)
+    assert opt == pytest.approx(20 * 0.25)
+    assert cons == pytest.approx(0.0)
+
+
+def test_signed_area_error_reports_conservative_when_under_predicting():
+    import numpy as np
+
+    from recog.seg_evaluate import signed_area_error_mm2
+
+    target = np.zeros((20, 20), np.int8)
+    target[5:15, 5:15] = 2
+    pred = np.zeros((20, 20), np.int8)
+    pred[5:15, 5:13] = 2                   # 20 px too few
+
+    opt, cons = signed_area_error_mm2(pred, target, cls=2, mm_per_px=0.5)
+    assert opt == pytest.approx(0.0)
+    assert cons == pytest.approx(20 * 0.25)
+
+
+def test_boundary_displacement_is_zero_for_an_exact_match():
+    import numpy as np
+
+    from recog.seg_evaluate import boundary_displacement_mm
+
+    m = np.zeros((30, 30), np.int8)
+    m[8:22, 8:22] = 2
+    assert boundary_displacement_mm(m, m, cls=2, mm_per_px=0.63) == \
+        pytest.approx(0.0)
+
+
+def test_boundary_displacement_scales_with_mm_per_px():
+    import numpy as np
+
+    from recog.seg_evaluate import boundary_displacement_mm
+
+    target = np.zeros((30, 30), np.int8); target[8:22, 8:22] = 2
+    pred = np.zeros((30, 30), np.int8); pred[8:22, 8:24] = 2
+
+    a = boundary_displacement_mm(pred, target, cls=2, mm_per_px=1.0)
+    b = boundary_displacement_mm(pred, target, cls=2, mm_per_px=2.0)
+    assert b == pytest.approx(2.0 * a)
+    assert a > 0.0
+
+
+def test_per_class_iou_handles_a_class_absent_from_both():
+    import numpy as np
+
+    from recog.seg_evaluate import per_class_iou
+
+    m = np.zeros((10, 10), np.int8)
+    m[2:8, 2:8] = 2
+    iou = per_class_iou(m, m, num_classes=6)
+    assert iou["bay"] == pytest.approx(1.0)
+    assert np.isnan(iou["obstruction"]), (
+        "a class in neither prediction nor truth has no IoU; reporting "
+        "0.0 would drag the mean down for a class that was never tested")

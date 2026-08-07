@@ -1,0 +1,51 @@
+
+Bay segmenter evaluation
+========================================
+  checkpoint        : recog/checkpoints/seg/best.pt
+  config            : configs/segmentation.yaml
+  synth config      : recog/dataset3d_seg/manifest.json
+  mm_per_px         : 0.6250 (layout.area[0]*1000 / render.res[0])
+  device            : cuda
+  validation crops  : 54
+
+Per-class IoU (pooled over the validation split; NaN = class absent from both pred and truth over the whole split, not scored as 0):
+  class              IoU   instances
+  ----------------------------------
+  background      0.3619          53
+  cartridge       0.9551          37
+  bay             0.9046          19
+  electronics     0.9289          19
+  obstruction     0.6210          11
+  battery         0.7079          13
+  ----------------------------------
+  selected mean IoU over ['bay', 'electronics', 'obstruction'] (instances={'bay': 19, 'electronics': 19, 'obstruction': 11}): 0.8181
+
+Boundary displacement, mm (mean distance from a predicted boundary pixel to
+the nearest ground-truth boundary pixel; the figure that chose a per-ROI
+segmenter over a 28x28 Mask R-CNN head, whose quantisation at this framing is 2.9 x 6.4 mm):
+  class               mm     crops
+  --------------------------------
+  bay              0.861        19
+  electronics      0.574        19
+  obstruction      1.396        11
+  --------------------------------
+  verdict: BELOW the mask-head quantisation figure - supports the architecture choice.
+
+Signed placeable-area error, mm^2 (optimistic = predicted placeable where truth
+is not, the error that can put a cell on a PCB; conservative = the opposite,
+a lost cell, not a safety issue). Mean per crop and total over the split:
+  class          opt mean   opt total   cons mean   cons total
+  ------------------------------------------------------------
+  bay                60.1      3246.1        84.5       4560.5
+  electronics        20.7      1118.0        13.3        718.4
+  obstruction        20.6      1114.5        20.2       1093.0
+  ------------------------------------------------------------
+
+Latency vs the FDR 10.4 50 ms end-to-end budget (fp16 batched inference):
+   cartridges   total_ms  per_cart_ms  within_50ms
+  ------------------------------------------------
+            1        8.7         8.70         True
+            2       11.8         5.88         True
+            4       15.2         3.79         True
+            8       21.7         2.72         True
+  ------------------------------------------------
