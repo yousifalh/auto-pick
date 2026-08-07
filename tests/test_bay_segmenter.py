@@ -57,3 +57,38 @@ def test_half_precision_is_refused_on_cpu():
     seg = BaySegmenter(checkpoint=None, device="cpu",
                        crop_size=64, half=True)
     assert seg.half is False
+
+
+def test_dice_loss_is_zero_for_a_perfect_prediction():
+    from recog.seg_training import dice_loss
+
+    target = torch.zeros(2, 8, 8, dtype=torch.long)
+    target[:, :4] = 2
+    logits = torch.full((2, 6, 8, 8), -20.0)
+    for b in range(2):
+        for y in range(8):
+            for x in range(8):
+                logits[b, int(target[b, y, x]), y, x] = 20.0
+    assert float(dice_loss(logits, target, 6)) < 0.02
+
+
+def test_dice_loss_is_large_for_an_inverted_prediction():
+    from recog.seg_training import dice_loss
+
+    target = torch.zeros(2, 8, 8, dtype=torch.long)
+    target[:, :4] = 2
+    logits = torch.full((2, 6, 8, 8), -20.0)
+    logits[:, 5] = 20.0                    # predict class 5 everywhere
+    assert float(dice_loss(logits, target, 6)) > 0.8
+
+
+def test_dice_loss_ignores_classes_absent_from_the_batch():
+    """A batch with no obstruction pixels must not be penalised for
+    failing to predict obstruction - otherwise 40% of batches carry a
+    constant gradient toward a class that is not there."""
+    from recog.seg_training import dice_loss
+
+    target = torch.zeros(1, 4, 4, dtype=torch.long)
+    logits = torch.full((1, 6, 4, 4), -20.0)
+    logits[:, 0] = 20.0
+    assert float(dice_loss(logits, target, 6)) < 0.02

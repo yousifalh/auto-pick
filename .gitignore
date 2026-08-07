@@ -33,6 +33,7 @@ cad/*
 # Generated datasets (reproducible from a seed; do not version)
 recog/dataset/
 recog/dataset3d/
+recog/dataset3d_seg/
 recog/dev3d/
 recog/sweeps/
 *.blend
