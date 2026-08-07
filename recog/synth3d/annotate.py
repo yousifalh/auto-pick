@@ -13,6 +13,7 @@ directory.
 
 from __future__ import annotations
 
+import json
 import xml.etree.ElementTree as ET
 from typing import Dict, List, Sequence, Tuple
 
@@ -212,3 +213,153 @@ def write_voc_xml(path: str, filename: str, width: int, height: int,
         ET.SubElement(bnd, "ymax").text = str(int(y1))
 
     ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
+
+
+def rle_encode(mask: np.ndarray) -> Dict[str, object]:
+    """Uncompressed COCO RLE for a binary mask.
+
+    Blender's bundled Python has no pycocotools, so this is hand-rolled.
+
+    COCO runs are COLUMN-major and always start with a background run,
+    which is why a mask whose first pixel is set begins `[0, ...]`. A
+    row-major encoder produces a file that every reader accepts and every
+    reader decodes transposed - silently.
+    """
+    m = np.asarray(mask, dtype=np.uint8)
+    flat = m.flatten(order="F")
+    counts: List[int] = []
+    last = 0
+    run = 0
+    for v in flat:
+        if v == last:
+            run += 1
+        else:
+            counts.append(run)
+            last = v
+            run = 1
+    counts.append(run)
+    return {"size": [int(m.shape[0]), int(m.shape[1])], "counts": counts}
+
+
+def rle_decode(rle: Dict[str, object]) -> np.ndarray:
+    """Inverse of :func:`rle_encode`."""
+    h, w = rle["size"]
+    flat = np.zeros(h * w, dtype=np.uint8)
+    pos = 0
+    value = 0
+    for run in rle["counts"]:
+        flat[pos:pos + run] = value
+        pos += run
+        value ^= 1
+    return flat.reshape((h, w), order="F")
+
+
+# Classes exempt from the size filters. See the spec's ruling 4: under the
+# modal definition a nearly-full cartridge has a small, thin, mostly-occluded
+# strip of free floor, which is exactly what min_px / min_side /
+# min_visibility discard - and exactly the cartridge where knowing the
+# remaining room matters most. Filtering it would teach the segmenter that a
+# nearly-full bay has NO placement area rather than a small one.
+#
+# A bay with zero visible free floor still yields nothing, because it never
+# appears in np.unique. That case is correct: there is no room.
+_UNFILTERED = frozenset({"placement_area"})
+
+
+def masks_from_index(ids: np.ndarray, id_meta: Dict[int, dict],
+                     class_ids: Dict[str, int], cfg,
+                     full_areas: Dict[int, int] = None
+                     ) -> Tuple[List[dict], List[dict]]:
+    """Like :func:`boxes_from_mask`, but each annotation carries an RLE.
+
+    Kept separate rather than folded into boxes_from_mask so the VOC
+    detector path is provably untouched: it still calls the old function
+    with the two-class map and gets byte-identical output.
+    """
+    H, W = ids.shape
+    anns: List[dict] = []
+    dropped: List[dict] = []
+
+    for pid in np.unique(ids):
+        pid = int(pid)
+        if pid <= 0:
+            continue
+        meta = id_meta.get(pid)
+        if meta is None:
+            continue
+        cls = meta.get("class")
+        if cls not in class_ids:
+            dropped.append({"pass_index": pid, "class": cls,
+                            "reason": "unmapped"})
+            continue
+
+        inst = (ids == pid)
+        ys, xs = np.nonzero(inst)
+        visible_px = int(xs.size)
+        x0, x1 = int(xs.min()), int(xs.max()) + 1
+        y0, y1 = int(ys.min()), int(ys.max()) + 1
+        w, h = x1 - x0, y1 - y0
+        truncated = bool(x0 == 0 or y0 == 0 or x1 == W or y1 == H)
+
+        vis_frac = None
+        if full_areas and full_areas.get(pid):
+            vis_frac = round(visible_px / max(1, full_areas[pid]), 4)
+
+        reason = None
+        if cls not in _UNFILTERED:
+            if visible_px < cfg.min_px:
+                reason = f"visible_px<{cfg.min_px}"
+            elif min(w, h) < cfg.min_side:
+                reason = f"side<{cfg.min_side}"
+            elif cfg.drop_truncated and truncated:
+                reason = "truncated"
+            elif vis_frac is not None and vis_frac < cfg.min_visibility:
+                reason = f"visibility<{cfg.min_visibility}"
+        if reason:
+            dropped.append({"pass_index": pid, "class": cls,
+                            "reason": reason, "visible_px": visible_px})
+            continue
+
+        anns.append({
+            "pass_index": pid,
+            "class": cls,
+            "category_id": class_ids[cls],
+            "bbox_xyxy": [x0, y0, x1, y1],
+            "bbox_xywh": [x0, y0, w, h],
+            "segmentation": rle_encode(inst),
+            "area": visible_px,
+            "truncated": truncated,
+            "visible_fraction": vis_frac,
+            "asset": meta.get("asset"),
+            "variant": meta.get("variant"),
+            "iscrowd": 0,
+        })
+    return anns, dropped
+
+
+def write_coco_json(path: str, images: Sequence[dict],
+                    annotations: Sequence[dict],
+                    seg_class_ids: Dict[str, int]) -> None:
+    """Write the segmentation sidecar.
+
+    Sits ALONGSIDE the Pascal-VOC output rather than replacing it. VOC
+    has no mask field, and the detector's training path must keep reading
+    the two-class VOC files unchanged.
+    """
+    doc = {
+        "info": {"description": "auto-pick synthetic segmentation set"},
+        "licenses": [],
+        "categories": [{"id": i, "name": n, "supercategory": ""}
+                       for n, i in sorted(seg_class_ids.items(),
+                                          key=lambda kv: kv[1])],
+        "images": list(images),
+        "annotations": [
+            {"id": a["id"], "image_id": a["image_id"],
+             "category_id": a["category_id"],
+             "bbox": a["bbox_xywh"], "area": a["area"],
+             "segmentation": a["segmentation"], "iscrowd": a.get("iscrowd", 0)}
+            for a in annotations
+        ],
+    }
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh)

@@ -29,7 +29,7 @@ import bpy  # noqa: E402
 from recog.synth3d import annotate, render, scene as S  # noqa: E402
 from recog.synth3d.assets import AssetLibrary  # noqa: E402
 from recog.synth3d.config import (CLASSES, VARIANTS, class_ids,  # noqa: E402
-                                  load_config)
+                                  load_config, seg_class_ids)
 
 
 def parse_args(cfg):
@@ -211,6 +211,7 @@ def main():
     _filter_res_check(cfg)
 
     ids = class_ids()
+    seg_ids = seg_class_ids()
     root = os.path.abspath(a.out)
     tmp = _dirs(root, a.save_masks)
 
@@ -229,6 +230,22 @@ def main():
     ws, hs = [], []
     per_class = {c: 0 for c in CLASSES}
     per_variant, per_mode, n_drop, n_images = {}, {}, 0, 0
+
+    # COCO segmentation sidecar, accumulated alongside the VOC boxes.
+    #
+    # Each scene's `seg_annotations` are written into its own meta/*.json
+    # (below) as well as gathered here, so a FUTURE --resume run can rebuild
+    # this sidecar purely by re-reading the meta files --resume already
+    # reloads - no re-render needed. `seg_incomplete` guards the OTHER half
+    # of that: meta files from a run that predates this feature (or from an
+    # interrupted run) have no `seg_annotations` key, and a skipped scene
+    # cannot be filled in without redoing the index-pass render that
+    # --resume exists to skip. Rather than silently emit a sidecar that is
+    # missing that scene's instances - a file that looks complete and is
+    # not - the sidecar write is refused with a loud explanation.
+    coco_images: list = []
+    coco_annotations: list = []
+    seg_incomplete = False
 
     for i, params, rng in S.scene_generator(a.n, a.seed, cfg, overrides):
         stem = f"{a.prefix}_{i:05d}"
@@ -262,6 +279,8 @@ def main():
             anns, dropped = annotate.boxes_from_mask(mask, id_meta, ids,
                                                      cfg.filter, full_areas)
             anns = annotate.merge_group_boxes(anns, groups, ids, cfg.filter)
+            seg_anns, _ = annotate.masks_from_index(
+                mask, id_meta, seg_ids, cfg.filter, full_areas)
 
             if a.save_masks:
                 render.save_mask_png(
@@ -277,7 +296,8 @@ def main():
             meta.update({"index": i, "seed": a.seed, "image": stem + ".png",
                          "width": W, "height": H, "annotations": anns,
                          "dropped": dropped, "classes": CLASSES,
-                         "class_to_id": ids})
+                         "class_to_id": ids, "seg_annotations": seg_anns,
+                         "seg_classes": list(seg_ids), "seg_class_to_id": seg_ids})
             with open(meta_path, "w") as f:
                 json.dump(meta, f, indent=2)
 
@@ -291,9 +311,38 @@ def main():
         per_mode[mode] = per_mode.get(mode, 0) + 1
         n_drop += len(meta.get("dropped", []))
 
+        # Read from `meta`, not the local `seg_anns`, so a --resume-reloaded
+        # scene (which never ran the "if" branch above) still contributes -
+        # as long as its meta file was written by a version of this script
+        # that recorded seg_annotations. See seg_incomplete above.
+        scene_seg_anns = meta.get("seg_annotations")
+        if scene_seg_anns is None:
+            seg_incomplete = True
+        else:
+            image_id = len(coco_images)
+            coco_images.append({"id": image_id, "file_name": meta["image"],
+                                "width": meta["width"], "height": meta["height"]})
+            for sa in scene_seg_anns:
+                coco_annotations.append(dict(sa, image_id=image_id,
+                                             id=len(coco_annotations) + 1))
+
         print(f"[{i + 1}/{a.n}] {stem}  {len(meta['annotations'])} boxes  "
               f"({meta['params']['backdrop']}/{meta['params']['lighting']}"
               f"/{mode})")
+
+    if seg_incomplete:
+        print("[warn] at least one scene's meta/*.json had no "
+              "'seg_annotations' entry (written by a run that predates the "
+              "segmentation sidecar, or reloaded via --resume from an older "
+              "output dir) - instances_seg.json was NOT written, to avoid "
+              "emitting a silently-partial sidecar. Regenerate without "
+              "--resume, or point --out at a fresh directory, to produce a "
+              "complete one.")
+    else:
+        seg_path = os.path.join(root, "instances_seg.json")
+        annotate.write_coco_json(seg_path, coco_images, coco_annotations, seg_ids)
+        print(f"[done] wrote {len(coco_annotations)} segmentation "
+              f"annotations over {len(coco_images)} images -> {seg_path}")
 
     stats = {
         "n_images": n_images,
