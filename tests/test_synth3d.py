@@ -34,7 +34,7 @@ def test_num_classes_with_background():
 
 # ------------------------------------------------------- bpy boundary ----
 
-_BPY_FREE_CANDIDATES = ["config", "catalog", "layout", "annotate", "lightrig"]
+_BPY_FREE_CANDIDATES = ["config", "catalog", "layout", "annotate", "lightrig", "bay"]
 _BPY_FREE_MODS = [m for m in _BPY_FREE_CANDIDATES
                    if (ROOT / "recog" / "synth3d" / f"{m}.py").is_file()]
 
@@ -1146,6 +1146,21 @@ def test_azimuth_sweeps_shadows_through_every_direction():
     ys = [d[1] for d in dirs]
     assert min(xs) < -0.9 and max(xs) > 0.9
     assert min(ys) < -0.9 and max(ys) > 0.9
+
+
+def test_seg_class_set_extends_the_detector_set_in_order():
+    from recog.synth3d.config import CLASSES, SEG_CLASSES, seg_class_ids
+
+    assert SEG_CLASSES[:len(CLASSES)] == CLASSES, (
+        "SEG_CLASSES must start with CLASSES so a shared id means a "
+        "shared class between the VOC and COCO outputs")
+    assert SEG_CLASSES == ["battery", "cartridge", "electronics_module",
+                           "placement_area", "obstruction"]
+    assert seg_class_ids() == {
+        "battery": 1, "cartridge": 2, "electronics_module": 3,
+        "placement_area": 4, "obstruction": 5,
+    }
+    assert 0 not in seg_class_ids().values(), "0 is reserved for background"
 
 
 # ------------------------------------------------------- CAD import ----

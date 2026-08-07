@@ -34,9 +34,26 @@ except ImportError:            # Blender's bundled Python
 
 CLASSES: List[str] = ["battery", "cartridge"]
 
+# The segmentation label set. Deliberately SEPARATE from CLASSES: the
+# detector's classification head is sized by recog.dataset.CLASS_MAP, and
+# growing that invalidates every committed checkpoint and every published
+# number. The VOC output stays two-class; these five go only to the COCO
+# sidecar that the segmenter reads.
+#
+# Order matters. SEG_CLASSES starts with CLASSES so that ids 1 and 2 mean
+# the same thing in both files.
+SEG_CLASSES: List[str] = [
+    "battery", "cartridge", "electronics_module",
+    "placement_area", "obstruction",
+]
+
 
 def class_ids() -> Dict[str, int]:
     return {c: i + 1 for i, c in enumerate(CLASSES)}
+
+
+def seg_class_ids() -> Dict[str, int]:
+    return {c: i + 1 for i, c in enumerate(SEG_CLASSES)}
 
 
 # Sub-part name -> semantic ROLE (not class). Matched in order, first hit wins.

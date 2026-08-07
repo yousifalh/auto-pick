@@ -1,10 +1,10 @@
 """
 recog.synth3d.bay - every geometric decision about a cartridge's interior.
 
-No bpy import, so all of it is unit-testable outside Blender. world.py and
-scene.py import bpy and cannot be tested; they call into here for the numbers
-and only apply the result. Keeping the arithmetic on this side of the line is
-what makes the bay geometry checkable at all.
+This module has no Blender dependencies, so all of it is unit-testable outside
+Blender. world.py and scene.py depend on Blender and cannot be tested; they
+call into here for the numbers and only apply the result. Keeping the arithmetic
+on this side of the line is what makes the bay geometry checkable at all.
 
 Units follow the caller. `module_bay_from_bounds` is used on millimetre CAD
 bounds at conversion time and on metre scene bounds at render time; it is scale
