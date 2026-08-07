@@ -1139,19 +1139,6 @@ In `scene.py`, inside the open-case loop after building the proxy:
 ```python
                 poses = B.sample_obstructions(placement_rect,
                                               cfg.obstruction, rng)
-                item.obstruction_objects = [
-                    o for o, _ in W.build_obstructions(poses, hi.z, rng)]
-                meta.setdefault("obstructions", []).extend(
-                    m for _, m in W.build_obstructions.__wrapped__(poses, hi.z, rng)
-                ) if False else meta.setdefault("obstructions", []).extend(
-                    [{"kind": p.kind, "w": p.w, "h": p.h} for p in poses])
-```
-
-Simplify that to a single call — build once, keep both halves:
-
-```python
-                poses = B.sample_obstructions(placement_rect,
-                                              cfg.obstruction, rng)
                 built = W.build_obstructions(poses, hi.z, rng)
                 item.obstruction_objects = [o for o, _ in built]
                 meta.setdefault("obstructions", []).extend(m for _, m in built)
@@ -1538,8 +1525,6 @@ def rle_encode(mask: np.ndarray) -> Dict[str, object]:
             last = v
             run = 1
     counts.append(run)
-    if m.size and flat[0] == 1:
-        counts.insert(0, 0)
     return {"size": [int(m.shape[0]), int(m.shape[1])], "counts": counts}
 
 
@@ -1556,7 +1541,13 @@ def rle_decode(rle: Dict[str, object]) -> np.ndarray:
     return flat.reshape((h, w), order="F")
 ```
 
-The `counts.insert(0, 0)` runs only when the mask is non-empty and starts set; encoding an all-zero mask must not gain a spurious leading zero, which the empty-mask round-trip test checks.
+No explicit leading-zero insertion is needed, and adding one is a bug. The
+loop already emits a zero-length run the moment the first pixel differs from
+the initial `last = 0`, so a mask whose first pixel is set naturally begins
+`[0, ...]`. An earlier draft of this plan appended `counts.insert(0, 0)` on
+top of that and produced a *double* leading zero — `[0, 0, 4]` for an
+all-ones 2x2 — which decodes to all zeros. `test_rle_is_column_major` catches
+it, because `counts[:2]` becomes `[0, 0]` instead of `[0, 1]`.
 
 - [ ] **Step 4: Implement `masks_from_index` with the filter exemption**
 
