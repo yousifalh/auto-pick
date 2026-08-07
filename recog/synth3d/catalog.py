@@ -56,32 +56,70 @@ def convert_step(src: str, dst: str, tol_linear: float = 0.05,
 
 
 def inspect_glb(path: str) -> dict:
-    """Measure a converted asset and classify its sub-parts."""
+    """Measure a converted asset and classify its sub-parts.
+
+    Walks the scene GRAPH, not `scene.geometry`, because a sub-part's
+    position is carried by its node transform. `g.extents` alone says how
+    big a cell is but not where it sits, and where it sits is what
+    reveals the electronics bay.
+    """
+    import numpy as np
     import trimesh
+
+    from .bay import module_bay_from_bounds
+
     scene = trimesh.load(path)
-    geoms = scene.geometry if hasattr(scene, "geometry") else {"mesh": scene}
 
     subparts, counts = [], {}
-    for name, g in geoms.items():
-        role = role_of(name)
+    by_role_bounds = {}
+
+    for node in scene.graph.nodes_geometry:
+        transform, gname = scene.graph[node]
+        g = scene.geometry[gname]
+        corners = trimesh.transform_points(
+            trimesh.bounds.corners(g.bounds), transform)
+        lo, hi = corners.min(axis=0) * MM, corners.max(axis=0) * MM
+
+        role = role_of(node)
         counts[role] = counts.get(role, 0) + 1
-        ext = [round(float(v) * MM, 2) for v in g.extents]
+        by_role_bounds.setdefault(role, []).append((lo, hi))
+
         subparts.append({
-            "name": name,
+            "name": node,
             "role": role,
-            "extents_mm": ext,
+            "extents_mm": [round(float(v) * MM, 2) for v in g.extents],
             "triangles": int(len(g.faces)),
             "volume_mm3": round(float(g.volume) * MM ** 3, 1)
             if g.is_volume else None,
         })
 
-    lo, hi = scene.bounds
-    return {
-        "extents_mm": [round(float(v) * MM, 2) for v in (hi - lo)],
-        "triangles": int(sum(len(g.faces) for g in geoms.values())),
+    def _aabb(role):
+        if role not in by_role_bounds:
+            return None
+        los = np.array([b[0] for b in by_role_bounds[role]])
+        his = np.array([b[1] for b in by_role_bounds[role]])
+        lo, hi = los.min(axis=0), his.max(axis=0)
+        return [round(float(v), 2) for v in
+                (lo[0], lo[1], hi[0], hi[1], hi[2])]
+
+    cell_union = _aabb("cell")
+    case_interior = _aabb("case")
+
+    out = {
+        "extents_mm": [round(float(v) * MM, 2)
+                       for v in (scene.bounds[1] - scene.bounds[0])],
+        "triangles": int(sum(len(g.faces) for g in scene.geometry.values())),
         "subparts": sorted(subparts, key=lambda s: (s["role"], s["name"])),
         "role_counts": counts,
+        "cell_union_mm": cell_union,
+        "case_interior_mm": case_interior,
     }
+    if cell_union and case_interior:
+        out["module_bay_mm"] = [
+            round(v, 2) for v in module_bay_from_bounds(
+                tuple(case_interior[:4]), tuple(cell_union[:4]))
+        ]
+    return out
 
 
 def build_catalog(src_dir: str, out_dir: str, tol_linear: float = 0.05,
