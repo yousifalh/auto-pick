@@ -1,26 +1,48 @@
 """
-Draw the generated boxes onto the renders so you can actually look at them.
+Draw the generated boxes (or, with --masks, segmentation masks) onto the
+renders so you can actually look at them.
 
     python -m recog.verify3d --data recog/dev3d --n 12
+    python -m recog.verify3d --data recog/dev3d --n 16 --masks
     python -m recog.verify3d --sweep sweeps/ --out sweeps/lighting_sheet.png
 
 Inspecting the contact sheet is not optional. A silently-wrong mask pass
-produces boxes that look plausible in JSON and are obviously wrong on screen.
+produces boxes (or masks) that look plausible in JSON and are obviously wrong
+on screen - and a box around a mask proves nothing about the mask's shape,
+which is the whole reason --masks exists: it alpha-blends the actual RLE
+region instead of just its bounding box.
 
 System Python only: Blender's bundled interpreter has no Pillow.
 """
 from __future__ import annotations
 
 import argparse
+import json
 import math
+from collections import Counter
 from pathlib import Path
 
+import numpy as np
 from PIL import Image, ImageDraw
 
 from recog.dataset import CLASS_MAP, parse_voc_xml
+from recog.synth3d.annotate import rle_decode
 
 COLOURS = {"battery": (60, 220, 90), "cartridge": (255, 90, 60)}
 INV = {v: k for k, v in CLASS_MAP.items()}
+
+# Per-class overlay colours for --masks. Deliberately distinct from COLOURS
+# above (the VOC box palette): the two modes are never shown together, but
+# keeping them visually separate avoids any temptation to conflate a box
+# colour with a mask colour while reading code.
+SEG_COLOURS = {
+    "battery": (255, 96, 96),
+    "cartridge": (96, 160, 255),
+    "electronics_module": (96, 255, 128),
+    "placement_area": (255, 208, 64),
+    "obstruction": (255, 96, 255),
+}
+MASK_ALPHA = 0.45  # fully opaque hides exactly the boundary errors this is for
 
 
 def draw_one(img_path: Path, xml_path: Path, thick: int = 3) -> Image.Image:
@@ -35,6 +57,47 @@ def draw_one(img_path: Path, xml_path: Path, thick: int = 3) -> Image.Image:
                     outline=COLOURS.get(name, (255, 255, 0)), width=thick)
         d.text((x0 + 4, max(0, y0 - 14)), name, fill=COLOURS.get(name))
     return im
+
+
+def load_seg_index(root: Path):
+    """Load instances_seg.json and index it for per-image lookup.
+
+    Returns (image_id_by_filename, annotations_by_image_id, category_name_by_id).
+    """
+    path = root / "instances_seg.json"
+    if not path.exists():
+        raise SystemExit(f"no {path} - run generate3d.py first (--masks needs "
+                          f"the segmentation sidecar, not the VOC XML)")
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    cat_names = {c["id"]: c["name"] for c in doc["categories"]}
+    image_id_by_file = {img["file_name"]: img["id"] for img in doc["images"]}
+    anns_by_image: dict = {}
+    for a in doc["annotations"]:
+        anns_by_image.setdefault(a["image_id"], []).append(a)
+    return image_id_by_file, anns_by_image, cat_names
+
+
+def draw_masks_one(img_path: Path, anns: list, cat_names: dict,
+                    alpha: float = MASK_ALPHA) -> Image.Image:
+    """Alpha-blend each instance's decoded RLE over the render in its class colour.
+
+    A box proves nothing about a mask's shape; this is the only view that
+    can catch a mask bleeding under a seated cell or straddling two regions
+    it shouldn't.
+    """
+    im = Image.open(img_path).convert("RGB")
+    if not anns:
+        return im
+    arr = np.asarray(im, dtype=np.float32).copy()
+    for a in anns:
+        name = cat_names.get(a["category_id"])
+        colour = SEG_COLOURS.get(name)
+        if colour is None:
+            continue
+        mask = rle_decode(a["segmentation"]).astype(bool)
+        c = np.array(colour, dtype=np.float32)
+        arr[mask] = arr[mask] * (1 - alpha) + c * alpha
+    return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), "RGB")
 
 
 def tile(images, cols: int, out: Path, label_texts=None):
@@ -65,6 +128,10 @@ def main() -> None:
     ap.add_argument("--cols", type=int, default=4)
     ap.add_argument("--thick", type=int, default=3)
     ap.add_argument("--out", default=None)
+    ap.add_argument("--masks", action="store_true",
+                    help="overlay instances_seg.json's per-instance RLE masks "
+                         f"(alpha {MASK_ALPHA}) instead of drawing VOC boxes; "
+                         "--data only, needs the segmentation sidecar")
     a = ap.parse_args()
 
     if a.sweep:
@@ -84,6 +151,25 @@ def main() -> None:
     pngs = sorted((root / "images").glob("*.png"))[:a.n]
     if not pngs:
         raise SystemExit(f"no images in {root / 'images'}")
+    out = Path(a.out) if a.out else root / "contact_sheet.png"
+
+    if a.masks:
+        image_id_by_file, anns_by_image, cat_names = load_seg_index(root)
+        imgs, labels = [], []
+        counts: Counter = Counter()
+        for p in pngs:
+            img_id = image_id_by_file.get(p.name)
+            anns = anns_by_image.get(img_id, []) if img_id is not None else []
+            imgs.append(draw_masks_one(p, anns, cat_names))
+            labels.append(p.stem)
+            for a_ in anns:
+                counts[cat_names.get(a_["category_id"], "?")] += 1
+        tile(imgs, a.cols, out, labels)
+        total = sum(counts.values())
+        breakdown = ", ".join(f"{k}={counts[k]}" for k in sorted(counts))
+        print(f"{total} mask instances across {len(imgs)} images ({breakdown})")
+        return
+
     imgs, labels = [], []
     n_boxes = 0
     for p in pngs:
@@ -92,7 +178,6 @@ def main() -> None:
         if x.exists():
             n_boxes += len(parse_voc_xml(x, CLASS_MAP).boxes)
         labels.append(p.stem)
-    out = Path(a.out) if a.out else root / "contact_sheet.png"
     tile(imgs, a.cols, out, labels)
     print(f"{n_boxes} boxes across {len(imgs)} images "
           f"({n_boxes / max(1, len(imgs)):.1f} per image)")

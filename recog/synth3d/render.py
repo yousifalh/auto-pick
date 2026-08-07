@@ -349,20 +349,41 @@ def isolated_areas(cfg, mask_dir: str, objects_by_id):
     True unoccluded silhouette area per instance, for a real visible-fraction.
     Costs one cheap render per instance - up to ~32 per sample.
 
-    CURRENTLY YIELDS NO SIGNAL, for two independent reasons, so `--visibility`
-    buys renders and nothing else:
+    This now YIELDS REAL SIGNAL: one LABELLED instance occluding another is
+    the common case, not the exception, from three independent sources.
 
-      * `layout.plan` and `layout.plan_jig` both guarantee exact AABB
-        non-overlap, so no LABELLED instance can occlude another. Everything
-        that can occlude - the jig plate, the PCB, the backdrop - carries
-        pass_index 0 and is not in `objects_by_id`, so every measured fraction
-        comes back exactly 1.0.
-      * `annotate.merge_group_boxes` hard-codes `visible_fraction = None` on
-        merged boxes, and every `cartridge` is merged, so the measurement never
-        reaches a cartridge annotation even in principle.
+      * `layout.max_overlap_iou` (0.20 in configs/synth3d.yaml) lets
+        scatter-placed parts share up to that much padded-footprint IoU, so
+        one battery or cartridge genuinely sits in front of another. The
+        exact AABB non-overlap `layout.plan`/`layout.plan_jig` used to
+        guarantee - the reason this function used to measure 1.0 every time
+        - is gone above 0.
+      * `placement_area` is the bay proxy's currently-free-floor label, and
+        everything that can occupy a bay renders above that proxy and cuts
+        into its measured area: seated battery cells (`layout.p_seated`),
+        obstructions (`bay.sample_obstructions`), and the electronics
+        module's board and ports (`world.build_pcb`, which deliberately
+        gives the ports and inductor the board's own pass_index so they
+        don't cut a hole in ITS mask - they still cut one in whatever
+        `placement_area` sits beneath them).
+      * `bay.sample_obstructions` can itself seat obstructions over a bay
+        that also has cells seated in it, so an obstruction's own visible
+        fraction is not guaranteed to be 1.0 either.
 
-    The function itself is correct; enable it once a layout mode that actually
-    piles parts on each other exists.
+    Consequently `filter.min_visibility` (configs/synth3d.yaml) now has real
+    occlusion to threshold for every class this function measures, with one
+    exception: `placement_area` is exempt from every filter, including
+    min_visibility, via `annotate._FILTER_EXEMPT` - a nearly-full bay's free
+    floor is a small, thin, mostly-occluded strip of real free space by
+    construction, and dropping it on visibility grounds would teach the
+    segmenter that a nearly-full bay has no room at all rather than a little.
+
+    One limitation is unchanged: `annotate.merge_group_boxes` still
+    hard-codes `visible_fraction = None` on merged boxes, and every
+    `cartridge` in the VOC output is merged, so this measurement never
+    reaches a cartridge's VOC annotation even though it is computed. The
+    segmentation sidecar (`annotate.masks_from_index`) does not merge, so a
+    cartridge's individual shell-piece fractions do reach `instances_seg.json`.
     """
     areas = {}
     all_objs = [o for objs in objects_by_id.values() for o in objs]
