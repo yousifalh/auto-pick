@@ -330,6 +330,14 @@ def test_apply_with_mask_moves_image_and_mask_together():
 
 
 def test_apply_with_mask_never_invents_a_class():
+    """The segmentation pipeline's geometric ops (flip / 90-degree
+    rotation) are exact pixel permutations, so an invented class is
+    unreachable by construction - that alone makes the class-membership
+    assertion below near-vacuous. The variant-count assertion is what
+    actually exercises the pipeline: without it this test would still
+    pass even if apply_with_mask silently stopped touching the mask at
+    all, which is exactly the failure mode this project has a documented
+    history of (see the SDD ledger)."""
     import numpy as np
 
     from recog.augmentation import (apply_with_mask,
@@ -341,11 +349,18 @@ def test_apply_with_mask_never_invents_a_class():
     mask[32:] = 4
 
     t = build_seg_train_transform({})
+    variants = set()
     for _ in range(30):
         out = apply_with_mask(t, img, mask)
         assert set(np.unique(out["mask"])) <= {0, 2, 4}, (
             "an interpolated mask produced class 3, which is a different "
             "object entirely")
+        variants.add(out["mask"].tobytes())
+
+    assert len(variants) >= 2, (
+        f"only {len(variants)} distinct mask variant(s) over 30 draws - "
+        "the mask-invariant assertion above would pass even if the "
+        "pipeline stopped moving the mask entirely")
 
 
 def test_seg_val_transform_is_geometrically_identity():

@@ -1,13 +1,17 @@
 """Per-ROI crop dataset built from the COCO-RLE sidecar."""
 from __future__ import annotations
 
-import os
+from pathlib import Path
 
 import numpy as np
 import pytest
 
-from recog.seg_dataset import (SEG_CHANNELS, jitter_box, rasterise_crop)
+from common.config import load_yaml
+from recog.seg_dataset import (SEG_CHANNELS, _rng_for_worker, jitter_box,
+                               rasterise_crop)
 from recog.synth3d.annotate import rle_encode
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _ann(cls, mask, cat_id):
@@ -93,18 +97,62 @@ def test_crop_outside_the_annotation_is_all_background():
     assert (lab == SEG_CHANNELS["background"]).all()
 
 
-DEV = os.path.join(os.path.dirname(__file__), "..", "recog", "dev3d")
+# --------------------------------------------------- native (out_size=None) --
+#
+# recog.seg_evaluate needs the un-resized crop (a jittered union box is not
+# square, so a single scalar mm_per_px cannot describe a resized one) and
+# gets it by calling these same functions with out_size=None, rather than
+# keeping a hand-copied second version of either loop.
+
+def test_rasterise_crop_out_size_none_stays_at_native_resolution():
+    H, W = 40, 30
+    bay = np.zeros((H, W), np.uint8); bay[5:15, 5:15] = 1
+    lab = rasterise_crop([_ann("placement_area", bay, 4)], (0, 0, W, H),
+                         out_size=None)
+    assert lab.shape == (H, W)
+    assert lab[10, 10] == SEG_CHANNELS["bay"]
+    assert lab[0, 0] == SEG_CHANNELS["background"]
+
+
+def test_extract_crop_out_size_none_stays_at_native_resolution():
+    from recog.seg_dataset import extract_crop
+
+    img = np.arange(40 * 30 * 3, dtype=np.uint8).reshape(40, 30, 3)
+    crop = extract_crop(img, (5, 5, 25, 35), out_size=None)
+    assert crop.shape == (30, 20, 3)
+    np.testing.assert_array_equal(crop, img[5:35, 5:25])
+
+
+def test_extract_crop_pads_when_the_box_runs_off_the_image():
+    from recog.seg_dataset import extract_crop
+
+    img = np.full((10, 10, 3), 5, dtype=np.uint8)
+    crop = extract_crop(img, (-2, -2, 8, 8), out_size=None)
+    assert crop.shape == (10, 10, 3)
+    assert (crop[0, 0] == 0).all(), "top-left corner should be zero-padded"
+    assert (crop[9, 9] == 5).all(), "interior should be the real image"
+
+
+# The training set itself, not recog/dev3d's 42-crop smoke corpus: dev3d
+# guards the wrong thing (a corpus 8x smaller than what the model actually
+# trained on) and is stale since Task 4 generated recog/dataset3d_seg.
+# Reading the path from configs/segmentation.yaml rather than hardcoding
+# it a second time means this test tracks whatever dataset training is
+# actually pointed at.
+_SEG_DS_CFG = load_yaml(ROOT / "configs" / "segmentation.yaml")["dataset"]
+_COCO_PATH = ROOT / _SEG_DS_CFG["coco_path"]
+_IMG_DIR = ROOT / _SEG_DS_CFG["img_dir"]
 
 
 @pytest.mark.skipif(
-    not os.path.isfile(os.path.join(DEV, "instances_seg.json")),
-    reason="run Plan B Task 7 first to generate recog/dev3d")
+    not _COCO_PATH.is_file(),
+    reason="run recog.generate3d against configs/segmentation.yaml's "
+          f"dataset.coco_path first ({_COCO_PATH} not found)")
 def test_dataset_yields_crops_with_every_channel_present_somewhere():
     torch = pytest.importorskip("torch")
     from recog.seg_dataset import BaySegDataset
 
-    ds = BaySegDataset(os.path.join(DEV, "instances_seg.json"),
-                       os.path.join(DEV, "images"), out_size=128)
+    ds = BaySegDataset(str(_COCO_PATH), str(_IMG_DIR), out_size=128)
     assert len(ds) > 0
 
     seen = set()
@@ -118,3 +166,25 @@ def test_dataset_yields_crops_with_every_channel_present_somewhere():
         seen.update(int(v) for v in lab.unique())
 
     assert {0, 1, 2, 3} <= seen, f"missing channels; saw {sorted(seen)}"
+
+
+# ------------------------------------------------------ per-worker rng --
+
+def test_rng_for_worker_differs_per_worker_but_is_reproducible():
+    """Without folding the worker id in, every DataLoader worker (a fork
+    of the same dataset object, carrying the same self.rng state) would
+    draw an IDENTICAL jitter stream the moment num_workers > 0."""
+    a1 = _rng_for_worker(0, 0).uniform(size=5)
+    a2 = _rng_for_worker(0, 0).uniform(size=5)
+    b = _rng_for_worker(0, 1).uniform(size=5)
+    np.testing.assert_array_equal(a1, a2)
+    assert not np.array_equal(a1, b)
+
+
+def test_rng_for_worker_none_matches_plain_default_rng():
+    """worker_id=None (num_workers=0, the main process) must be byte-for-
+    byte what the dataset drew before this fix - no behaviour change for
+    the default config."""
+    a = _rng_for_worker(5, None).uniform(size=3)
+    b = np.random.default_rng(5).uniform(size=3)
+    np.testing.assert_array_equal(a, b)

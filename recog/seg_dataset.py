@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -63,6 +63,21 @@ _PAINT_ORDER: Sequence[Tuple[str, str]] = (
 )
 
 
+def _rng_for_worker(seed: int, worker_id: Optional[int]) -> np.random.Generator:
+    """A jitter RNG stream for one DataLoader worker.
+
+    ``worker_id`` is None in the main process (num_workers=0, today's
+    default). Under num_workers > 0 (configs/segmentation.yaml invites this
+    on Linux), each worker is a fork/spawn of the SAME dataset object,
+    carrying the SAME ``self.rng`` state it had at construction time -
+    without folding the worker id in, every worker would draw an
+    identical jitter stream, silently degrading augmentation the moment
+    num_workers > 0. Combining the dataset's own seed with the worker id
+    keeps each worker's stream distinct and each stream reproducible.
+    """
+    return np.random.default_rng(seed if worker_id is None else (seed, worker_id))
+
+
 def jitter_box(box, rng: np.random.Generator, frac: float):
     """Perturb each edge by up to ``frac`` of the box's own side length.
 
@@ -97,8 +112,19 @@ def _resize_nearest(a: np.ndarray, size: int) -> np.ndarray:
     return a[ys][:, xs]
 
 
-def rasterise_crop(anns: Sequence[dict], box, out_size: int) -> np.ndarray:
-    """Dense label map for the window ``box``, resized to ``out_size``."""
+def rasterise_crop(anns: Sequence[dict], box,
+                   out_size: Optional[int] = None) -> np.ndarray:
+    """Dense label map for the window ``box``.
+
+    Resized to ``out_size`` x ``out_size`` if given; left at the crop's own
+    native resolution if ``out_size`` is None. The evaluator needs the
+    native map (a jittered union box is not square, so a single scalar
+    mm_per_px cannot describe a resized crop) - it calls this function
+    directly with ``out_size=None`` rather than keeping its own copy of
+    this painting loop, so a future change here (e.g. to `iscrowd`
+    handling) cannot silently drift out of sync with what the receipt
+    scores against.
+    """
     x0, y0, x1, y1 = (int(v) for v in box)
     h, w = y1 - y0, x1 - x0
     label = np.zeros((h, w), dtype=np.int64)
@@ -119,7 +145,36 @@ def rasterise_crop(anns: Sequence[dict], box, out_size: int) -> np.ndarray:
             label[sy0 - y0:sy1 - y0, sx0 - x0:sx1 - x0][sub > 0] = \
                 SEG_CHANNELS[channel]
 
-    return _resize_nearest(label, out_size)
+    return label if out_size is None else _resize_nearest(label, out_size)
+
+
+def extract_crop(image: np.ndarray, box,
+                 out_size: Optional[int] = None) -> np.ndarray:
+    """The window ``box``'s own pixels, zero-padded where it runs off
+    ``image``, resized to ``out_size`` x ``out_size`` if given (native
+    resolution otherwise).
+
+    Shared by BaySegDataset.__getitem__ and the evaluator's native-crop
+    extraction for the same reason ``rasterise_crop`` takes an
+    ``out_size`` argument instead of the evaluator hand-copying this
+    loop: one definition, one place to fix.
+    """
+    x0, y0, x1, y1 = (int(v) for v in box)
+    pad_t, pad_l = max(0, -y0), max(0, -x0)
+    crop = image[max(0, y0):max(0, y1), max(0, x0):max(0, x1)]
+    if pad_t or pad_l or crop.shape[0] != y1 - y0 or crop.shape[1] != x1 - x0:
+        padded = np.zeros((y1 - y0, x1 - x0, 3), dtype=np.uint8)
+        padded[pad_t:pad_t + crop.shape[0],
+               pad_l:pad_l + crop.shape[1]] = crop
+        crop = padded
+    if out_size is None:
+        return crop
+    # No-cv2 fallback resizes with nearest rather than linear (verbatim
+    # from the original __getitem__ path) - dead in practice since
+    # opencv is a hard dependency, left as-is rather than "fixed".
+    return (_resize_nearest(crop, out_size) if not _HAVE_CV2 else
+            cv2.resize(crop, (out_size, out_size),
+                      interpolation=cv2.INTER_LINEAR))
 
 
 class BaySegDataset:
@@ -140,7 +195,9 @@ class BaySegDataset:
         self.out_size = int(out_size)
         self.jitter_frac = float(jitter_frac) if train else 0.0
         self.transform = transform
-        self.rng = np.random.default_rng(seed)
+        self._seed = int(seed)
+        self._worker_id: Optional[int] = None
+        self.rng = _rng_for_worker(self._seed, None)
 
         names = {c["id"]: c["name"] for c in doc["categories"]}
         images = {im["id"]: im for im in doc["images"]}
@@ -210,24 +267,19 @@ class BaySegDataset:
         import torch
         from PIL import Image
 
+        worker = torch.utils.data.get_worker_info()
+        wid = worker.id if worker is not None else None
+        if wid != self._worker_id:
+            self.rng = _rng_for_worker(self._seed, wid)
+            self._worker_id = wid
+
         img_meta, anns, unit_box = self.samples[idx]
         path = os.path.join(self.img_dir, img_meta["file_name"])
         image = np.asarray(Image.open(path).convert("RGB"))
 
         box = jitter_box(unit_box, self.rng, self.jitter_frac)
         label = rasterise_crop(anns, box, self.out_size)
-
-        x0, y0, x1, y1 = box
-        pad_t, pad_l = max(0, -y0), max(0, -x0)
-        crop = image[max(0, y0):max(0, y1), max(0, x0):max(0, x1)]
-        if pad_t or pad_l or crop.shape[0] != y1 - y0 or crop.shape[1] != x1 - x0:
-            padded = np.zeros((y1 - y0, x1 - x0, 3), dtype=np.uint8)
-            padded[pad_t:pad_t + crop.shape[0],
-                   pad_l:pad_l + crop.shape[1]] = crop
-            crop = padded
-        crop = _resize_nearest(crop, self.out_size) if not _HAVE_CV2 else \
-            cv2.resize(crop, (self.out_size, self.out_size),
-                       interpolation=cv2.INTER_LINEAR)
+        crop = extract_crop(image, box, self.out_size)
 
         if self.transform is not None:
             from recog.augmentation import apply_with_mask
@@ -242,5 +294,6 @@ __all__ = [
     "SEG_CHANNELS",
     "jitter_box",
     "rasterise_crop",
+    "extract_crop",
     "BaySegDataset",
 ]

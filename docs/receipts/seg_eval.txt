@@ -19,6 +19,9 @@ Per-class IoU (pooled over the validation split; NaN = class absent from both pr
   battery         0.7079          13
   ----------------------------------
   selected mean IoU over ['bay', 'electronics', 'obstruction'] (instances={'bay': 19, 'electronics': 19, 'obstruction': 11}): 0.8181
+  note: background IoU (0.3619 on 53 crops) is STRUCTURAL, not a comparable failure - a crop is the union of the unit's OWN boxes, so background is only the thin leftover corners and gaps, a small region where IoU is naturally harsh. It is not evidence against the model.
+  note: cartridge (37 instances) and bay (19 instances) come from DISJOINT crop populations - sealed units carry a cartridge mask and no bay, open units carry a bay and no cartridge mask (see seg_dataset.py's module docstring). 0.9551 and 0.9046 side by side is not evidence the model handles a sealed and an open unit within the SAME image.
+  note: checkpoint selection is noise-limited - best.pt 0.8158 and last.pt 0.8140 differ by 0.0018 on 19/19/11 (bay/electronics/obstruction) val instances, and both ship.
 
 Boundary displacement, mm (mean distance from a predicted boundary pixel to
 the nearest ground-truth boundary pixel; the figure that chose a per-ROI
@@ -44,8 +47,8 @@ a lost cell, not a safety issue). Mean per crop and total over the split:
 Latency vs the FDR 10.4 50 ms end-to-end budget (fp16 batched inference):
    cartridges   total_ms  per_cart_ms  within_50ms
   ------------------------------------------------
-            1        8.7         8.70         True
-            2       11.8         5.88         True
-            4       15.2         3.79         True
-            8       21.7         2.72         True
+            1        8.5         8.54         True
+            2       12.6         6.28         True
+            4       15.0         3.74         True
+            8       20.1         2.51         True
   ------------------------------------------------

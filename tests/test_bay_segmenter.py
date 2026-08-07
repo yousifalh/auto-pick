@@ -20,7 +20,7 @@ def test_segment_batch_returns_one_map_per_crop_at_native_size():
     from recog.bay_segmenter import BaySegmenter
 
     seg = BaySegmenter(checkpoint=None, device="cpu",
-                       crop_size=64, half=False)
+                       crop_size=64, half=False, pretrained=False)
     crops = [np.zeros((40, 90, 3), np.uint8),
              np.zeros((120, 55, 3), np.uint8)]
     out = seg.segment_batch(crops)
@@ -37,7 +37,7 @@ def test_segment_matches_segment_batch_of_one():
     from recog.bay_segmenter import BaySegmenter
 
     seg = BaySegmenter(checkpoint=None, device="cpu",
-                       crop_size=64, half=False)
+                       crop_size=64, half=False, pretrained=False)
     crop = (np.arange(48 * 64 * 3, dtype=np.uint8) % 255).reshape(48, 64, 3)
     assert np.array_equal(seg.segment(crop), seg.segment_batch([crop])[0])
 
@@ -46,7 +46,7 @@ def test_empty_batch_returns_empty_list():
     from recog.bay_segmenter import BaySegmenter
 
     seg = BaySegmenter(checkpoint=None, device="cpu",
-                       crop_size=64, half=False)
+                       crop_size=64, half=False, pretrained=False)
     assert seg.segment_batch([]) == []
 
 
@@ -197,3 +197,100 @@ def test_per_class_iou_handles_a_class_absent_from_both():
     assert np.isnan(iou["obstruction"]), (
         "a class in neither prediction nor truth has no IoU; reporting "
         "0.0 would drag the mean down for a class that was never tested")
+
+
+# ------------------------------------------------------ split guard --
+#
+# recog/dataset3d_seg is gitignored and came from a resumable generation
+# run stopped part-way through. Resuming or regenerating it changes
+# len(full_dataset), so random_split silently returns a DIFFERENT
+# partition for the same seed and a checkpoint could be scored on crops
+# it trained on - with nothing to signal it. seg_training already writes
+# val_instance_counts into every checkpoint for exactly this check.
+
+def test_check_split_matches_checkpoint_passes_when_counts_agree(tmp_path):
+    from recog.seg_evaluate import check_split_matches_checkpoint
+
+    ckpt_path = tmp_path / "ckpt.pt"
+    counts = {"background": 53, "cartridge": 37, "bay": 19,
+             "electronics": 19, "obstruction": 11, "battery": 13}
+    torch.save({"val_instance_counts": counts}, ckpt_path)
+
+    check_split_matches_checkpoint(str(ckpt_path), counts)  # must not raise
+
+
+def test_check_split_matches_checkpoint_raises_loudly_on_mismatch(tmp_path):
+    """A resumed/regenerated dataset changes len(full_dataset), which
+    changes what random_split returns for the same seed - this is the
+    live failure mode the guard exists to catch, not a hypothetical."""
+    from recog.seg_evaluate import check_split_matches_checkpoint
+
+    ckpt_path = tmp_path / "ckpt.pt"
+    trained_on = {"background": 53, "cartridge": 37, "bay": 19,
+                 "electronics": 19, "obstruction": 11, "battery": 13}
+    torch.save({"val_instance_counts": trained_on}, ckpt_path)
+
+    recomputed_after_resume = dict(trained_on, bay=24)  # dataset grew
+
+    with pytest.raises(SystemExit) as exc:
+        check_split_matches_checkpoint(str(ckpt_path), recomputed_after_resume)
+
+    msg = str(exc.value)
+    assert "19" in msg and "24" in msg, (
+        "the error must name BOTH the checkpoint's recorded counts and "
+        "the recomputed ones, not just say 'mismatch'")
+
+
+def test_check_split_matches_checkpoint_warns_but_does_not_raise_on_old_checkpoint(tmp_path):
+    """A checkpoint written before this field existed has nothing to
+    check against - warn, do not fail a run that has no way to comply."""
+    from recog.seg_evaluate import check_split_matches_checkpoint
+
+    ckpt_path = tmp_path / "ckpt.pt"
+    torch.save({"model": {}}, ckpt_path)
+
+    check_split_matches_checkpoint(str(ckpt_path), {"bay": 1})  # must not raise
+
+
+# --------------------------------------------------------- latency exit --
+
+def test_latency_within_budget_true_when_the_batch8_row_passes():
+    from recog.seg_evaluate import latency_within_budget
+
+    latency = [{"cartridges": 1, "within_50ms_budget": True},
+              {"cartridges": 8, "within_50ms_budget": True}]
+    assert latency_within_budget(latency) is True
+
+
+def test_latency_within_budget_false_when_the_batch8_row_fails():
+    """This is what main()'s exit code is derived from - previously only
+    a log.warning fired here, so a CI job could not gate on the plan's
+    latency acceptance criterion at all."""
+    from recog.seg_evaluate import latency_within_budget
+
+    latency = [{"cartridges": 1, "within_50ms_budget": True},
+              {"cartridges": 8, "within_50ms_budget": False}]
+    assert latency_within_budget(latency) is False
+
+
+# --------------------------------------------------- checkpoint note --
+
+def test_sibling_checkpoint_note_reports_both_ious_and_their_delta(tmp_path):
+    from recog.seg_evaluate import _sibling_checkpoint_note
+
+    counts = {"bay": 19, "electronics": 19, "obstruction": 11}
+    torch.save({"selected_mean_iou": 0.8158, "val_instance_counts": counts},
+              tmp_path / "best.pt")
+    torch.save({"selected_mean_iou": 0.8140, "val_instance_counts": counts},
+              tmp_path / "last.pt")
+
+    note = _sibling_checkpoint_note(str(tmp_path / "best.pt"))
+    assert note is not None
+    assert "0.8158" in note and "0.8140" in note
+
+
+def test_sibling_checkpoint_note_is_none_without_both_checkpoints(tmp_path):
+    from recog.seg_evaluate import _sibling_checkpoint_note
+
+    torch.save({"selected_mean_iou": 0.8}, tmp_path / "best.pt")
+    assert _sibling_checkpoint_note(str(tmp_path / "best.pt")) is None

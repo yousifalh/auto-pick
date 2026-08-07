@@ -5,8 +5,10 @@ Six channels, fixed order:
     0 background   1 cartridge   2 bay
     3 electronics  4 obstruction 5 battery
 
-`bay` is SEG_CLASSES' `placement_area`. plan.placement_area's
-SegmentationPlacementAreaExtractor indexes these numbers directly.
+`bay` is SEG_CLASSES' `placement_area`. A later plan's segmentation-based
+placement-area extractor is expected to index these numbers directly, so
+the order is a contract, not just an implementation detail - no such
+consumer exists in this repo yet.
 
 Inference is BATCHED and fp16 by default because the latency budget has
 no slack. Measured on an RTX 3060 at 384x384: one crop 12.6 ms, eight
@@ -48,7 +50,8 @@ class BaySegmenter:
 
     def __init__(self, checkpoint: Optional[str] = None,
                  device: str = "cuda", crop_size: int = 256,
-                 half: bool = True, num_classes: int = 6) -> None:
+                 half: bool = True, num_classes: int = 6,
+                 pretrained: Optional[bool] = None) -> None:
         import torch
 
         self.crop_size = int(crop_size)
@@ -59,8 +62,16 @@ class BaySegmenter:
         # than let a CPU fallback quietly halve throughput.
         self.half = bool(half) and self.device.type == "cuda"
 
+        # Default: pretrained iff no checkpoint is being loaded (COCO
+        # weights give the randomly re-headed classifier something
+        # reasonable to start from). `pretrained` lets a caller override
+        # that - e.g. a test that passes checkpoint=None to exercise the
+        # untrained-weights code path without downloading ~42 MB of COCO
+        # weights it never asserts anything about.
+        want_pretrained = (checkpoint is None) if pretrained is None \
+            else bool(pretrained)
         self.model = build_segmenter(num_classes=num_classes,
-                                     pretrained=checkpoint is None)
+                                     pretrained=want_pretrained)
         if checkpoint:
             # weights_only=True is not optional. The default unpickles
             # arbitrary Python objects, so loading a checkpoint becomes

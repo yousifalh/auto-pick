@@ -37,7 +37,12 @@ from common.logging import get_logger
 # Derived from the dataset's contract rather than restated. Two
 # hand-written copies of the same order drift, and the drift is silent:
 # the metrics would simply be reported under the wrong class names.
-from recog.seg_dataset import SEG_CHANNELS
+# extract_crop / rasterise_crop are the SAME functions BaySegDataset
+# trains against (out_size=None asks for native, un-resized output) -
+# see their docstrings in seg_dataset.py. A hand-copied second version of
+# either painting loop would drift the moment one side changed and
+# nothing would notice; delegating means there is only one place to fix.
+from recog.seg_dataset import SEG_CHANNELS, extract_crop, rasterise_crop
 
 CHANNEL_NAMES = [name for name, _ in
                  sorted(SEG_CHANNELS.items(), key=lambda kv: kv[1])]
@@ -58,6 +63,21 @@ MASK_HEAD_QUANTISATION_MM: Tuple[float, float] = (2.9, 6.4)
 
 # ------------------------------------------------------------- metrics --
 
+def _class_confusion(pred: np.ndarray, target: np.ndarray,
+                     c: int) -> Tuple[int, int]:
+    """(intersection, union) pixel counts for class ``c``.
+
+    The one place this per-class boolean comparison happens.
+    ``per_class_iou`` calls it for a single (pred, target) pair;
+    ``evaluate`` calls it once per crop and pools the results across the
+    split - so the pooled IoU the receipt reports and the only IoU
+    function with a test are the same code, not two copies that can
+    drift apart.
+    """
+    p, t = pred == c, target == c
+    return int((p & t).sum()), int((p | t).sum())
+
+
 def per_class_iou(pred: np.ndarray, target: np.ndarray,
                   num_classes: int = 6) -> Dict[str, float]:
     """IoU per class. NaN where a class appears in neither array.
@@ -68,10 +88,9 @@ def per_class_iou(pred: np.ndarray, target: np.ndarray,
     """
     out: Dict[str, float] = {}
     for c in range(num_classes):
-        p, t = pred == c, target == c
-        union = int((p | t).sum())
+        inter, union = _class_confusion(pred, target, c)
         out[CHANNEL_NAMES[c]] = (float(np.nan) if union == 0
-                                 else float((p & t).sum()) / union)
+                                 else float(inter) / union)
     return out
 
 
@@ -143,60 +162,13 @@ def latency_table(segmenter, counts: Sequence[int] = (1, 2, 4, 8),
     return rows
 
 
-# ------------------------------------------------------- native ground truth --
-#
-# recog.seg_dataset.rasterise_crop force-resizes its output to a SQUARE
-# out_size, because that is what the model's fixed-size input needs.
-# Boundary displacement and area error need the opposite: native,
-# un-resized pixels. The render's mm_per_px (layout.area / render.res)
-# is isotropic only in that native frame - a jittered union box is not
-# square, so resizing it to out_size x out_size rescales x and y by
-# different factors, and a single scalar mm_per_px could not describe
-# the result correctly. This mirrors rasterise_crop's painting loop
-# exactly, minus the final resize.
-
-def _rasterise_native(anns: Sequence[dict], box: Tuple[int, int, int, int]
-                      ) -> np.ndarray:
-    """Ground-truth label map at the crop's own native resolution."""
-    from recog.seg_dataset import _PAINT_ORDER
-    from recog.synth3d.annotate import rle_decode
-
-    x0, y0, x1, y1 = box
-    h, w = y1 - y0, x1 - x0
-    label = np.zeros((h, w), dtype=np.int64)
-
-    by_class: Dict[str, List[dict]] = {}
-    for a in anns:
-        by_class.setdefault(a["class"], []).append(a)
-
-    for cls, channel in _PAINT_ORDER:
-        for a in by_class.get(cls, ()):
-            full = rle_decode(a["segmentation"])
-            fh, fw = full.shape
-            sx0, sy0 = max(0, x0), max(0, y0)
-            sx1, sy1 = min(fw, x1), min(fh, y1)
-            if sx1 <= sx0 or sy1 <= sy0:
-                continue
-            sub = full[sy0:sy1, sx0:sx1]
-            label[sy0 - y0:sy1 - y0, sx0 - x0:sx1 - x0][sub > 0] = \
-                SEG_CHANNELS[channel]
-    return label
-
-
-def _extract_native_crop(image: np.ndarray,
-                         box: Tuple[int, int, int, int]) -> np.ndarray:
-    """The crop's own pixels, zero-padded where the box runs off the
-    image. Mirrors BaySegDataset.__getitem__'s crop extraction, minus
-    the final resize to out_size."""
-    x0, y0, x1, y1 = box
-    pad_t, pad_l = max(0, -y0), max(0, -x0)
-    crop = image[max(0, y0):max(0, y1), max(0, x0):max(0, x1)]
-    if pad_t or pad_l or crop.shape[0] != y1 - y0 or crop.shape[1] != x1 - x0:
-        padded = np.zeros((y1 - y0, x1 - x0, 3), dtype=np.uint8)
-        padded[pad_t:pad_t + crop.shape[0],
-               pad_l:pad_l + crop.shape[1]] = crop
-        crop = padded
-    return crop
+def latency_within_budget(latency: List[dict], budget_batch: int = 8) -> bool:
+    """Whether the `budget_batch`-cartridge row is within the 50 ms
+    budget. Pulled out of main() so the plan's acceptance criterion
+    (latency vs the FDR 10.4 budget) is a function CI can call and gate
+    on, not only a log line main() decided to emit."""
+    return all(r["within_50ms_budget"] for r in latency
+              if r["cartridges"] == budget_batch)
 
 
 # --------------------------------------------------------------- config --
@@ -260,6 +232,16 @@ def evaluate(segmenter, full_dataset, val_indices: Sequence[int],
     """Run the segmenter over every validation crop at native resolution
     and accumulate every metric this module reports.
 
+    "Native resolution" (extract_crop / rasterise_crop called with
+    out_size=None) rather than the model's fixed square input: the
+    render's mm_per_px (layout.area / render.res) is isotropic only in
+    that native frame - a jittered union box is not square, so resizing
+    it to out_size x out_size would rescale x and y by different factors,
+    and a single scalar mm_per_px could not describe the result
+    correctly. Boundary displacement and area error need that native
+    frame; IoU is computed there too so all four numbers describe the
+    same pixels.
+
     IoU is pooled pixel-wise over the whole split (sum of intersections
     / sum of unions across crops), matching recog.seg_training's
     evaluate_model so the two are directly comparable. Boundary
@@ -285,15 +267,15 @@ def evaluate(segmenter, full_dataset, val_indices: Sequence[int],
         path = Path(full_dataset.img_dir) / img_meta["file_name"]
         image = np.asarray(Image.open(path).convert("RGB"))
 
-        crop = _extract_native_crop(image, box)
-        target = _rasterise_native(anns, box)
+        crop = extract_crop(image, box, out_size=None)
+        target = rasterise_crop(anns, box, out_size=None)
         pred = segmenter.segment_batch([crop])[0]
 
         for c in range(num_classes):
-            p, t = pred == c, target == c
-            inter[c] += int((p & t).sum())
-            union[c] += int((p | t).sum())
-            if t.any():
+            i, u = _class_confusion(pred, target, c)
+            inter[c] += i
+            union[c] += u
+            if (target == c).any():
                 counts[c] += 1
 
         for name in SELECT_ON:
@@ -328,10 +310,106 @@ def evaluate(segmenter, full_dataset, val_indices: Sequence[int],
     }
 
 
+# ----------------------------------------------------------- split guard --
+#
+# recog.seg_training writes split_seed and val_instance_counts into every
+# checkpoint (seg_training.py:404-413) precisely so the split a checkpoint
+# was selected/reported against can be checked later. recog/dataset3d_seg
+# is gitignored and came from a resumable generation run stopped at 220 of
+# 300 scenes; resuming it (or regenerating it, or pointing --config at a
+# different coco_path) changes len(full_dataset), so random_split returns
+# a DIFFERENT partition with the same seed, and best.pt would silently be
+# scored on crops it trained on. There is no way to auto-correct a moved
+# split - only to say so, loudly, naming both sets of numbers.
+
+def compute_val_instance_counts(full_dataset, val_indices: Sequence[int],
+                                num_classes: int = 6) -> Dict[str, int]:
+    """Per-class crop counts for the val split (no jitter, matching
+    evaluate()'s boxes), computed the same way seg_training.instance_counts
+    does: a crop "contains" a class if it has at least one pixel of it."""
+    counts = [0] * num_classes
+    for idx in val_indices:
+        _img_meta, anns, unit_box = full_dataset.samples[idx]
+        box = tuple(int(v) for v in unit_box)
+        target = rasterise_crop(anns, box, out_size=None)
+        for c in range(num_classes):
+            if (target == c).any():
+                counts[c] += 1
+    return dict(zip(CHANNEL_NAMES, counts))
+
+
+def check_split_matches_checkpoint(checkpoint_path: str,
+                                   recomputed: Dict[str, int]) -> None:
+    """Fail loudly if today's recomputed split disagrees with what the
+    checkpoint itself recorded at training time. Never silently re-split
+    or auto-correct - that would hide exactly the failure this guards."""
+    import torch
+
+    state = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+    saved = state.get("val_instance_counts")
+    if saved is None:
+        log.warning("checkpoint %s has no val_instance_counts (older "
+                    "checkpoint format) - cannot verify the validation "
+                    "split matches what it was trained against",
+                    checkpoint_path)
+        return
+    if dict(saved) != dict(recomputed):
+        raise SystemExit(
+            "error: the recomputed validation split does not match the "
+            f"checkpoint's own record - scoring would silently include "
+            f"crops this checkpoint trained on.\n"
+            f"  checkpoint {checkpoint_path} recorded: {dict(saved)}\n"
+            f"  this run recomputes:                   {dict(recomputed)}\n"
+            "The dataset behind --config's dataset.coco_path most likely "
+            "changed size or content since this checkpoint was written "
+            "(e.g. a resumable recog.generate3d run was resumed or "
+            "regenerated) - random_split now returns a different "
+            "partition for the same split_seed. Point --config at the "
+            "exact dataset this checkpoint was trained on, or retrain "
+            "against the current dataset. Not auto-correcting: guessing "
+            "the right split here would hide the same class of bug this "
+            "check exists to catch.")
+
+
+def _sibling_checkpoint_note(checkpoint_path: str) -> Optional[str]:
+    """A caveat line comparing best.pt and last.pt's OWN recorded
+    selection metric, read straight from the checkpoint files (no
+    re-inference needed - seg_training already wrote it). Both are
+    shipped (seg_training.py always writes last.pt unconditionally
+    alongside a conditional best.pt); if the two are within noise of
+    each other a reader needs to know checkpoint SELECTION was
+    noise-limited, not that best.pt strictly dominates last.pt."""
+    import torch
+
+    ckpt_dir = Path(checkpoint_path).parent
+    paths = {"best.pt": ckpt_dir / "best.pt", "last.pt": ckpt_dir / "last.pt"}
+    if not all(p.is_file() for p in paths.values()):
+        return None
+
+    stats: Dict[str, Any] = {}
+    for name, p in paths.items():
+        state = torch.load(p, map_location="cpu", weights_only=True)
+        stats[name] = (state.get("selected_mean_iou"),
+                       state.get("val_instance_counts"))
+
+    (b_iou, b_counts), (l_iou, l_counts) = stats["best.pt"], stats["last.pt"]
+    if b_iou is None or l_iou is None:
+        return None
+
+    counts_str = "?"
+    if b_counts:
+        counts_str = "/".join(str(b_counts.get(c)) for c in SELECT_ON)
+    return (f"  note: checkpoint selection is noise-limited - best.pt "
+           f"{b_iou:.4f} and last.pt {l_iou:.4f} differ by "
+           f"{abs(b_iou - l_iou):.4f} on {counts_str} "
+           f"({'/'.join(SELECT_ON)}) val instances, and both ship.")
+
+
 def format_report(results: Dict[str, Any], latency: List[dict], *,
                   checkpoint: Optional[str], config_path: str,
                   synth_config_source: str, mm_per_px: float,
-                  device: str) -> str:
+                  device: str,
+                  checkpoint_note: Optional[str] = None) -> str:
     """Plain-text receipt, in the style of recog/eval_real.py's report."""
     lines: List[str] = []
     lines.append("")
@@ -362,6 +440,30 @@ def format_report(results: Dict[str, Any], latency: List[dict], *,
     sel_n = {c: results["instance_counts"][c] for c in SELECT_ON}
     lines.append(f"  selected mean IoU over {list(SELECT_ON)} "
                  f"(instances={sel_n}): {results['selected_mean_iou']:.4f}")
+    bg_iou = results["ious"].get("background", float("nan"))
+    bg_n = results["instance_counts"].get("background", 0)
+    if not np.isnan(bg_iou):
+        lines.append(
+            f"  note: background IoU ({bg_iou:.4f} on {bg_n} crops) is "
+            "STRUCTURAL, not a comparable failure - a crop is the union "
+            "of the unit's OWN boxes, so background is only the thin "
+            "leftover corners and gaps, a small region where IoU is "
+            "naturally harsh. It is not evidence against the model.")
+    cart_n = results["instance_counts"].get("cartridge", 0)
+    bay_n = results["instance_counts"].get("bay", 0)
+    if cart_n and bay_n:
+        cart_iou = results["ious"].get("cartridge", float("nan"))
+        bay_iou = results["ious"].get("bay", float("nan"))
+        lines.append(
+            f"  note: cartridge ({cart_n} instances) and bay ({bay_n} "
+            "instances) come from DISJOINT crop populations - sealed "
+            "units carry a cartridge mask and no bay, open units carry a "
+            f"bay and no cartridge mask (see seg_dataset.py's module "
+            f"docstring). {cart_iou:.4f} and {bay_iou:.4f} side by side "
+            "is not evidence the model handles a sealed and an open unit "
+            "within the SAME image.")
+    if checkpoint_note:
+        lines.append(checkpoint_note)
     lines.append("")
 
     # ---- boundary displacement ----------------------------------------
@@ -489,6 +591,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     log.info("val split: seed=%d, %d of %d crops", split_seed,
              len(val_indices), len(full_dataset))
 
+    # Fail BEFORE spending inference time if the split this run recomputes
+    # does not match what the checkpoint was actually selected against -
+    # see check_split_matches_checkpoint's docstring.
+    if args.checkpoint:
+        val_counts_now = compute_val_instance_counts(
+            full_dataset, val_indices, num_classes=num_classes)
+        check_split_matches_checkpoint(args.checkpoint, val_counts_now)
+
     segmenter = BaySegmenter(checkpoint=args.checkpoint, device=args.device,
                              crop_size=crop_size, half=half,
                              num_classes=num_classes)
@@ -497,11 +607,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                        num_classes=num_classes)
     latency = latency_table(segmenter)
 
+    checkpoint_note = (_sibling_checkpoint_note(args.checkpoint)
+                       if args.checkpoint else None)
     report = format_report(
         results, latency,
         checkpoint=args.checkpoint, config_path=args.config,
         synth_config_source=synth_source, mm_per_px=mm_per_px,
-        device=str(segmenter.device))
+        device=str(segmenter.device), checkpoint_note=checkpoint_note)
 
     print(report)
 
@@ -510,8 +622,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     out_path.write_text(report, encoding="utf-8")
     print(f"wrote {out_path}")
 
-    if not all(r["within_50ms_budget"] for r in latency if r["cartridges"] == 8):
-        log.warning("8-cartridge latency is OVER the 50 ms budget")
+    if not latency_within_budget(latency):
+        # A non-zero exit, not just a log line: this is the plan's
+        # acceptance criterion, and only a non-zero exit can gate CI.
+        log.error("8-cartridge latency is OVER the 50 ms budget")
+        return 1
 
     return 0
 
@@ -528,9 +643,12 @@ __all__ = [
     "boundary_displacement_mm",
     "signed_area_error_mm2",
     "latency_table",
+    "latency_within_budget",
     "resolve_mm_per_px",
     "load_synth_config",
     "evaluate",
+    "compute_val_instance_counts",
+    "check_split_matches_checkpoint",
     "format_report",
     "main",
 ]
