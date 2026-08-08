@@ -69,14 +69,25 @@ HEURISTIC_BASELINE_MEAN_FRACTION = 0.218
 HEURISTIC_BASELINE_N_ZERO = 7
 HEURISTIC_BASELINE_N = 20
 
+# matches plan.placement_area.SegmentationPlacementAreaExtractor's own
+# default (restated, not imported, so this module's import surface stays
+# free of cv2 at module-load time - see the lazy imports throughout this
+# file). Used as the default wall_inset_mm everywhere below; a caller
+# that measures against a different inset should pass it explicitly, not
+# rely on a hardcoded 4.0 that quietly diverges from what production
+# actually erodes by (final review, D-integration-arbitration).
+_DEFAULT_WALL_INSET_MM = 4.25
+
 
 # =========================================================== delta_cells ===
 
 def _pack_count(label_map: np.ndarray, mm_per_px: float,
-                wall_inset_mm: float = 4.0) -> int:
+                wall_inset_mm: float = _DEFAULT_WALL_INSET_MM) -> int:
     """Cells FFDH packs into ``label_map``'s arbitrated safe region."""
     from common.packing import Item, first_fit_decreasing
     from plan.arbitration import arbitrate
+    from plan.placement_area import _rasterise_mask
+    from plan.scene import CellState
 
     inset_px = max(0, int(round(wall_inset_mm / mm_per_px)))
     safe, _ = arbitrate(label_map, inset_px)
@@ -89,10 +100,18 @@ def _pack_count(label_map: np.ndarray, mm_per_px: float,
     strip_w = (x1 - x0) * mm_per_px
     strip_h = (y1 - y0) * mm_per_px
 
+    # Reuse production's own rasteriser rather than re-deriving the
+    # pixel/cell stride. The previous int(round(mm_per_cell/mm_per_px))
+    # quantised the forbidden mask at 1.25 mm/cell (px_per_cell=2) while
+    # telling the packer mm_per_cell=1.5 - a mismatched stride that
+    # indexed only ~83% of the mask's columns and displaced obstacles by
+    # up to ~10 mm. _rasterise_mask's float stride
+    # (mm_per_cell / mm_per_px, unrounded) is what plan.placement_area
+    # actually ships, so this ablation now measures the same quantisation
+    # production does (final whole-branch review, D-integration-arbitration).
     mm_per_cell = 1.5
-    px_per_cell = max(1, int(round(mm_per_cell / mm_per_px)))
-    sub = safe[y0:y1, x0:x1][::px_per_cell, ::px_per_cell]
-    forbidden = (~sub).astype(np.uint8)
+    grid = _rasterise_mask(safe, (x0, y0, x1, y1), mm_per_cell, mm_per_px)
+    forbidden = grid.mask_of(CellState.FORBIDDEN).astype(np.uint8)
 
     n_max = max(4, int(strip_w * strip_h / (CELL_W_MM * CELL_H_MM)) * 2)
     items = [Item(id=i, width=CELL_W_MM, height=CELL_H_MM)
@@ -103,7 +122,8 @@ def _pack_count(label_map: np.ndarray, mm_per_px: float,
 
 
 def delta_cells(gt_label_map: np.ndarray, pred_label_map: np.ndarray,
-                mm_per_px: float, wall_inset_mm: float = 4.0) -> int:
+                mm_per_px: float,
+                wall_inset_mm: float = _DEFAULT_WALL_INSET_MM) -> int:
     """Cells the packer places on truth, minus cells on the prediction.
 
     See the module docstring for the sign convention.
@@ -113,7 +133,8 @@ def delta_cells(gt_label_map: np.ndarray, pred_label_map: np.ndarray,
 
 
 def evaluate_delta_cells(segmenter, full_dataset, val_indices: Sequence[int],
-                         mm_per_px: float, wall_inset_mm: float = 4.0
+                         mm_per_px: float,
+                         wall_inset_mm: float = _DEFAULT_WALL_INSET_MM
                          ) -> Dict[str, Any]:
     """delta_cells over every crop in the segmenter's OWN validation split.
 
@@ -148,6 +169,7 @@ def evaluate_delta_cells(segmenter, full_dataset, val_indices: Sequence[int],
     return {
         "n": n,
         "rows": rows,
+        "wall_inset_mm": wall_inset_mm,
         "mean": float(arr.mean()) if n else float("nan"),
         "median": float(np.median(arr)) if n else float("nan"),
         "min": float(arr.min()) if n else float("nan"),
@@ -177,7 +199,9 @@ def evaluate_delta_cells(segmenter, full_dataset, val_indices: Sequence[int],
 _CATALOG_ASSET_WIDTHS_MM: Tuple[float, ...] = (62.9, 80.7, 62.3, 81.7)
 _CATALOG_MEAN_WIDTH_MM = sum(_CATALOG_ASSET_WIDTHS_MM) / len(_CATALOG_ASSET_WIDTHS_MM)
 
-_DEFAULT_WALL_INSET_MM = 4.25  # matches plan.placement_area's own default
+# _DEFAULT_WALL_INSET_MM now lives near CELL_W_MM at the top of the
+# module - delta_cells needed it as a default too, and a duplicate
+# definition down here would just be a second place for it to drift.
 
 
 def _load_real_cartridges(real_dir: Path
@@ -386,6 +410,7 @@ def format_report(delta_result: Dict[str, Any], real_result: Dict[str, Any], *,
                  "shelves, not by mask error.")
     lines.append("")
     n = delta_result["n"]
+    lines.append(f"  wall_inset_mm used: {delta_result['wall_inset_mm']:.2f}")
     lines.append(f"  validation crops (n={n}):")
     lines.append(f"    mean   : {delta_result['mean']:.3f}")
     lines.append(f"    median : {delta_result['median']:.3f}")

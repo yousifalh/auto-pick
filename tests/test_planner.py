@@ -214,10 +214,42 @@ def test_label_map_is_passed_by_detection_index_not_snapshot_order():
     assert spy.received is the_mask
 
 
-def test_planning_stays_under_the_o3_budget_with_masks_supplied():
-    """FDR O3: queue rebuild <= 8 ms per cartridge. The segmenter runs
-    in Recognition precisely so this holds - Planning does mask
-    arithmetic only."""
+def test_heuristic_extractor_ignores_cartridge_masks_without_crashing():
+    """Defect from the final whole-branch review: if cartridge_masks is
+    ever populated while the HEURISTIC extractor is selected, an
+    unconditional label_map kwarg raised TypeError (the heuristic's
+    extract() declares no **kwargs), which _ensure_placement_areas'
+    blanket except swallowed silently - every cartridge went permanently
+    unplanned, uncounted, with no signal anywhere. Guarded now by
+    Planner._accepts_label_map, checked once against the extractor's own
+    signature. This proves the heuristic path still produces a queue
+    when cartridge_masks is non-empty, instead of silently planning
+    nothing forever."""
+    planner = _make_planner()
+    snap = _snapshot_with_cart_and_batteries([(5, 5), (10, 5)])
+    # A populated cartridge_masks dict, as a segmenter would leave behind
+    # even though this planner's extractor is the heuristic one.
+    snap.cartridge_masks[0] = np.zeros((10, 10), np.int8)
+
+    queue = planner.cycle(snap, _synth_image())
+    assert len(queue) > 0, (
+        "heuristic extractor produced no queue - the label_map kwarg "
+        "probably leaked through and silently broke extraction")
+
+
+def test_segmentation_extract_arithmetic_stays_under_the_o3_budget():
+    """FDR O3 budgets queue rebuild at <= 8 ms per cartridge, and queue
+    rebuild is extract() (arbitration + rasterisation) PLUS FFDH packing
+    against the resulting - denser, mask-derived - grid. This test times
+    only extract(): the mask-arithmetic half Planning does once the
+    segmenter (which runs in Recognition) has already produced a label
+    map. It does not exercise FFDH, so it cannot by itself certify the
+    full queue-rebuild budget - see README.md's "Two placement-area
+    extractors" section, which states this scope plainly (arithmetic-
+    only), and FDR 10.4 for the full-cycle latency evidence. Named for
+    what it measures after the final whole-branch review found
+    the old name ("...stays_under_the_o3_budget...") overclaimed FFDH
+    coverage it never exercised."""
     import time
 
     import numpy as np

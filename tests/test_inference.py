@@ -67,8 +67,9 @@ def test_detector_without_a_segmenter_leaves_masks_empty():
 
 
 def test_segmenter_is_called_once_per_frame_not_once_per_cartridge():
-    """Batching is load-bearing: 8 cartridges cost 101 ms looped and
-    18.5 ms batched, against a 50 ms end-to-end budget."""
+    """Batching is load-bearing: 8 cartridges cost 61.8 ms looped and
+    18.1 ms batched at the deployed fp16/256 config, against a 50 ms
+    end-to-end budget (docs/receipts/seg_eval.txt)."""
     import numpy as np
 
     from common.types import BBox, ClassLabel, Detection, Snapshot

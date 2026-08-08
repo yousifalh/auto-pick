@@ -144,21 +144,44 @@ def signed_area_error_mm2(pred: np.ndarray, target: np.ndarray,
 def latency_table(segmenter, counts: Sequence[int] = (1, 2, 4, 8),
                   crop_hw: Tuple[int, int] = (131, 288),
                   repeats: int = 20) -> List[dict]:
-    """Wall-clock per batch size, against the 50 ms PPR budget."""
+    """Wall-clock per batch size, against the 50 ms PPR budget.
+
+    Each row also carries ``looped_ms``: the same ``n`` crops pushed
+    through ``segmenter.segment_batch`` one at a time (batch size 1, `n`
+    calls) rather than one batched call of size `n` - the path Task 5
+    replaced. This is the number that justifies batching, and it used to
+    live only as three different hand-measured figures scattered across
+    the FDR, the README and two docstrings (final whole-branch review).
+    Measuring it here, on the SAME segmenter/crops/warmup as the batched
+    figure right next to it, gives one receipt both can be quoted from
+    instead of drifting independently.
+    """
     rows: List[dict] = []
     for n in counts:
         crops = [np.zeros((crop_hw[0], crop_hw[1], 3), np.uint8)
                  for _ in range(n)]
+
         for _ in range(3):
             segmenter.segment_batch(crops)
         t0 = time.perf_counter()
         for _ in range(repeats):
             segmenter.segment_batch(crops)
         total_ms = (time.perf_counter() - t0) / repeats * 1000.0
+
+        for _ in range(3):
+            for c in crops:
+                segmenter.segment_batch([c])
+        t0 = time.perf_counter()
+        for _ in range(repeats):
+            for c in crops:
+                segmenter.segment_batch([c])
+        looped_ms = (time.perf_counter() - t0) / repeats * 1000.0
+
         rows.append({"cartridges": n,
                      "total_ms": round(total_ms, 1),
                      "per_cartridge_ms": round(total_ms / n, 2),
-                     "within_50ms_budget": total_ms <= 50.0})
+                     "within_50ms_budget": total_ms <= 50.0,
+                     "looped_ms": round(looped_ms, 1)})
     return rows
 
 
@@ -519,14 +542,30 @@ def format_report(results: Dict[str, Any], latency: List[dict], *,
     # ---- latency ----------------------------------------------------
     lines.append("Latency vs the FDR 10.4 50 ms end-to-end budget "
                  "(fp16 batched inference):")
-    head = f"  {'cartridges':>11}{'total_ms':>11}{'per_cart_ms':>13}{'within_50ms':>13}"
+    lines.append("looped_ms is the SAME crops through segment_batch() one "
+                 "at a time (batch size 1,")
+    lines.append("n calls) - the path batching replaced. This is the "
+                 "single measured source for")
+    lines.append("the batching-latency figure; quote THIS receipt rather "
+                 "than a hand-measured one.")
+    head = (f"  {'cartridges':>11}{'total_ms':>11}{'per_cart_ms':>13}"
+           f"{'within_50ms':>13}{'looped_ms':>12}")
     lines.append(head)
     lines.append("  " + "-" * (len(head) - 2))
     for row in latency:
         lines.append(f"  {row['cartridges']:>11}{row['total_ms']:>11.1f}"
                      f"{row['per_cartridge_ms']:>13.2f}"
-                     f"{str(row['within_50ms_budget']):>13}")
+                     f"{str(row['within_50ms_budget']):>13}"
+                     f"{row['looped_ms']:>12.1f}")
     lines.append("  " + "-" * (len(head) - 2))
+    batch8 = next((r for r in latency if r["cartridges"] == 8), None)
+    if batch8 is not None and batch8["total_ms"] > 0:
+        factor = batch8["looped_ms"] / batch8["total_ms"]
+        lines.append(
+            f"  at 8 cartridges: {batch8['total_ms']:.1f} ms batched vs "
+            f"{batch8['looped_ms']:.1f} ms looped ({factor:.1f}x) - "
+            "batching is load-bearing, not an optimisation: the looped "
+            "figure breaches the 50 ms end-to-end budget on its own.")
     lines.append("")
     return "\n".join(lines)
 

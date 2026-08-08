@@ -72,7 +72,13 @@ def _sweep(records: Sequence[dict], fail_budget: float) -> List[Dict]:
     reimplementing the scan) so the receipt's full trade-off curve and
     the single number `calibrate` returns can never drift apart.
     """
-    candidates = sorted({round(float(r["iou"]), 4) for r in records})
+    # Raw floats, NOT rounded: a candidate has to compare >= against the
+    # very iou it came from. Rounding here (e.g. to 4dp) could round a
+    # candidate UP past its own source record - 0.74919999... rounds to
+    # 0.7492, but 0.74919999... >= 0.7492 is False - silently dropping
+    # the sample-minimum record from its own row and making "the sample
+    # minimum" wrong by an epsilon (final whole-branch review).
+    candidates = sorted({float(r["iou"]) for r in records})
     n = len(records)
     rows: List[Dict] = []
     for tau in candidates:
@@ -136,7 +142,7 @@ def calibrate(records: Sequence[dict], fail_budget: float = 0.05) -> Dict:
 # --------------------------------------------------------- record collection --
 
 def collect_records(segmenter, full_dataset, val_indices: Sequence[int],
-                     mm_per_px: float, wall_inset_px: int,
+                     wall_inset_px: int,
                      cell_w_px: float, cell_h_px: float) -> List[Dict[str, Any]]:
     """One record per validation crop: arbitration IoU, whether its
     optimistic error admits a cell, and whether its predicted direct
@@ -144,7 +150,10 @@ def collect_records(segmenter, full_dataset, val_indices: Sequence[int],
 
     Runs the segmenter at NATIVE crop resolution (`out_size=None`),
     matching recog.seg_evaluate.evaluate() - a jittered union box is not
-    square, so mm_per_px only describes the native frame.
+    square, so a single scalar mm_per_px could only describe the native
+    frame anyway. wall_inset_px/cell_w_px/cell_h_px arrive already
+    converted to pixels by the caller, so this function itself never
+    needs mm_per_px (a formerly-unused parameter, removed).
     """
     from PIL import Image
 
@@ -199,7 +208,8 @@ def _table_lines(rows: Sequence[Dict], picked_tau: Optional[float]) -> List[str]
 
 
 def format_report(result: Dict, *, records: Sequence[dict],
-                  all_records: Sequence[dict], fail_budget: float,
+                  all_records: Sequence[dict], all_result: Dict,
+                  fail_budget: float,
                   checkpoint: str, config_path: str,
                   synth_config_source: str, mm_per_px: float,
                   wall_inset_mm: float, wall_inset_px: int,
@@ -315,7 +325,6 @@ def format_report(result: Dict, *, records: Sequence[dict],
                  f"run over ALL {len(all_records)} val crops (including "
                  "those with no predicted bay, which can never admit a "
                  "cell and should never be read as evidence of safety):")
-    all_result = calibrate(list(all_records), fail_budget=fail_budget)
     if all_result["tau"] is None:
         lines.append(f"  tau = None ({all_result['note']})")
     else:
@@ -415,14 +424,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     cell_h_px = args.cell_h_mm / mm_per_px
 
     all_records = collect_records(
-        segmenter, full_dataset, val_indices, mm_per_px, wall_inset_px,
+        segmenter, full_dataset, val_indices, wall_inset_px,
         cell_w_px, cell_h_px)
     records = [r for r in all_records if r["predicts_bay"]]
 
     result = calibrate(records, fail_budget=args.fail_budget)
+    # Cross-check row only, NOT the calibration result - computed here
+    # rather than inside format_report, which should format a result,
+    # not derive one (final whole-branch review).
+    all_result = calibrate(list(all_records), fail_budget=args.fail_budget)
 
     report = format_report(
         result, records=records, all_records=all_records,
+        all_result=all_result,
         fail_budget=args.fail_budget, checkpoint=args.checkpoint,
         config_path=args.config, synth_config_source=synth_source,
         mm_per_px=mm_per_px, wall_inset_mm=args.wall_inset_mm,

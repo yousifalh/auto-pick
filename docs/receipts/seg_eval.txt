@@ -45,10 +45,14 @@ a lost cell, not a safety issue). Mean per crop and total over the split:
   ------------------------------------------------------------
 
 Latency vs the FDR 10.4 50 ms end-to-end budget (fp16 batched inference):
-   cartridges   total_ms  per_cart_ms  within_50ms
-  ------------------------------------------------
-            1        8.3         8.31         True
-            2       12.6         6.31         True
-            4       17.0         4.25         True
-            8       19.5         2.43         True
-  ------------------------------------------------
+looped_ms is the SAME crops through segment_batch() one at a time (batch size 1,
+n calls) - the path batching replaced. This is the single measured source for
+the batching-latency figure; quote THIS receipt rather than a hand-measured one.
+   cartridges   total_ms  per_cart_ms  within_50ms   looped_ms
+  ------------------------------------------------------------
+            1       11.5        11.54         True        11.1
+            2       12.1         6.06         True        14.8
+            4       14.5         3.62         True        34.6
+            8       18.1         2.26         True        61.8
+  ------------------------------------------------------------
+  at 8 cartridges: 18.1 ms batched vs 61.8 ms looped (3.4x) - batching is load-bearing, not an optimisation: the looped figure breaches the 50 ms end-to-end budget on its own.

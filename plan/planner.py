@@ -19,6 +19,7 @@ on failure so a future cycle can retry.
 """
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
@@ -74,6 +75,31 @@ class PlannerConfig:
         )
 
 
+def _accepts_label_map(extractor) -> bool:
+    """Whether ``extractor.extract`` will accept a ``label_map`` kwarg.
+
+    Checked ONCE, at construction time, against the extractor's actual
+    declared signature (an explicit ``label_map`` parameter, or
+    ``**kwargs``) - not inferred from whether a snapshot happens to carry
+    ``cartridge_masks`` that cycle. The two are different questions:
+    ``HeuristicPlacementAreaExtractor.extract`` takes no ``**kwargs``, so
+    if ``cartridge_masks`` is ever non-empty while it is the selected
+    extractor, passing ``label_map`` through raises ``TypeError`` -
+    which ``_ensure_placement_areas``'s blanket ``except Exception``
+    swallows silently, unplanning every cartridge forever with no
+    counter incrementing. Gating on the signature, rather than on the
+    dict being empty, is what prevents that (final whole-branch review,
+    D-integration-arbitration).
+    """
+    try:
+        params = inspect.signature(extractor.extract).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        p.name == "label_map" or p.kind is inspect.Parameter.VAR_KEYWORD
+        for p in params)
+
+
 # ---------------------------------------------------------- planner ---
 
 class Planner:
@@ -88,6 +114,10 @@ class Planner:
         self.cfg = planner_cfg
         self.extractor = placement_extractor
         self.env = EnvironmentModel(workspace=workspace)
+        # Computed once here rather than per-cartridge-per-cycle in
+        # _ensure_placement_areas - the extractor's signature can't
+        # change mid-run. See _accepts_label_map's docstring.
+        self._extractor_accepts_label_map = _accepts_label_map(placement_extractor)
         # Observability counters for _ensure_placement_areas. A blanket
         # `except Exception: continue` already existed and already meant
         # "skip this cartridge, retry next frame" - that behaviour is
@@ -141,17 +171,25 @@ class Planner:
         """Fill in the placement rectangle / occupancy for new cartridges.
 
         When ``snapshot`` carries a label map for a cartridge
-        (``Snapshot.cartridge_masks``, keyed by ``detection_index``), it is
-        passed through to the extractor. Extractors that don't accept
-        ``label_map`` (the heuristic path) simply never receive the kwarg.
+        (``Snapshot.cartridge_masks``, keyed by ``detection_index``) AND
+        ``self.extractor`` declares a ``label_map`` parameter (checked
+        once at construction time, see ``_accepts_label_map``), it is
+        passed through. An extractor that doesn't declare one - the
+        heuristic path - never receives the kwarg, REGARDLESS of whether
+        ``cartridge_masks`` is populated: passing it anyway would raise
+        ``TypeError`` (the heuristic's ``extract`` takes no ``**kwargs``),
+        which the blanket ``except Exception`` below would swallow
+        silently, leaving every cartridge permanently unplanned and
+        uncounted. This is a capability check on the extractor, not a
+        statement that the dict happens to be empty.
         """
         for ctg in self.env.cartridges.values():
             if ctg.placeable_rectangle is not None:
                 continue
             try:
                 kwargs = {}
-                if snapshot is not None and ctg.detection_index in \
-                        snapshot.cartridge_masks:
+                if (self._extractor_accepts_label_map and snapshot is not None
+                        and ctg.detection_index in snapshot.cartridge_masks):
                     kwargs["label_map"] = \
                         snapshot.cartridge_masks[ctg.detection_index]
                 pa = self.extractor.extract(image_rgb, ctg.bbox, **kwargs)
