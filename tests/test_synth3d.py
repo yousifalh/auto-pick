@@ -3,6 +3,7 @@
 Every module touched here must import without bpy, so this file runs in
 the ordinary pytest environment.
 """
+import ast
 import json
 from pathlib import Path
 
@@ -39,6 +40,77 @@ _BPY_FREE_MODS = [m for m in _BPY_FREE_CANDIDATES
                    if (ROOT / "recog" / "synth3d" / f"{m}.py").is_file()]
 
 
+def _imports_bpy(src: str) -> bool:
+    """Whether `src` actually imports (statically or dynamically) the
+    `bpy` package or any of its submodules.
+
+    An AST walk, not a substring grep: the previous `"import bpy" not in
+    src` check let `from bpy import context`, `import bpy as b`, and
+    `importlib.import_module("bpy")` all walk straight past it, and it
+    false-positived once on a docstring that merely mentioned the phrase
+    "import bpy" in prose. Parsing means a string appearing in a
+    docstring, comment, or ordinary string constant is never mistaken for
+    a real import, because it is never an `Import`/`ImportFrom`/`Call`
+    node - only actual import statements and the two dynamic-import
+    builtins (`importlib.import_module`, `__import__`) are inspected, and
+    only when their first argument is a literal string.
+    """
+    tree = ast.parse(src)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            if any(a.name == "bpy" or a.name.startswith("bpy.")
+                   for a in node.names):
+                return True
+        elif isinstance(node, ast.ImportFrom):
+            if node.module is not None and (
+                    node.module == "bpy" or node.module.startswith("bpy.")):
+                return True
+        elif isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Attribute):
+                fname = func.attr
+            elif isinstance(func, ast.Name):
+                fname = func.id
+            else:
+                fname = None
+            if fname in ("import_module", "__import__") and node.args:
+                arg0 = node.args[0]
+                if (isinstance(arg0, ast.Constant)
+                        and isinstance(arg0.value, str)
+                        and (arg0.value == "bpy"
+                             or arg0.value.startswith("bpy."))):
+                    return True
+    return False
+
+
+@pytest.mark.parametrize("src", [
+    "import bpy\n",
+    "import bpy as b\n",
+    "import bpy.types\n",
+    "import bpy.types as bt\n",
+    "from bpy import context\n",
+    "from bpy import context as c\n",
+    "from bpy.types import Object\n",
+    "import importlib\nimportlib.import_module('bpy')\n",
+    "import importlib\nimportlib.import_module('bpy.types')\n",
+    "import importlib as il\nil.import_module('bpy')\n",
+    "__import__('bpy')\n",
+])
+def test_bpy_detector_rejects_every_known_evasion(src):
+    """Each of these walks straight past a plain `\"import bpy\" not in
+    src` substring check; the AST walk must catch all of them."""
+    assert _imports_bpy(src), f"missed an evasion: {src!r}"
+
+
+def test_bpy_detector_accepts_a_docstring_that_merely_mentions_it():
+    """The exact false positive this check replaced: a module that talks
+    ABOUT staying free of `import bpy` in prose, without ever actually
+    importing it, must not fail."""
+    src = ('"""This module must stay free of `import bpy` - see the '
+           'package boundary note."""\nx = 1\n')
+    assert not _imports_bpy(src)
+
+
 def test_every_bpy_free_module_is_actually_checked():
     """The existence filter above was scaffolding from when these modules
     landed one task at a time. All six exist now, so it must be a no-op:
@@ -53,7 +125,7 @@ def test_every_bpy_free_module_is_actually_checked():
 @pytest.mark.parametrize("mod", _BPY_FREE_MODS)
 def test_pure_modules_never_import_bpy(mod):
     src = (ROOT / "recog" / "synth3d" / f"{mod}.py").read_text(encoding="utf-8")
-    assert "import bpy" not in src, f"{mod}.py must stay Blender-free"
+    assert not _imports_bpy(src), f"{mod}.py must stay Blender-free"
 
 
 def test_package_init_imports_no_submodules():
