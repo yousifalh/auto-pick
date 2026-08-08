@@ -212,3 +212,34 @@ def test_label_map_is_passed_by_detection_index_not_snapshot_order():
 
     planner.cycle(snap, np.zeros((100, 100, 3), np.uint8))
     assert spy.received is the_mask
+
+
+def test_planning_stays_under_the_o3_budget_with_masks_supplied():
+    """FDR O3: queue rebuild <= 8 ms per cartridge. The segmenter runs
+    in Recognition precisely so this holds - Planning does mask
+    arithmetic only."""
+    import time
+
+    import numpy as np
+
+    from plan.arbitration import CH_BAY, CH_CARTRIDGE
+    from plan.placement_area import SegmentationPlacementAreaExtractor
+
+    label = np.zeros((288, 131), np.int8)
+    label[5:283, 5:126] = CH_CARTRIDGE
+    label[12:276, 12:119] = CH_BAY
+
+    ex = SegmentationPlacementAreaExtractor(
+        mm_per_cell=1.5, mm_per_px=0.625, wall_inset_mm=4.0, tau=0.0)
+    img = np.zeros((720, 1280, 3), np.uint8)
+    from common.types import BBox
+    box = BBox(100, 100, 231, 388)
+
+    ex.extract(img, box, label_map=label)          # warm caches
+    t0 = time.perf_counter()
+    for _ in range(20):
+        ex.extract(img, box, label_map=label)
+    per_call_ms = (time.perf_counter() - t0) / 20 * 1000
+
+    assert per_call_ms < 8.0, (
+        f"{per_call_ms:.1f} ms per cartridge breaks the O3 budget")
