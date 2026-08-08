@@ -264,3 +264,50 @@ def calibrate_from_pairs(pairs, fail_budget):
     from recog.calibrate_tau import calibrate
     return calibrate([{"iou": i, "admits_cell": a} for i, a in pairs],
                      fail_budget=fail_budget)
+
+
+def test_delta_cells_is_zero_for_a_perfect_prediction():
+    import numpy as np
+
+    from plan.arbitration import CH_BAY, CH_CARTRIDGE
+    from recog.seg_ablation import delta_cells
+
+    m = np.zeros((288, 131), np.int8)
+    m[5:283, 5:126] = CH_CARTRIDGE
+    m[12:276, 12:119] = CH_BAY
+    assert delta_cells(m, m.copy(), mm_per_px=0.625) == 0
+
+
+def test_delta_cells_is_positive_when_the_prediction_loses_room():
+    import numpy as np
+
+    from plan.arbitration import CH_BAY, CH_CARTRIDGE, CH_OBSTRUCTION
+    from recog.seg_ablation import delta_cells
+
+    gt = np.zeros((288, 131), np.int8)
+    gt[5:283, 5:126] = CH_CARTRIDGE
+    gt[12:276, 12:119] = CH_BAY
+
+    pred = gt.copy()
+    pred[12:150, 12:119] = CH_OBSTRUCTION      # half the bay hallucinated
+
+    assert delta_cells(gt, pred, mm_per_px=0.625) > 0
+
+
+def test_delta_cells_is_negative_when_the_prediction_claims_too_much():
+    """An optimistic prediction packs MORE cells than truth allows. A
+    negative delta is the damage case, not a good score."""
+    import numpy as np
+
+    from plan.arbitration import CH_BAY, CH_CARTRIDGE, CH_ELECTRONICS
+    from recog.seg_ablation import delta_cells
+
+    gt = np.zeros((288, 131), np.int8)
+    gt[5:283, 5:126] = CH_CARTRIDGE
+    gt[12:276, 12:119] = CH_BAY
+    gt[12:100, 12:119] = CH_ELECTRONICS
+
+    pred = gt.copy()
+    pred[12:100, 12:119] = CH_BAY              # PCB predicted as placeable
+
+    assert delta_cells(gt, pred, mm_per_px=0.625) < 0
