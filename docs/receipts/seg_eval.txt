@@ -11,26 +11,26 @@ Bay segmenter evaluation
 Per-class IoU (pooled over the validation split; NaN = class absent from both pred and truth over the whole split, not scored as 0):
   class              IoU   instances
   ----------------------------------
-  background      0.3701         126
-  cartridge       0.9353         126
-  bay             0.9128          37
-  electronics     0.8806          37
-  obstruction     0.6414          18
-  battery         0.7074          26
+  background      0.3671         126
+  cartridge       0.9349         126
+  bay             0.9083          37
+  electronics     0.8803          37
+  obstruction     0.6248          18
+  battery         0.7415          26
   ----------------------------------
-  selected mean IoU over ['bay', 'electronics', 'obstruction'] (instances={'bay': 37, 'electronics': 37, 'obstruction': 18}): 0.8116
-  note: background IoU (0.3701 on 126 crops) is STRUCTURAL, not a comparable failure - a crop is the union of the unit's OWN boxes, so background is only the thin leftover corners and gaps, a small region where IoU is naturally harsh. It is not evidence against the model.
-  note: cartridge (126 instances) and bay (37 instances) come from DISJOINT crop populations - sealed units carry a cartridge mask and no bay, open units carry a bay and no cartridge mask (see seg_dataset.py's module docstring). 0.9353 and 0.9128 side by side is not evidence the model handles a sealed and an open unit within the SAME image.
-  note: checkpoint selection is noise-limited - best.pt 0.8209 and last.pt 0.8209 differ by 0.0000 on 37/37/18 (bay/electronics/obstruction) val instances, and both ship.
+  selected mean IoU over ['bay', 'electronics', 'obstruction'] (instances={'bay': 37, 'electronics': 37, 'obstruction': 18}): 0.8045
+  note: background IoU (0.3671 on 126 crops) is STRUCTURAL, not a comparable failure - a crop is the union of the unit's OWN boxes, so background is only the thin leftover corners and gaps, a small region where IoU is naturally harsh. It is not evidence against the model.
+  note: cartridge (126 instances) and bay (37 instances) come from DISJOINT crop populations - sealed units carry a cartridge mask and no bay, open units carry a bay and no cartridge mask (see seg_dataset.py's module docstring). 0.9349 and 0.9083 side by side is not evidence the model handles a sealed and an open unit within the SAME image.
+  note: checkpoint selection is noise-limited - best.pt 0.8096 and last.pt 0.8074 differ by 0.0022 on 37/37/18 (bay/electronics/obstruction) val instances, and both ship.
 
 Boundary displacement, mm (mean distance from a predicted boundary pixel to
 the nearest ground-truth boundary pixel; the figure that chose a per-ROI
 segmenter over a 28x28 Mask R-CNN head, whose quantisation at this framing is 2.9 x 6.4 mm):
   class               mm     crops
   --------------------------------
-  bay              0.817        36
-  electronics      0.910        37
-  obstruction      2.241        16
+  bay              1.299        37
+  electronics      1.085        37
+  obstruction      1.633        16
   --------------------------------
   verdict: BELOW the mask-head quantisation figure - supports the architecture choice.
 
@@ -39,9 +39,9 @@ is not, the error that can put a cell on a PCB; conservative = the opposite,
 a lost cell, not a safety issue). Mean per crop and total over the split:
   class          opt mean   opt total   cons mean   cons total
   ------------------------------------------------------------
-  bay                52.3      6587.1        40.5       5106.6
-  electronics        23.6      2978.5        17.6       2216.8
-  obstruction        16.3      2053.1         9.0       1133.2
+  bay                55.5      6990.6        42.4       5345.7
+  electronics        30.5      3848.4        11.6       1467.2
+  obstruction        15.0      1886.7        11.0       1384.8
   ------------------------------------------------------------
 
 Latency vs the FDR 10.4 50 ms end-to-end budget (fp16 batched inference):
@@ -50,9 +50,9 @@ n calls) - the path batching replaced. This is the single measured source for
 the batching-latency figure; quote THIS receipt rather than a hand-measured one.
    cartridges   total_ms  per_cart_ms  within_50ms   looped_ms
   ------------------------------------------------------------
-            1       11.1        11.11         True        10.3
-            2       16.8         8.40         True        22.2
-            4       14.7         3.67         True        40.9
-            8       20.5         2.56         True        87.4
+            1        7.3         7.30         True         8.9
+            2       10.7         5.37         True        14.9
+            4       14.9         3.72         True        31.4
+            8       16.7         2.09         True        60.0
   ------------------------------------------------------------
-  at 8 cartridges: 20.5 ms batched vs 87.4 ms looped (4.3x) - batching is load-bearing, not an optimisation: the looped figure breaches the 50 ms end-to-end budget on its own.
+  at 8 cartridges: 16.7 ms batched vs 60.0 ms looped (3.6x) - batching is load-bearing, not an optimisation: the looped figure breaches the 50 ms end-to-end budget on its own.

@@ -83,6 +83,21 @@ def checkpoint_state_dict(model) -> Dict[str, Any]:
             if not k.startswith("aux_classifier.")}
 
 
+def _atomic_save(obj: Dict[str, Any], path: Path) -> None:
+    """`torch.save` via a temp file + rename, so a run killed mid-write
+    (the 10-minute per-command cap this project runs under, or any other
+    hard interrupt) cannot leave a half-written checkpoint that a later
+    `--resume` would load as if it were valid. Same-directory tmp file so
+    the rename is same-filesystem and therefore atomic on both POSIX and
+    Windows.
+    """
+    import torch
+
+    tmp = path.with_name(path.name + ".tmp")
+    torch.save(obj, tmp)
+    tmp.replace(path)
+
+
 # ---------------------------------------------------------- torch guard --
 
 def _require_torch() -> None:
@@ -267,8 +282,22 @@ def evaluate_model(model, loader, device, num_classes: int
 
 # ----------------------------------------------- top-level entrypoint --
 
-def train(cfg: Dict[str, Any]) -> None:
-    """Run the full training schedule using ``cfg`` (a segmentation YAML)."""
+def train(cfg: Dict[str, Any], resume: bool = False) -> None:
+    """Run the full training schedule using ``cfg`` (a segmentation YAML).
+
+    `resume=True` picks up from `<checkpoint_dir>/train_state.pt`, written
+    unconditionally at the end of every epoch. That file is distinct from
+    `best.pt`/`last.pt`: those two stay inference-format (stripped aux
+    head, `weights_only=True`-loadable) for every existing consumer
+    (bay_segmenter.BaySegmenter, seg_evaluate, calibrate_tau, seg_ablation)
+    to keep loading unchanged; `train_state.pt` carries the full model
+    (aux head included, so a resumed run's aux loss stays wired exactly
+    as a fresh run's does), optimiser and scheduler state, and the epoch
+    and best-so-far IoU needed to continue the schedule rather than
+    restart it. Without this, any run cut off before its last epoch loses
+    every epoch after the last save - there was no way back into a
+    40-epoch schedule interrupted at epoch 24.
+    """
     _require_torch()
     import torch
 
@@ -378,12 +407,54 @@ def train(cfg: Dict[str, Any]) -> None:
 
     ckpt_dir = Path(train_cfg.get("checkpoint_dir", "recog/checkpoints/seg"))
     ckpt_dir.mkdir(parents=True, exist_ok=True)
+    state_path = ckpt_dir / "train_state.pt"
 
     dice_weight = float(train_cfg.get("dice_weight", 0.5))
 
-    # ---- Main loop ----
+    # ---- Resume (optional) ----
+    start_epoch = 0
     best_iou = -1.0
-    for epoch in range(int(train_cfg.get("epochs", 40))):
+    if resume:
+        if not state_path.exists():
+            raise SystemExit(
+                f"error: --resume was given but {state_path} does not "
+                "exist. There is no in-progress run to continue - drop "
+                "--resume to start a fresh schedule.")
+        # weights_only=False: unlike best.pt/last.pt (loaded by inference
+        # code that may see an untrusted checkpoint), train_state.pt is
+        # written and read by this same script, on this same machine, and
+        # carries optimiser/scheduler state that is not tensors-only.
+        state = torch.load(state_path, map_location="cpu",
+                           weights_only=False)
+        saved_counts = state.get("val_instance_counts")
+        if saved_counts is not None and dict(saved_counts) != val_counts_by_name:
+            raise SystemExit(
+                "error: --resume's recomputed validation split does not "
+                "match train_state.pt's own record - continuing would "
+                "silently train/validate against a different split than "
+                "the interrupted run used.\n"
+                f"  train_state.pt recorded: {dict(saved_counts)}\n"
+                f"  this run recomputes:     {val_counts_by_name}\n"
+                "The dataset behind --config's dataset.coco_path most "
+                "likely changed since this run started. Point --config "
+                "at the exact dataset the interrupted run used, or start "
+                "a fresh run (drop --resume).")
+        model.load_state_dict(state["model"])
+        optimiser.load_state_dict(state["optimiser"])
+        if scheduler is not None and state.get("scheduler") is not None:
+            scheduler.load_state_dict(state["scheduler"])
+        start_epoch = int(state["epoch"]) + 1
+        best_iou = float(state["best_iou"])
+        log.info("resuming from train_state.pt: completed epoch=%d, "
+                 "best_iou=%.4f so far - continuing at epoch=%d",
+                 state["epoch"], best_iou, start_epoch)
+
+    # ---- Main loop ----
+    total_epochs = int(train_cfg.get("epochs", 40))
+    if start_epoch >= total_epochs:
+        log.info("start_epoch=%d >= configured epochs=%d - nothing to do",
+                 start_epoch, total_epochs)
+    for epoch in range(start_epoch, total_epochs):
         mean_loss = train_one_epoch(
             model, train_loader, optimiser, scheduler, device,
             num_classes, dice_weight)
@@ -401,7 +472,7 @@ def train(cfg: Dict[str, Any]) -> None:
         # placement mask is actually built from.
         if selection > best_iou:
             best_iou = selection
-            torch.save(
+            _atomic_save(
                 {
                     "model": checkpoint_state_dict(model),
                     "epoch": epoch,
@@ -419,7 +490,7 @@ def train(cfg: Dict[str, Any]) -> None:
         # dedf700 fixed exactly this bug (best-only saving silently
         # discarding every later epoch) in the detector's loop; the same
         # bug is just as easy to reintroduce here.
-        torch.save(
+        _atomic_save(
             {
                 "model": checkpoint_state_dict(model),
                 "epoch": epoch,
@@ -432,6 +503,25 @@ def train(cfg: Dict[str, Any]) -> None:
             ckpt_dir / "last.pt",
         )
 
+        # Full (unstripped) state for --resume: model incl. aux head,
+        # optimiser and scheduler, and the epoch/best_iou needed to
+        # continue the schedule rather than restart it. Written every
+        # epoch, unconditionally, so a run cut off by this project's
+        # 10-minute-per-command cap loses at most the epoch in progress.
+        _atomic_save(
+            {
+                "model": model.state_dict(),
+                "optimiser": optimiser.state_dict(),
+                "scheduler": (scheduler.state_dict()
+                             if scheduler is not None else None),
+                "epoch": epoch,
+                "best_iou": best_iou,
+                "val_instance_counts": val_counts_by_name,
+                "split_seed": split_seed,
+            },
+            state_path,
+        )
+
 
 # ----------------------------------------------------------- CLI ----
 
@@ -439,9 +529,13 @@ def _cli() -> None:
     parser = argparse.ArgumentParser(
         description="Train the bay segmenter.")
     parser.add_argument("--config", default="configs/segmentation.yaml")
+    parser.add_argument(
+        "--resume", action="store_true",
+        help="Continue from <checkpoint_dir>/train_state.pt instead of "
+             "starting a fresh 0-epoch schedule.")
     args = parser.parse_args()
     cfg = load_yaml(args.config)
-    train(cfg)
+    train(cfg, resume=args.resume)
 
 
 if __name__ == "__main__":  # pragma: no cover

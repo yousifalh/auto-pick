@@ -15,13 +15,13 @@ Requires the Plan A packer fix (FDR 6.3.1): on the unfixed shelf-cursor logic
 this figure was dominated by the packer abandoning shelves, not by mask error.
 
   wall_inset_mm used: 4.25
-  validation crops (n=54):
-    mean   : 0.037
+  validation crops (n=126):
+    mean   : 0.032
     median : 0.000
-    range  : [-3, 6]
-    positive (cells lost)   : 1 / 54
-    negative (cells packed where forbidden) : 2 / 54
-    zero (no difference)    : 51 / 54
+    range  : [-1, 2]
+    positive (cells lost)   : 4 / 126
+    negative (cells packed where forbidden) : 1 / 126
+    zero (no difference)    : 121 / 126
 
 Heuristic vs segmenter on the real photographs (recog/realtest)
 ------------------------------------------------------------------
@@ -40,37 +40,37 @@ mask at all, so it is comparable without inventing one.
 
     # image           heuristic  segmenter    delta  note
   -------------------------------------------------------
-    1 IMG_4426.jpg        0.341      0.138   -0.203
-    2 IMG_4426.jpg        0.000      0.310   +0.310
-    3 IMG_4426.jpg        0.360      0.308   -0.052
-    4 IMG_4426.jpg        0.097      0.209   +0.112
-    5 IMG_4426.jpg        0.000      0.000   +0.000  exception: RuntimeError: no placeable area in this cartridge
-    6 IMG_4427.jpg        0.000      0.454   +0.454
-    7 IMG_4427.jpg        0.344      0.214   -0.130
-    8 IMG_4429.jpg        0.394      0.295   -0.098
-    9 IMG_4429.jpg        0.321      0.143   -0.178
-   10 IMG_4429.jpg        0.000      0.347   +0.347
-   11 IMG_4429.jpg        0.124      0.213   +0.090
-   12 IMG_4429.jpg        0.000      0.000   +0.000  exception: RuntimeError: no placeable area in this cartridge
-   13 IMG_4433.jpg        0.297      0.082   -0.214
-   14 IMG_4433.jpg        0.000      0.488   +0.488
-   15 IMG_4434.jpg        0.335      0.021   -0.314
-   16 IMG_4434.jpg        0.000      0.308   +0.308
-   17 IMG_4434.jpg        0.571      0.336   -0.235
-   18 IMG_4434.jpg        0.151      0.240   +0.089
-   19 IMG_4434.jpg        0.523      0.014   -0.509
-   20 IMG_4435.jpg        0.489      0.091   -0.398
+    1 IMG_4426.jpg        0.341      0.190   -0.151
+    2 IMG_4426.jpg        0.000      0.188   +0.188
+    3 IMG_4426.jpg        0.360      0.167   -0.193
+    4 IMG_4426.jpg        0.097      0.223   +0.127
+    5 IMG_4426.jpg        0.000      0.230   +0.230
+    6 IMG_4427.jpg        0.000      0.469   +0.469
+    7 IMG_4427.jpg        0.344      0.294   -0.051
+    8 IMG_4429.jpg        0.394      0.162   -0.231
+    9 IMG_4429.jpg        0.321      0.250   -0.071
+   10 IMG_4429.jpg        0.000      0.307   +0.307
+   11 IMG_4429.jpg        0.124      0.175   +0.051
+   12 IMG_4429.jpg        0.000      0.002   +0.002
+   13 IMG_4433.jpg        0.297      0.408   +0.112
+   14 IMG_4433.jpg        0.000      0.554   +0.554
+   15 IMG_4434.jpg        0.335      0.190   -0.145
+   16 IMG_4434.jpg        0.000      0.283   +0.283
+   17 IMG_4434.jpg        0.571      0.242   -0.328
+   18 IMG_4434.jpg        0.151      0.205   +0.054
+   19 IMG_4434.jpg        0.523      0.104   -0.419
+   20 IMG_4435.jpg        0.489      0.003   -0.487
   -------------------------------------------------------
 
                           mean    median   n_zero
   heuristic              0.217     0.224        7 / 20
-  segmenter              0.211     0.214        2 / 20
+  segmenter              0.232     0.214        0 / 20
   baseline (spec 1.1)     0.218                  7 / 20
 
   heuristic RuntimeWarning fired: 20 / 20 cartridges (suppressed above; scope-limit warning,
   see plan.placement_area.HeuristicPlacementAreaExtractor).
 
-  verdict: the segmenter does NOT beat the measured baseline (0.211 <= 0.218). This is the result, not a defect to adjust the comparison until it disappears: a segmenter that cannot beat a measured baseline is not worth shipping.
+  verdict: the segmenter beats the measured baseline (0.232 > 0.218) and has no zero-area cartridges.
 
   wall_inset_mm used: 4.25. mm_per_px for these photos is NOT calibrated (no fixed-
   mount framing exists for handheld phone photos); each cartridge's own scale is
