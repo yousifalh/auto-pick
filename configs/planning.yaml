@@ -35,3 +35,24 @@ camera:
   origin_offset_x_mm: 0.0
   origin_offset_y_mm: 0.0
   workspace_bounds_mm: {x_min: -350, x_max: 350, y_min: -350, y_max: 350}
+
+arbitration:
+  # SegmentationPlacementAreaExtractor's placement-disagreement gate:
+  # below tau, plan.arbitration's two independent placement estimates
+  # are treated as disagreeing and the cartridge is skipped for the
+  # cycle rather than risking a cell on a misjudged PCB.
+  #
+  # CALIBRATED, not asserted - see recog/calibrate_tau.py and
+  # docs/receipts/tau_calibration.txt for the measurement this came
+  # from (checkpoint recog/checkpoints/seg/best.pt, validation split
+  # seed 0, 19 bay-predicting cartridges of 54 val crops).
+  #
+  # CAVEAT the receipt states plainly: not one of those 19 cartridges
+  # admitted a cell inside its optimistic error at ANY observed IoU, so
+  # the 5% fail budget never actually bound - this value is the LOWEST
+  # IoU the split happened to contain, not a threshold discovered by
+  # trading safety against throughput. It is a lower bound on where an
+  # unsafe boundary might sit, not evidence that IoU below it is unsafe.
+  # Treat as provisional until the validation split grows enough to
+  # observe an actual failure to calibrate against.
+  tau: 0.7492

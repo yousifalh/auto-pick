@@ -228,3 +228,39 @@ def test_empty_region_admits_nothing():
     from plan.arbitration import admits_a_cell
 
     assert not admits_a_cell(np.zeros((40, 40), bool), 13, 29)
+
+
+def test_calibrate_picks_the_smallest_tau_meeting_the_budget():
+    from recog.calibrate_tau import calibrate
+
+    # (iou, admits_a_cell_in_the_optimistic_error)
+    records = [(0.99, False)] * 90 + [(0.50, True)] * 10
+    out = calibrate_from_pairs(records, fail_budget=0.05)
+    assert 0.50 < out["tau"] <= 0.99
+    assert out["fail_rate"] <= 0.05
+    assert out["rejected_fraction"] == pytest.approx(0.10, abs=0.02)
+
+
+def test_calibrate_reports_failure_when_no_tau_works():
+    """A negative result about the design, reported as one rather than
+    tuned around."""
+    records = [(0.99, True)] * 100
+    out = calibrate_from_pairs(records, fail_budget=0.05)
+    assert out["tau"] is None
+    assert "no threshold" in out["note"].lower()
+
+
+def test_calibrate_maximises_throughput_subject_to_safety():
+    """Two thresholds both meet the budget; the smaller must win
+    because it accepts more cartridges."""
+    records = [(0.70, False)] * 50 + [(0.95, False)] * 50
+    out = calibrate_from_pairs(records, fail_budget=0.05)
+    assert out["tau"] <= 0.70
+    assert out["rejected_fraction"] == pytest.approx(0.0)
+
+
+def calibrate_from_pairs(pairs, fail_budget):
+    """Adapter so the tests read as data rather than as fixtures."""
+    from recog.calibrate_tau import calibrate
+    return calibrate([{"iou": i, "admits_cell": a} for i, a in pairs],
+                     fail_budget=fail_budget)
