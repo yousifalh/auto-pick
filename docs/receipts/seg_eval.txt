@@ -11,26 +11,26 @@ Bay segmenter evaluation
 Per-class IoU (pooled over the validation split; NaN = class absent from both pred and truth over the whole split, not scored as 0):
   class              IoU   instances
   ----------------------------------
-  background      0.3619          53
-  cartridge       0.9551          37
-  bay             0.9046          19
-  electronics     0.9289          19
-  obstruction     0.6210          11
-  battery         0.7079          13
+  background      0.3425          54
+  cartridge       0.9000          54
+  bay             0.8942          19
+  electronics     0.8330          19
+  obstruction     0.5496          11
+  battery         0.7457          12
   ----------------------------------
-  selected mean IoU over ['bay', 'electronics', 'obstruction'] (instances={'bay': 19, 'electronics': 19, 'obstruction': 11}): 0.8181
-  note: background IoU (0.3619 on 53 crops) is STRUCTURAL, not a comparable failure - a crop is the union of the unit's OWN boxes, so background is only the thin leftover corners and gaps, a small region where IoU is naturally harsh. It is not evidence against the model.
-  note: cartridge (37 instances) and bay (19 instances) come from DISJOINT crop populations - sealed units carry a cartridge mask and no bay, open units carry a bay and no cartridge mask (see seg_dataset.py's module docstring). 0.9551 and 0.9046 side by side is not evidence the model handles a sealed and an open unit within the SAME image.
-  note: checkpoint selection is noise-limited - best.pt 0.8158 and last.pt 0.8140 differ by 0.0018 on 19/19/11 (bay/electronics/obstruction) val instances, and both ship.
+  selected mean IoU over ['bay', 'electronics', 'obstruction'] (instances={'bay': 19, 'electronics': 19, 'obstruction': 11}): 0.7589
+  note: background IoU (0.3425 on 54 crops) is STRUCTURAL, not a comparable failure - a crop is the union of the unit's OWN boxes, so background is only the thin leftover corners and gaps, a small region where IoU is naturally harsh. It is not evidence against the model.
+  note: cartridge (54 instances) and bay (19 instances) come from DISJOINT crop populations - sealed units carry a cartridge mask and no bay, open units carry a bay and no cartridge mask (see seg_dataset.py's module docstring). 0.9000 and 0.8942 side by side is not evidence the model handles a sealed and an open unit within the SAME image.
+  note: checkpoint selection is noise-limited - best.pt 0.7633 and last.pt 0.7587 differ by 0.0046 on 19/19/11 (bay/electronics/obstruction) val instances, and both ship.
 
 Boundary displacement, mm (mean distance from a predicted boundary pixel to
 the nearest ground-truth boundary pixel; the figure that chose a per-ROI
 segmenter over a 28x28 Mask R-CNN head, whose quantisation at this framing is 2.9 x 6.4 mm):
   class               mm     crops
   --------------------------------
-  bay              0.861        19
-  electronics      0.574        19
-  obstruction      1.396        11
+  bay              0.963        19
+  electronics      1.356        19
+  obstruction      2.006        11
   --------------------------------
   verdict: BELOW the mask-head quantisation figure - supports the architecture choice.
 
@@ -39,16 +39,16 @@ is not, the error that can put a cell on a PCB; conservative = the opposite,
 a lost cell, not a safety issue). Mean per crop and total over the split:
   class          opt mean   opt total   cons mean   cons total
   ------------------------------------------------------------
-  bay                60.1      3246.1        84.5       4560.5
-  electronics        20.7      1118.0        13.3        718.4
-  obstruction        20.6      1114.5        20.2       1093.0
+  bay                72.1      3894.9        62.7       3385.5
+  electronics        50.9      2749.2        21.7       1172.3
+  obstruction        19.2      1035.9        19.8       1070.7
   ------------------------------------------------------------
 
 Latency vs the FDR 10.4 50 ms end-to-end budget (fp16 batched inference):
    cartridges   total_ms  per_cart_ms  within_50ms
   ------------------------------------------------
-            1        8.5         8.54         True
-            2       12.6         6.28         True
-            4       15.0         3.74         True
-            8       20.1         2.51         True
+            1        8.3         8.31         True
+            2       12.6         6.31         True
+            4       17.0         4.25         True
+            8       19.5         2.43         True
   ------------------------------------------------

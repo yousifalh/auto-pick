@@ -573,6 +573,24 @@ close+open, largest-contour axis-aligned bounding rectangle, safety inset
 output is rasterised into a 1.5 mm/cell occupancy grid and cached on the
 persistent `Cartridge` entity.
 
+**Scope limit.** Green-channel isolation followed by an Otsu threshold
+is not a general placement-area method. It assumes a *light tray with a
+darker interior module* — the staging specified in PPR §5.3.2 and
+reproduced by the synthetic generator — and it does not hold on the
+black cartridges photographed in `recog/realtest/`. Measured on the 20
+hand-annotated cartridges in that set, the extractor returns **zero
+placeable area on 7 of 20** and a mean placeable fraction of 0.218 of
+the cartridge ROI (0.217 on the independent re-measurement in
+§13.2.1). A cartridge with zero placeable area is invisible to the
+packer, so those 7 are not degraded placements but absent ones. The
+failures are not detector misses — the boxes are hand-annotated and
+correct — but threshold failures downstream of them, so no amount of
+detector improvement removes them; the extractor emits a
+`RuntimeWarning` naming this scope limit on every such call. This
+measurement is the motivation for the segmentation work in §13.2(5),
+and it replaces the qualitative "the rectangle is a coarse
+approximation" argument that motivated that item in earlier drafts.
+
 ![Figure 2 — Placement-area extractor pipeline (schematic; algorithm is exercised end-to-end in `tests/test_placement_area.py`)](figures/fig2_extractor.png)
 
 ### 6.3 Bin-packing: FFDH
@@ -1290,6 +1308,26 @@ propagating into the planner's cartridge list. The secondary failure
 the next cycle; the number of retries per cell is bounded by
 `max_retries`.
 
+A third planner failure mode, **`placement_disagreement`**, is defined
+by the segmentation extractor of §13.2(5) and reads as zero on the
+figures above, because that extractor is not wired into the default
+configuration this benchmark runs. It fires when the two independent
+estimates of a cartridge's placement area — the segmenter's `bay`
+channel read directly, and the same area derived by subtracting the
+electronics module and any obstruction from the cartridge footprint —
+disagree by more than a calibrated IoU threshold τ, and it causes the
+planner to skip that cartridge for the cycle rather than pack against
+an area it cannot corroborate. Its subclass **`bad_detector_box`**
+separates a *perception* failure — a detector box whose centre does
+not land on cartridge material — from a cartridge that is genuinely
+full, which is normal operation and is deliberately not counted as a
+fault. The two are counted separately on the planner, and both are
+absorbed by the existing per-cartridge exception handler, so either
+costs one cartridge-cycle of throughput rather than stopping the
+loop. Neither has a measured rate: the τ behind the threshold is
+calibrated but, for the reasons given in §13.2.1, not yet
+informative, so no expected firing rate is quoted here.
+
 ### 10.7 Design ablations
 
 Three ablations probe whether the design choices recorded in the PPR
@@ -1482,7 +1520,9 @@ the segmentation placement-area design spec (§8), this item was a
 blocking prerequisite for item (5) below — feeding pixel-precise
 obstruction masks into the old shelf-cursor logic would have made
 packing worse than the rectangle it replaces. That block is now
-lifted and item (5) may be scheduled on its own merits.
+lifted, and item (5) was subsequently carried through to
+implementation and measurement — reported in §13.2.1, where the
+Δcells figure depends on this fix.
 
 Item (2) is retired rather than renumbered, so the numbering below
 is unchanged and existing cross-references to it remain valid.
@@ -1502,14 +1542,18 @@ and edge-of-frame cases the synthetic generator cannot reproduce. The
 set would serve as a held-out test corpus for the synth-to-real
 transfer measurement in (1) and as the empirical basis for the
 EDGE_CLIP and AREA_FLOOR failure-mode categories that read as zero
-on the current synthetic dataset (§10.6). (5) An instance-segmentation
-extension to the placement-area extractor: replace the axis-aligned
-bounding rectangle plus 5 px safety inset and inferred PCB mask
-(§6.2) with a pixel-precise placement mask predicted by a Mask
-R-CNN head, removing the 2-D rectangular approximation and letting
-the packer respect curved cartridge interiors and sub-pixel PCB
-exclusions natively; the packer-side prerequisite for this is now
-satisfied. (6) A closed-loop grasp-verification upgrade
+on the current synthetic dataset (§10.6). (5) A segmentation-driven
+replacement for the placement-area extractor: replace the
+axis-aligned bounding rectangle plus 5 px safety inset and inferred
+PCB mask (§6.2) with a pixel-precise placement mask, so the packer
+can respect real cartridge interiors and PCB exclusions natively.
+Unlike the other items in this list, (5) has been prototyped and
+measured rather than only proposed — the proposed architecture
+changed as a result, and the headline real-photograph result is
+negative. Both are reported in §13.2.1, which supersedes the
+one-sentence Mask R-CNN proposal earlier drafts carried here. The
+packer-side prerequisite is satisfied. (6) A closed-loop
+grasp-verification upgrade
 using a wrist force-torque sensor, which would let the executor
 report a pick failure within the pick phase rather than after a full
 transport cycle, shortening recovery by up to 400 ms per event.
@@ -1517,6 +1561,195 @@ transport cycle, shortening recovery by up to 400 ms per event.
 layouts — by generalising the occupancy grid to an arbitrary
 polygonal domain. Each programme is self-contained and could be
 pursued independently by a future student cohort.
+
+#### 13.2.1 Item (5): segmentation-driven placement-area extraction — measured status
+
+Item (5) was carried through design, implementation and measurement
+rather than left as a proposal. This subsection separates three
+things: what the data supports, what is bounded by sample size, and
+what is not demonstrated — the last including the claim that matters
+most, synthetic-to-real transfer. Receipts are
+`docs/receipts/seg_eval.txt`, `tau_calibration.txt` and
+`seg_ablation.txt`.
+
+**The motivation is now a measurement.** Earlier drafts justified
+this item on the grounds that a bounding rectangle is a coarse
+approximation of a cartridge interior — an argument, not a result.
+The replacement justification is §6.2's scope limit: the green-channel
+extractor returns zero placeable area on 7 of the 20 hand-annotated
+cartridges in `recog/realtest/`. Those cartridges are not packed
+badly; they are not packed at all.
+
+**The architecture changed, and the reason is resolution.** The
+proposal was a Mask R-CNN head on the existing backbone. It is now a
+detector followed by a *per-ROI semantic segmenter* (DeepLabv3 +
+MobileNetV3-Large, 256² crops, fp16). torchvision's
+`MaskRCNNPredictor` emits 28 × 28 per instance by default, upsampled
+to the instance box; at the generator's framing (1280 px across an
+800 mm layout, 0.625 mm/px) a PowerCore26800 cartridge occupies
+roughly 131 × 288 px, so one mask cell covers **2.9 × 6.4 mm**.
+Against an 18.3 mm cell diameter, the 6.4 mm axis is a third of a
+cell — and "does the last cell fit" is exactly the decision at stake.
+Measured mean boundary displacement of the per-ROI segmenter, against
+synthetic ground truth on the 54-crop validation split, is:
+
+| Class | Boundary displacement | Crops | Class IoU |
+|-------------|---------------:|------:|----------:|
+| bay         | 0.963 mm       | 19    | 0.894     |
+| electronics | 1.356 mm       | 19    | 0.833     |
+| obstruction | 2.006 mm       | 11    | 0.550     |
+
+The IoU column is pooled over the whole split; the checkpoint's own
+selection metric averages per crop instead and reads slightly
+differently (0.894 / 0.843 / 0.554, mean 0.7633). Both conventions
+appear below and neither is adjusted to match the other.
+
+All three sit below 2.9 mm, the *finer* of the two mask-head
+quantisation axes, so the architecture argument now rests on
+measurement rather than reasoning. Three qualifications keep it from
+being oversold. The margin is comfortable only on `bay` and
+`electronics`: `obstruction` clears the finer axis by a factor of 1.4
+and is simultaneously the weakest class in the set, on 11 instances.
+The mask-head resolution is a configurable trade rather than a hard
+ceiling, so the sound claim is not "Mask R-CNN cannot do this" but
+that operating on the crop sidesteps the trade — masks arrive at crop
+resolution, which is where the placement decision is made. And these
+are *synthetic* figures, measured in the domain the model trained in:
+evidence about the architecture, not about real photographs.
+
+**The latency budget holds, and batching is load-bearing.**
+Segmentation was moved out of Planning and into Recognition, on the
+grounds that it is perception and belongs in the perception budget.
+Planning then performs mask arithmetic only, measured at **2.0–2.2 ms
+per cartridge** against the tested 8 ms O3 budget of §10.4.
+Segmentation itself runs at **19.5 ms for 8 crops batched**, inside
+the 50 ms end-to-end PPR budget. Batching is a requirement rather
+than an optimisation: an independent re-measurement of the same eight
+crops on the same RTX 3060 gives 16.8 ms batched against **76.3 ms if
+they are segmented one at a time**, which breaches the end-to-end
+budget outright. A deployment that quietly loses batching — a frame
+with more cartridges than the batch was sized for, or a fallback to
+fp32 — breaks the budget rather than degrading gracefully.
+
+**Δcells is good, and it is the packing-level number.** Mask IoU is
+an intermediate; what the packer cares about is cells. Running the
+fixed packer of §6.3.1 on the ground-truth mask and on the predicted
+mask gives a mean difference of **+0.148 cells** over the 54
+validation crops, with **51 of 54 exact**, 3 losing cells to
+conservatism, and — the figure that matters for safety — **0 of 54 in
+the negative direction**. Positive means cells the ground truth would
+have placed and the prediction gave up; negative would mean cells
+packed where the truth forbids them, which is the direction that puts
+a cell on a PCB. None were observed. Two caveats: this is measured on
+the segmenter's own synthetic validation split, because Δcells needs
+a ground-truth label map and `recog/realtest/` has none; and it is
+gated on the §6.3.1 packer fix, since on the unfixed shelf-cursor
+logic the figure was dominated by shelf abandonment rather than by
+mask error.
+
+**The real-photograph result is negative, and it is the headline.**
+The criterion was set in advance, in the design spec: the heuristic's
+measured baseline is a mean placeable fraction of 0.218, and any
+segmenter that cannot beat that is not worth shipping. On the 20
+annotated cartridges (across 6 images) the segmenter scores **0.211
+against the heuristic's 0.217** on the same cartridges. **It does not
+beat the baseline it was built to replace.** This was checked for
+measurement artefact rather than assumed away: the raw `bay` channel
+is genuinely small on real photographs before any wall-inset erosion
+is applied — a real domain gap, not an arithmetic artefact in the
+comparison. One sub-result runs the other way: the segmenter cuts
+zero-placeable-area cartridges from 7 of 20 to **2 of 20**,
+substantially fixing the specific failure that motivated the work.
+But it gives back on the cartridges the heuristic already handled what
+it gains on the ones it did not, and the aggregate — the criterion
+agreed beforehand — does not improve.
+
+Two limits bound how far that reads, in both directions. It is **not**
+mask IoU against human polygons, which is what the design spec's
+headline framing called for:
+`recog/realtest/annotations/instances_default.json` carries 80 boxes
+and **zero segmentation polygons**, so no such score exists without
+re-annotating first. Reported instead is placeable area as a fraction
+of the cartridge ROI — the quantity the heuristic baseline was
+measured in, so the two compare without inventing a ground truth. And
+20 cartridges over 6 images is a smoke test: enough to withhold a
+positive transfer claim, not enough to establish a negative one as a
+property of the approach. No transfer figure is published here in
+either direction. The prerequisite is a 50–100 image polygon-annotated
+set, folding into item (4).
+
+**The τ calibration is a null result and is reported as one.** The
+arbitration compares the two independent estimates and rejects a
+cartridge whose estimates disagree by more than a threshold τ.
+Calibrating τ against a 5 % safety budget returned **τ = 0.7492 with
+a rejected fraction of 0.0** over the 19 validation cartridges for
+which a bay was predicted. That number should not be quoted as a
+calibrated safety threshold, for a reason stronger than sample size:
+**not one of the 19 cartridges ever admitted a cell into the
+disputed region, at any threshold**. The safety budget therefore never
+bound, and the sweep returned the smallest candidate it was offered —
+which is simply the lowest IoU this split happened to contain. It is a
+lower bound on where an unsafe boundary might sit, not a boundary
+located by trading safety against throughput, and it is evidence
+neither that IoU below it is unsafe nor that IoU above it is safe.
+Compounding this, every optimistic error observed was well under one
+cell's footprint — the largest was 815 px² against a cell's
+3045 px² at this framing, 27 % — so every record in the split fails
+on *area alone*, and the morphological cell-admission test, which
+exists precisely because an areal test is inadequate, is never
+exercised by this data. Finally, at n = 19 a single admitting
+cartridge would already breach a 5 % budget, making the procedure in
+practice a zero-tolerance test rather than the tolerance test it is
+specified as. The honest conclusion is **"a larger and harder
+validation set is needed"**, not "τ = 0.7492". Consistent with that,
+the extractor still defaults to the pre-calibration τ = 0.85 and does
+not read the calibrated value; given that the calibration is
+uninformative, 0.85 is as defensible a choice, but the disconnect is
+recorded rather than left for a reader to discover.
+
+**One safety defect was found and fixed during integration.** The
+routine selecting a cartridge's foreground component within a crop
+originally fell back to the *largest* foreground blob when the
+detector box's centre landed on background, so a badly placed box
+could select a **neighbouring cartridge's** blob and return a
+placement area computed for the wrong physical object. What makes it
+worth recording is that the failure would have been undetectable
+downstream: the arbitration IoU could not catch it, because both
+estimates would describe the same wrong blob consistently and would
+therefore agree. The fallback had been justified as stopping one bad
+box from voiding a cartridge; that reasoning is backwards, since
+voiding costs one cycle and the planner already retries next frame,
+while guessing costs a misplaced lithium cell. It now returns empty,
+and a distinct `BadDetectorBox` exception separates a perception
+failure from a genuinely full cartridge (§10.6).
+
+**A methodological note, in the spirit of §6.3.1.** The arbitration
+was near-vacuous when first measured. The synthetic bay proxy tiled
+the cartridge's whole top face including its wall tops, leaving no
+`cartridge` pixels on an open unit; the derived estimate then reduced
+algebraically to the direct one, and the two "independent" estimates
+agreed at **IoU mean 0.977, minimum 0.961, never once below 0.95**.
+The gate could not fire — and, the dangerous part, its silence read as
+corroboration rather than as an absent measurement. Insetting both by
+the CAD-measured wall thickness widened the spread **3.7×**. The
+correction was not free: validation mean IoU fell 0.8158 → 0.7633,
+concentrated in the two classes the inset shrank (electronics
+0.923 → 0.843, obstruction 0.625 → 0.554) while `bay` barely moved
+(0.899 → 0.894). The lower figure is the honest one, and every number
+above comes from the corrected pipeline. The lesson matches §6.3.1's:
+two estimates that agree perfectly are likelier to be one estimate
+computed twice than independent confirmation.
+
+**Status.** Supported by measurement: the resolution argument for the
+architecture, the latency budget including the necessity of batching,
+and Δcells with no observations in the damage direction. Bounded by
+sample size: τ, on 19 cartridges none of which exercised the
+criterion. Not demonstrated: synthetic-to-real transfer, which governs
+whether item (5) ships. Item (5) is therefore a completed prototype
+with a negative headline result, and the next step is item (4)'s
+annotated real corpus rather than further model iteration — there is
+currently no real-image metric against which iteration could be
+scored.
 
 ### 13.3 Critical reflection
 
