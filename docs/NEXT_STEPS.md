@@ -96,20 +96,40 @@ erosion (to 2 mm). None removes both negatives — `scene_00117` is untouched
 across the entire sweep — while costing up to 30 % of the ground truth's
 placeable cells. No code changed.
 
-### 4. τ is not meaningfully calibrated
+### 4. τ cannot be calibrated on synthetic data — and now we know why
 
-τ came out at 0.7492 with a rejected fraction of 0.0 — but **no cartridge ever
-admitted a cell at any threshold**, so the safety budget never bound and τ is
-simply the sample's lowest observed IoU. `plan/placement_area.py` still
-defaults to 0.85 and nothing reads the calibrated value. That disconnect is
-disclosed in FDR §13.2.1 and is deliberate: 0.85 is the conservative
-direction, and calibrating properly needs more data.
+Retrained on 502 scenes / 841 crops (2.3x the original), with the validation
+split's key classes nearly doubled to 37 `bay` / 37 `electronics` / 18
+`obstruction`. τ came out at **0.6260**, accepting 36 of 36 cartridges.
 
-### 5. The validation split is small
+**It is still uninformative, and scaling did not fix it.** Not one of the 36
+accepted cartridges admitted a cell at any observed IoU, so the safety budget
+never bound and τ remains the sample's lowest observed value rather than a
+threshold found by trading safety against throughput.
 
-19 `bay`, 19 `electronics`, 11 `obstruction` instances. Every per-class number
-for the three classes checkpoint selection depends on rests on double-digit
-counts at best.
+**The diagnosis has moved on, though, and this is the useful part.** The
+largest optimistic error observed was 1579 px against a cell footprint of
+3045 px² — **51.9 % of one cell's area**. Every record in the split fails the
+admission test *on area alone*. The morphological-versus-areal distinction
+that `admits_a_cell` exists for (Task 2's blob-versus-rim demonstration) is
+never exercised, because no crop's error comes close enough to a cell's
+footprint for shape to be the deciding factor.
+
+So the blocker is **not sample size**. A validation set with *larger errors*
+would be a stronger test of τ than merely a larger one — which means either
+real photographs (where the errors are demonstrably bigger) or deliberately
+harder synthetic scenes. More of the same renders will not get there.
+
+`plan/placement_area.py` still defaults to 0.85 and nothing reads the
+calibrated value. That remains the right call: wiring in a number this split
+cannot justify would make it look calibrated without being so.
+
+### 5. The validation split is small — improved, still modest
+
+Now 37 `bay`, 37 `electronics`, 18 `obstruction` instances over 126 validation
+crops (was 19/19/11 over 54). Better, and every headline number improved with
+it — but `obstruction` in particular is still an 18-instance number and should
+be read as such.
 
 ---
 
