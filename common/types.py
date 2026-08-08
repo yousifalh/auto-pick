@@ -123,6 +123,17 @@ class Snapshot:
     detections: list[Detection] = field(default_factory=list)
     image_shape: tuple[int, int] = (1080, 1920)  # (H, W)
     timestamp_ns: int = 0
+    # Detection index -> (H, W) int8 label map over that cartridge's ROI,
+    # using recog.seg_dataset.SEG_CHANNELS.
+    #
+    # Segmentation lives in Recognition rather than Planning because a
+    # DeepLabv3 forward pass is ~12.6 ms for one cartridge, against FDR
+    # O3's tested 8 ms per-cartridge planning budget. The masks have to
+    # cross the module boundary somehow, and this type is the boundary.
+    #
+    # Optional and defaulted: every existing producer and consumer stays
+    # valid, and the heuristic extractor ignores it entirely.
+    cartridge_masks: dict[int, Any] = field(default_factory=dict)
 
     def of(self, label: ClassLabel) -> list[Detection]:
         return [d for d in self.detections if d.label is label]
@@ -132,6 +143,12 @@ class Snapshot:
             "detections": [d.to_dict() for d in self.detections],
             "image_shape": list(self.image_shape),
             "timestamp_ns": int(self.timestamp_ns),
+            # Shape only. to_dict feeds logging and regression fixtures;
+            # embedding a full label map per cartridge would make every
+            # log line enormous and every fixture unreadable.
+            "cartridge_masks": {
+                str(k): list(v.shape) for k, v in self.cartridge_masks.items()
+            },
         }
 
 

@@ -95,6 +95,40 @@ def test_snapshot_serialisation():
     assert len(d["detections"]) == 1
 
 
+def test_snapshot_carries_optional_cartridge_masks():
+    import numpy as np
+
+    from common.types import Snapshot
+
+    s = Snapshot()
+    assert s.cartridge_masks == {}, "must default to empty, not None"
+
+    s.cartridge_masks[0] = np.zeros((8, 8), np.int8)
+    assert s.cartridge_masks[0].shape == (8, 8)
+
+
+def test_snapshot_to_dict_summarises_masks_rather_than_embedding_them():
+    """to_dict feeds logging and regression fixtures. Embedding a
+    label map per cartridge would make every log line enormous."""
+    import numpy as np
+
+    from common.types import Snapshot
+
+    s = Snapshot()
+    s.cartridge_masks[3] = np.zeros((16, 32), np.int8)
+    d = s.to_dict()
+    assert d["cartridge_masks"] == {"3": [16, 32]}
+
+
+def test_existing_snapshot_construction_is_unaffected():
+    from common.types import BBox, ClassLabel, Detection, Snapshot
+
+    s = Snapshot(detections=[
+        Detection(BBox(0, 0, 4, 4), ClassLabel.BATTERY, 0.9)])
+    assert len(s.of(ClassLabel.BATTERY)) == 1
+    assert s.to_dict()["detections"][0]["label"] == "battery"
+
+
 # -------------------------- Robot types -----------------------------------
 
 def test_pick_place_pose_to_dict():
