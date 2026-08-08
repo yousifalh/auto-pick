@@ -181,3 +181,50 @@ def test_channel_constants_match_the_segmenter_contract():
         "bay": CH_BAY, "electronics": CH_ELECTRONICS,
         "obstruction": CH_OBSTRUCTION, "battery": CH_BATTERY,
     }
+
+
+def test_a_cell_sized_blob_admits_a_cell():
+    from plan.arbitration import admits_a_cell
+
+    m = np.zeros((80, 80), bool)
+    m[10:40, 10:24] = True              # 30 x 14, a cell is 29 x 13
+    assert admits_a_cell(m, cell_w_px=13, cell_h_px=29)
+
+
+def test_a_boundary_rim_of_equal_area_does_not():
+    """The whole point of a morphological criterion: same area, one is
+    a misplacement and the other is noise.
+
+    The rim needs a canvas wide enough to hold `blob.sum()` pixels in a
+    single row - the brief's original 80-wide canvas silently clips the
+    rim slice to 75 pixels (numpy does not raise on an out-of-range
+    stop index), so `blob.sum() == rim.sum()` would compare 420 to 75
+    and fail before the interesting assertions ever ran. Widening only
+    the rim's canvas keeps the "identical area, one pixel tall" fixture
+    honest without changing the blob.
+    """
+    from plan.arbitration import admits_a_cell
+
+    blob = np.zeros((80, 80), bool)
+    blob[10:40, 10:24] = True
+    area = int(blob.sum())
+    rim = np.zeros((80, area + 10), bool)
+    rim[5, 5:5 + area] = True
+
+    assert blob.sum() == rim.sum()
+    assert admits_a_cell(blob, 13, 29)
+    assert not admits_a_cell(rim, 13, 29)
+
+
+def test_admits_a_cell_tries_both_orientations():
+    from plan.arbitration import admits_a_cell
+
+    m = np.zeros((80, 80), bool)
+    m[10:24, 10:40] = True              # 14 tall, 30 wide - rotated
+    assert admits_a_cell(m, cell_w_px=13, cell_h_px=29)
+
+
+def test_empty_region_admits_nothing():
+    from plan.arbitration import admits_a_cell
+
+    assert not admits_a_cell(np.zeros((40, 40), bool), 13, 29)

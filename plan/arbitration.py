@@ -137,3 +137,34 @@ def arbitrate(label_map: np.ndarray,
     direct = direct_placement(label_map)
     derived = derived_placement(label_map, wall_inset_px)
     return direct & derived, mask_iou(direct, derived)
+
+
+def admits_a_cell(region: np.ndarray, cell_w_px: int,
+                  cell_h_px: int) -> bool:
+    """Can ``region`` contain a cell footprint at any packer orientation?
+
+    This is the criterion τ is calibrated against, and it is
+    MORPHOLOGICAL rather than areal on purpose. An earlier draft of the
+    design spec tested whether the optimistic-error AREA exceeded one
+    cell footprint. That is the wrong question: 1190 mm2 spread along a
+    boundary as a one-pixel rim cannot hold a cell, while the same area
+    in one blob is a misplacement waiting to happen.
+
+    Eroding by the cell's own footprint answers the right question
+    directly - a non-empty result means some position exists where the
+    whole cell fits inside the error.
+    """
+    if not region.any():
+        return False
+
+    src = region.astype(np.uint8)
+    for w, h in ((int(cell_w_px), int(cell_h_px)),
+                 (int(cell_h_px), int(cell_w_px))):
+        if w < 1 or h < 1:
+            continue
+        if w > region.shape[1] or h > region.shape[0]:
+            continue
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (w, h))
+        if cv2.erode(src, kernel).any():
+            return True
+    return False
