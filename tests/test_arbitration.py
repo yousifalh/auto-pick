@@ -41,6 +41,20 @@ def test_centre_component_spans_battery_so_a_cell_cannot_split_it():
     assert keep[15, 15] and keep[15, 45], "region was severed by the cell"
 
 
+def test_centre_component_returns_empty_when_the_centre_is_background():
+    """A badly-placed detector box: the crop centre lands on background,
+    but a large blob sits elsewhere in the frame - most likely a
+    neighbour's cartridge. The old behaviour fell back to the largest
+    component and silently handed back that neighbour's blob; this
+    must instead come back empty so the caller skips the cartridge
+    rather than seating a cell in the wrong physical bay. Fails against
+    the "fall back to the largest component" behaviour this replaced."""
+    m = np.zeros((60, 60), np.int8)
+    m[0:20, 0:20] = CH_BAY   # large, but nowhere near the (30, 30) centre
+    keep = centre_component(m)
+    assert not keep.any(), "fell back to a neighbour's blob instead of empty"
+
+
 def test_direct_placement_is_exactly_the_bay_channel():
     m = _cartridge()
     assert np.array_equal(direct_placement(m), m == CH_BAY)
@@ -137,6 +151,22 @@ def test_empty_estimates_give_zero_iou_not_a_crash():
     m = np.zeros((20, 20), np.int8)
     safe, iou = arbitrate(m, wall_inset_px=0)
     assert not safe.any()
+    assert iou == 0.0
+
+
+def test_arbitrate_yields_empty_p_safe_when_the_box_centres_on_a_neighbour():
+    """`direct_placement` is not scoped by the crop centre, so if
+    `centre_component` guessed a neighbour's blob (the old fallback),
+    that guess could line up with `direct` well enough to produce a
+    non-empty, plausible P_safe for the wrong physical cartridge - not
+    detectably wrong downstream, since both estimates would then agree
+    on the same wrong blob. Confirms the empty-centre-component fix
+    closes that hole all the way through `arbitrate`, not just in
+    `centre_component` in isolation."""
+    m = np.zeros((60, 60), np.int8)
+    m[0:20, 0:20] = CH_BAY        # a neighbour's bay, in frame but off-centre
+    safe, iou = arbitrate(m, wall_inset_px=0)
+    assert not safe.any(), "P_safe leaked a neighbour's placement area"
     assert iou == 0.0
 
 

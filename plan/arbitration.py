@@ -16,6 +16,7 @@ FDR O3 caps at 8 ms per cartridge.
 """
 from __future__ import annotations
 
+import logging
 from typing import Tuple
 
 import numpy as np
@@ -24,6 +25,8 @@ try:
     import cv2
 except Exception as exc:                # pragma: no cover - hard dep
     raise ImportError("opencv-python is required") from exc
+
+_LOG = logging.getLogger(__name__)
 
 
 # Fixed order, matching recog.seg_dataset.SEG_CHANNELS. A test in
@@ -46,6 +49,22 @@ def centre_component(label_map: np.ndarray) -> np.ndarray:
     Connectivity spans ALL non-background channels, battery included. A
     cell lying across a bay would otherwise sever the region and leave
     the centre component covering half the cartridge.
+
+    If the crop centre itself lands on background - a badly-placed
+    detector box - this returns an EMPTY mask. It does NOT fall back to
+    the largest (or any other) foreground component. That fallback was
+    tried and is wrong: this robot seats lithium cells, and guessing
+    which blob is "ours" risks silently handing back a *neighbouring*
+    cartridge's placement area under this cartridge's identity.
+    ``direct_placement`` is not scoped by the crop centre either, so a
+    guessed component can line up with it well enough to produce a
+    non-empty, plausible-looking ``P_safe`` for the wrong physical
+    object - and the arbitration IoU will not catch it, because both
+    estimates would then be describing the same wrong blob consistently.
+    An empty mask instead propagates to an empty ``P_derived`` and hence
+    an empty ``P_safe``; the caller skips the cartridge and retries next
+    frame. That is a lost cycle, not a misplaced cell - the asymmetry
+    this whole module is built on. Do not restore the guess.
     """
     fg = (label_map != CH_BACKGROUND).astype(np.uint8)
     if not fg.any():
@@ -56,13 +75,19 @@ def centre_component(label_map: np.ndarray) -> np.ndarray:
     centre = comps[h // 2, w // 2]
     if centre == 0:
         # The crop centre landed on background - a badly-placed box.
-        # Fall back to the largest component rather than returning
-        # nothing, so one bad box does not silently void the cartridge.
-        counts = np.bincount(comps.ravel())
-        counts[0] = 0
-        if counts.max() == 0:
-            return np.zeros_like(fg, dtype=bool)
-        centre = int(counts.argmax())
+        # Logged (not raised: a new exception type here would just move
+        # the guess-vs-skip decision to the caller without adding
+        # information) so a monitoring layer can count how often the
+        # detector hands us bad boxes, distinct from ordinary empty
+        # frames where this branch never fires. A future task that
+        # wants the caller to branch on this programmatically will need
+        # a signature change here (e.g. a reason alongside the mask) -
+        # this log line is the hook for that.
+        _LOG.warning(
+            "centre_component: crop centre (%d, %d) is background "
+            "(bad detector box?) - returning an empty mask instead of "
+            "guessing at a neighbouring blob", h // 2, w // 2)
+        return np.zeros_like(fg, dtype=bool)
     return comps == centre
 
 
