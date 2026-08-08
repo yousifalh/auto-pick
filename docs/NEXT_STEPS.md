@@ -53,12 +53,48 @@ only — no segmentation polygons**. That is why the comparison above is a
 placeable-fraction proxy rather than an IoU against human masks. No mask-level
 real-world claim can be made until this exists.
 
-### 3. Two crops in the damage direction
+### 3. Two crops in the damage direction — INVESTIGATED, severity negligible
 
-Δcells is mean **+0.037** over 54 crops, with **2 of 54 negative** — the
-predicted placement mask would let the packer site a cell where the ground
-truth says it cannot fit. Under investigation as of this writing; see
-`.superpowers/sdd/2026-08-06-D-integration-arbitration/damage-case-investigation.md`.
+Δcells is mean **+0.037** over 54 crops, with **2 of 54 negative**. Negative
+nominally means the prediction packed cells the ground truth forbids.
+
+Investigated in full (see
+`.superpowers/sdd/2026-08-06-D-integration-arbitration/damage-case-investigation.md`).
+The conclusion reverses the initial reading:
+
+- **The "region too thin to admit a cell" explanation is wrong.**
+  `admits_a_cell` is `True` for the ground truth at every pipeline stage in
+  both crops.
+- **The two crops fail for two unrelated reasons.** `scene_00106` (−3) is a
+  *packer* artefact: FFDH's shelf algorithm is blocked by the union of six
+  small scattered ground-truth obstructions, which the segmenter mostly
+  recall-misses, leaving the prediction a cleaner mask the packer can fill.
+  `scene_00117` (−1) is a ~0.6 mm, one-pixel boundary-quantisation
+  coincidence at the electronics/bay edge.
+- **Realised severity is negligible.** Mapping the placed-cell rectangles back
+  to pixel space: **0 of 6 predicted placements across both crops overlap
+  ground-truth electronics, obstruction or battery.** `scene_00106`'s three
+  cells are entirely safe by the ground truth's own reckoning;
+  `scene_00117` has a ~0.5 mm wall-rim graze on two of three.
+- **Neither is an arbitration bug.** The arithmetic preserves admissibility
+  faithfully in every case checked.
+
+**The generalisable lesson: a negative Δcells is not the same as a damage
+event.** The sign convention treats the ground truth as a safety oracle, but
+here the ground truth is *pessimistic* — the packer under-fills it because of
+its own shelf behaviour, not because the space is unsafe.
+
+**The τ gate cannot catch this class of failure, structurally.** Both crops
+pass at IoU 0.91–0.94, comfortably above both τ = 0.7492 and τ = 0.85 — because
+the gate measures a single prediction's *self-consistency*, not its
+*correctness against truth*. Worth remembering before relying on it for
+anything it was not designed to do.
+
+**Mitigations were tested and rejected on cost-benefit**: a larger wall inset
+(to 7.5 mm), requiring `P_safe` itself to admit a cell, and extra `P_safe`
+erosion (to 2 mm). None removes both negatives — `scene_00117` is untouched
+across the entire sweep — while costing up to 30 % of the ground truth's
+placeable cells. No code changed.
 
 ### 4. τ is not meaningfully calibrated
 
