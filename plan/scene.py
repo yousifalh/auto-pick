@@ -77,6 +77,14 @@ class Cartridge:
     id: int
     bbox: BBox
     confidence: float
+    # Index into the originating Snapshot.detections this cartridge came
+    # from. Links back to Snapshot.cartridge_masks, which is keyed the
+    # same way (recog.inference.attach_cartridge_masks) - NOT by position
+    # within the cartridge-only subset, which would misalign every mask
+    # the moment a battery detection precedes a cartridge in the list.
+    # -1 means "no detection this frame" (matches nothing in
+    # cartridge_masks, which is exactly the safe default).
+    detection_index: int = -1
     # PCB-region binary mask in full-image coordinates.
     pcb_mask: Optional[np.ndarray] = None
     # Axis-aligned placeable rectangle after insetting + PCB subtraction.
@@ -191,10 +199,18 @@ class EnvironmentModel:
     def _match_or_insert_cartridges(
         self, snapshot: Snapshot, iou_match_threshold: float,
     ) -> None:
-        new_dets = snapshot.of(ClassLabel.CARTRIDGE)
+        # Track each detection's index into the FULL snapshot.detections
+        # list (not its position within this cartridge-only subset): that
+        # is the convention recog.inference.attach_cartridge_masks uses to
+        # key Snapshot.cartridge_masks, and the two must agree or every
+        # mask lookup in _ensure_placement_areas misaligns.
+        new_dets = [
+            (i, det) for i, det in enumerate(snapshot.detections)
+            if det.label is ClassLabel.CARTRIDGE
+        ]
         matched: set[int] = set()
 
-        for det in new_dets:
+        for det_idx, det in new_dets:
             best_id, best_iou = -1, 0.0
             for cid, ctg in self.cartridges.items():
                 if cid in matched:
@@ -207,12 +223,14 @@ class EnvironmentModel:
                 # Existing cartridge — update geometry, keep components.
                 self.cartridges[best_id].bbox = det.bbox
                 self.cartridges[best_id].confidence = det.confidence
+                self.cartridges[best_id].detection_index = det_idx
                 matched.add(best_id)
             else:
                 # New cartridge — assign a fresh ID.
                 new_id = self._next_cartridge_id
                 self.cartridges[new_id] = Cartridge(
                     id=new_id, bbox=det.bbox, confidence=det.confidence,
+                    detection_index=det_idx,
                 )
                 matched.add(new_id)
                 self._next_cartridge_id += 1

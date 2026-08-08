@@ -14,6 +14,13 @@ from plan.placement_area import PlacementAreaExtractor
 from plan.planner import Planner, PlannerConfig
 from plan.scene import CellState, WorkspaceBounds
 
+# _make_planner() below constructs the heuristic (green-channel)
+# extractor deliberately, to exercise the planner's cycle end-to-end
+# without a torch dependency; its scope-limit warning (spec 1.1) is
+# expected here, not a regression to chase.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:HeuristicPlacementAreaExtractor assumes:RuntimeWarning")
+
 
 def _synth_image(H=600, W=800) -> np.ndarray:
     """A large green cartridge with a central PCB — big enough that the
@@ -143,3 +150,65 @@ def test_empty_snapshot_produces_empty_queue():
     planner = _make_planner()
     empty = Snapshot(detections=[])
     assert planner.cycle(empty, _synth_image()) == []
+
+
+def test_bad_detector_box_and_disagreement_are_counted_separately():
+    """_ensure_placement_areas must not let a perception failure
+    (BadDetectorBox) collapse into the same observable signal as an
+    ordinary low-confidence disagreement - or vice versa."""
+    from plan.placement_area import BadDetectorBox, PlacementDisagreement
+
+    class _FlakyExtractor:
+        def __init__(self):
+            self.calls = 0
+
+        def extract(self, image_rgb, cartridge_bbox, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise BadDetectorBox("bad box")
+            raise PlacementDisagreement("disagree")
+
+    ws = WorkspaceBounds(-100, 100, -100, 100)
+    planner = Planner(PlannerConfig(), _FlakyExtractor(), ws)
+
+    snap = Snapshot(detections=[
+        Detection(BBox(0, 0, 50, 50), ClassLabel.CARTRIDGE, 0.9)])
+    img = np.zeros((100, 100, 3), np.uint8)
+
+    planner.cycle(snap, img)
+    assert planner.bad_detector_box_count == 1
+    assert planner.placement_disagreement_count == 0
+
+    # Same cartridge (same bbox -> IoU-matched, same twin entity), still
+    # unplanned, so this retries and hits the extractor's second branch.
+    planner.cycle(snap, img)
+    assert planner.bad_detector_box_count == 1
+    assert planner.placement_disagreement_count == 1
+
+
+def test_label_map_is_passed_by_detection_index_not_snapshot_order():
+    """A battery detection ahead of the cartridge in snapshot.detections
+    must not shift which mask the extractor receives - cartridge_masks
+    is keyed by position in the FULL detections list (Plan D Task 5),
+    and Cartridge.detection_index has to agree."""
+    class _SpyExtractor:
+        def __init__(self):
+            self.received = "not called"
+
+        def extract(self, image_rgb, cartridge_bbox, **kwargs):
+            self.received = kwargs.get("label_map")
+            raise RuntimeError("stop after capturing kwargs")
+
+    ws = WorkspaceBounds(-100, 100, -100, 100)
+    spy = _SpyExtractor()
+    planner = Planner(PlannerConfig(), spy, ws)
+
+    the_mask = np.full((5, 5), 7, np.int8)
+    snap = Snapshot(detections=[
+        Detection(BBox(0, 0, 10, 10), ClassLabel.BATTERY, 0.9),
+        Detection(BBox(20, 20, 60, 60), ClassLabel.CARTRIDGE, 0.9),
+    ])
+    snap.cartridge_masks[1] = the_mask
+
+    planner.cycle(snap, np.zeros((100, 100, 3), np.uint8))
+    assert spy.received is the_mask

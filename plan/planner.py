@@ -26,7 +26,11 @@ import numpy as np
 
 from common.types import PickPlacePose, Snapshot, WorkspacePoint
 from plan.bin_packing import Item, PackResult, first_fit_decreasing
-from plan.placement_area import PlacementAreaExtractor
+from plan.placement_area import (
+    BadDetectorBox,
+    PlacementAreaExtractor,
+    PlacementDisagreement,
+)
 from plan.scene import (
     Battery,
     Cartridge,
@@ -84,6 +88,19 @@ class Planner:
         self.cfg = planner_cfg
         self.extractor = placement_extractor
         self.env = EnvironmentModel(workspace=workspace)
+        # Observability counters for _ensure_placement_areas. A blanket
+        # `except Exception: continue` already existed and already meant
+        # "skip this cartridge, retry next frame" - that behaviour is
+        # unchanged. What changes is that PlacementDisagreement (the
+        # estimates disagree about a real cartridge) and its more severe
+        # subclass BadDetectorBox (a misaligned detector box - a
+        # perception failure) no longer fire invisibly: a safety
+        # interlock that fires invisibly is not a safety interlock, and
+        # if BadDetectorBox climbs relative to PlacementDisagreement it
+        # means the detector is drifting, not that cartridges are
+        # suddenly all full.
+        self.placement_disagreement_count = 0
+        self.bad_detector_box_count = 0
 
     # ---- main cycle -----------------------------------------------------
 
@@ -96,7 +113,7 @@ class Planner:
         self.env.update_from_snapshot(snapshot)
 
         if image_rgb is not None:
-            self._ensure_placement_areas(image_rgb)
+            self._ensure_placement_areas(image_rgb, snapshot)
 
         queue: List[PickPlacePose] = []
         available: List[Battery] = list(self.env.available_batteries())
@@ -118,15 +135,48 @@ class Planner:
 
     # ---- placement-area extraction --------------------------------------
 
-    def _ensure_placement_areas(self, image_rgb: np.ndarray) -> None:
-        """Fill in the placement rectangle / occupancy for new cartridges."""
+    def _ensure_placement_areas(
+        self, image_rgb: np.ndarray, snapshot: Optional[Snapshot] = None,
+    ) -> None:
+        """Fill in the placement rectangle / occupancy for new cartridges.
+
+        When ``snapshot`` carries a label map for a cartridge
+        (``Snapshot.cartridge_masks``, keyed by ``detection_index``), it is
+        passed through to the extractor. Extractors that don't accept
+        ``label_map`` (the heuristic path) simply never receive the kwarg.
+        """
         for ctg in self.env.cartridges.values():
             if ctg.placeable_rectangle is not None:
                 continue
             try:
-                pa = self.extractor.extract(image_rgb, ctg.bbox)
+                kwargs = {}
+                if snapshot is not None and ctg.detection_index in \
+                        snapshot.cartridge_masks:
+                    kwargs["label_map"] = \
+                        snapshot.cartridge_masks[ctg.detection_index]
+                pa = self.extractor.extract(image_rgb, ctg.bbox, **kwargs)
+            except BadDetectorBox:
+                # A misaligned detector box - a PERCEPTION failure, not
+                # an empty cartridge. Counted separately from ordinary
+                # disagreements so a systematically drifting detector
+                # is visible as itself rather than reading as "every
+                # cartridge is full". Still skip-and-retry-next-frame:
+                # the same exception may well be transient.
+                self.bad_detector_box_count += 1
+                continue
+            except PlacementDisagreement:
+                # The two placement estimates disagree beyond tau on a
+                # real cartridge. Rate is observable via the counter -
+                # a safety interlock that fires invisibly is not a
+                # safety interlock.
+                self.placement_disagreement_count += 1
+                continue
             except Exception:
                 # Leave unplanned this cycle — it'll retry next frame.
+                # This also catches the ordinary "no placeable area"
+                # RuntimeError a genuinely full cartridge raises - that
+                # is a normal, expected state and is deliberately NOT
+                # counted alongside the two cases above.
                 continue
             ctg.placeable_rectangle = pa.rectangle
             ctg.occupancy = pa.occupancy

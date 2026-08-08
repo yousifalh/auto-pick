@@ -143,6 +143,21 @@ def test_available_batteries_filters_assigned():
     assert avail[0].id != env.batteries[0].id
 
 
+def test_cartridge_detection_index_matches_full_detections_list_position():
+    """Snapshot.cartridge_masks (Plan D Task 5) is keyed by position in
+    snapshot.detections, not by position within the cartridge-only
+    subset - so Cartridge.detection_index must track the former, or
+    every mask lookup in the planner misaligns the moment a battery
+    detection precedes a cartridge in the list."""
+    env = EnvironmentModel(workspace=_ws())
+    env.update_from_snapshot(_snap([
+        Detection(BBox(0, 0, 10, 10), ClassLabel.BATTERY, 0.9),
+        Detection(BBox(100, 100, 150, 150), ClassLabel.CARTRIDGE, 0.9),
+    ]))
+    cid = next(iter(env.cartridges))
+    assert env.cartridges[cid].detection_index == 1
+
+
 def test_summary_shape():
     env = EnvironmentModel(workspace=_ws())
     env.update_from_snapshot(_snap([
