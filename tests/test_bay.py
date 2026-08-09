@@ -7,10 +7,31 @@ import os
 
 import pytest
 
-from recog.synth3d.bay import case_wall_from_bounds, module_bay_from_bounds
+from recog.synth3d.bay import (case_wall_from_bounds, module_bay_from_bounds,
+                                needs_flip)
 
 ASSETS = os.path.join(os.path.dirname(__file__), "..",
                       "recog", "synth3d", "assets")
+
+
+def test_needs_flip_is_false_when_lid_sits_above_the_case():
+    # Right-side-up: case centred at 5.55 (span 0..11.1), lid at 16.65
+    # (span 11.1..22.2) - the lid is above the case, no flip needed.
+    assert needs_flip(case_centroid_z=5.55, lid_centroid_z=16.65) is False
+
+
+def test_needs_flip_is_true_when_case_sits_above_the_lid():
+    # Inverted: mirroring 0..11.1 about the assembly mid-plane (11.1)
+    # sends the case to 11.1..22.2 (centroid 16.65) while the lid stays
+    # at 0..11.1 (centroid 5.55) - exactly task-3c's measured case.
+    assert needs_flip(case_centroid_z=16.65, lid_centroid_z=5.55) is True
+
+
+def test_needs_flip_ties_toward_flip():
+    # Degenerate/adjacent-not-yet-separated centroids: treat as inverted
+    # rather than silently trusting an ambiguous "already correct" read -
+    # this function only ever gets called because something looked wrong.
+    assert needs_flip(case_centroid_z=10.0, lid_centroid_z=10.0) is True
 
 
 def test_module_bay_picks_the_largest_gap_side():

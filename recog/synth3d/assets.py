@@ -23,6 +23,7 @@ from typing import Dict, List, Optional, Tuple
 import bpy
 from mathutils import Matrix, Vector
 
+from .bay import needs_flip
 from .catalog import classify_case_parts, load_catalog, role_of
 from .config import Variant
 
@@ -141,6 +142,56 @@ def lay_flat(objects):
         return
     R = Matrix.Rotation(math.radians(90), 4, "X" if axis == 1 else "Y")
     pivot = (lo + hi) / 2
+    M = Matrix.Translation(pivot) @ R @ Matrix.Translation(-pivot)
+    for o in objects:
+        o.matrix_world = M @ o.matrix_world
+    bpy.context.view_layer.update()
+
+
+def flip_if_inverted(objects):
+    """Correct an upside-down import: after `lay_flat` has picked WHICH
+    axis is vertical, this decides WHICH END of that axis is up - a
+    question `lay_flat` has no way to answer (see its docstring; it only
+    compares extents, never orientation).
+
+    Task-3c: Blender's glTF importer maps the source (x, y, z) to
+    (x, -z, y). For this CAD the raw file's up-axis is Y and the cavity
+    opens toward -Y, so -Y lands on -Z - the assembly imports with its
+    tray facing the ground. A top-down camera then sees the shell's own
+    solid, featureless outer underside: exactly the "solid closed box"
+    symptom three prior rounds chased into the split/material/geometry
+    layer, when the true fault was orientation, decided nowhere.
+
+    Detects it the same way `bay.needs_flip` documents: the lid
+    (`case_lid`) must sit ABOVE the shell (`case` - both split pieces,
+    shell and liner, since either reliably indicates which side the case
+    body is on). A no-op when `objects` has no `case` or no `case_lid`
+    (e.g. the `cells_only` variant's template has neither) - nothing to
+    orient relative to.
+
+    Applies the SAME pivot-conjugated whole-group rotation `lay_flat`
+    uses (a single `matrix_world` write per object, about the group's own
+    pivot) for the SAME two reasons documented on `lay_flat`: per-object
+    `rotation_euler` writes are silently ignored under the importer's
+    QUATERNION rotation mode, and even forced to XYZ they rotate each
+    object about its own origin, tearing the assembly apart rather than
+    turning it over as one rigid body.
+    """
+    cases = [o for o in objects if role_of(o.name) == "case"]
+    lids = [o for o in objects if role_of(o.name) == "case_lid"]
+    if not cases or not lids:
+        return
+
+    case_lo, case_hi = group_bbox(cases)
+    lid_lo, lid_hi = group_bbox(lids)
+    case_z = (case_lo.z + case_hi.z) / 2
+    lid_z = (lid_lo.z + lid_hi.z) / 2
+    if not needs_flip(case_z, lid_z):
+        return
+
+    lo, hi = group_bbox(objects)
+    pivot = (lo + hi) / 2
+    R = Matrix.Rotation(math.radians(180), 4, "X")
     M = Matrix.Translation(pivot) @ R @ Matrix.Translation(-pivot)
     for o in objects:
         o.matrix_world = M @ o.matrix_world
@@ -331,12 +382,23 @@ class AssetLibrary:
 
         bpy.context.view_layer.update()
         lay_flat(meshes)
+        flip_if_inverted(meshes)
 
         # re-centre on the origin so instances place predictably
         lo, hi = group_bbox(meshes)
         centre = (lo + hi) / 2
         for o in meshes:
             o.location -= Vector((centre.x, centre.y, lo.z))
+        # Unconditional update (task-3c): without this, matrix_world/
+        # bound_box on these objects can keep reporting the PRE-shift
+        # position to whatever reads them next, depending on incidental
+        # updates elsewhere - the same missing-update signature as
+        # place_item's drop_to_floor bug (see that function's docstring).
+        # Measured directly: adding this call changes the group's own
+        # measured z-range for this exact template. Independently correct
+        # of flip_if_inverted above (a determinism fix, not an
+        # orientation fix) - both are needed, neither replaces the other.
+        bpy.context.view_layer.update()
 
         coll = _template_collection()
         by_role: Dict[str, list] = {}
@@ -353,6 +415,30 @@ class AssetLibrary:
         # with its FINAL role so scene.py never has to re-derive one from
         # a (possibly ".001"-suffixed) name; object_role() reads this.
         _classify_case_liner(by_role)
+
+        # Loud post-condition (task-3c): flip_if_inverted's whole job is
+        # to make this true, and orientation bugs are exactly the kind
+        # that survive silently (three prior rounds did not catch this
+        # one). If the assembly HAS a case and a lid, the lid must sit
+        # at/above the shell's own top - not "roughly", exactly, since
+        # both are pieces of the SAME rigid CAD assembly and share one
+        # mating plane with no gap. A no-op (like flip_if_inverted) when
+        # either role is absent - e.g. the cells_only variant's template.
+        case_objs = by_role.get("case") or []
+        lid_objs = by_role.get("case_lid") or []
+        if case_objs and lid_objs:
+            case_lo, case_hi = group_bbox(case_objs)
+            lid_lo, lid_hi = group_bbox(lid_objs)
+            if lid_lo.z < case_hi.z - 1e-4:
+                raise RuntimeError(
+                    f"{name}: the lid (case_lid, z=[{lid_lo.z * 1000:.3f},"
+                    f"{lid_hi.z * 1000:.3f}]mm) does not sit at/above the "
+                    f"shell's own top (case, z=[{case_lo.z * 1000:.3f},"
+                    f"{case_hi.z * 1000:.3f}]mm) after flip_if_inverted - "
+                    f"the assembly is still upside down (or the flip "
+                    f"over-corrected). This is exactly the silent failure "
+                    f"mode task-3c exists to close off.")
+
         for role, objs in by_role.items():
             for o in objs:
                 o[ROLE_PROP] = role

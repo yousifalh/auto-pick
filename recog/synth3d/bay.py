@@ -48,6 +48,31 @@ import numpy as np
 Rect = Tuple[float, float, float, float]     # x0, y0, x1, y1
 
 
+def needs_flip(case_centroid_z: float, lid_centroid_z: float) -> bool:
+    """Is the imported assembly upside down?
+
+    Task-3c: Blender's glTF importer maps the source (x, y, z) to
+    (x, -z, y) - for this CAD, the raw file's up-axis is Y and the
+    cavity opens toward -Y, so -Y lands on -Z: the tray ends up facing
+    the ground. `assets.lay_flat` only picks WHICH axis is vertical (the
+    group's smallest extent); it has no notion of which END of that axis
+    is "up", so it cannot catch this - it correctly lays the assembly
+    flat, just sometimes flat and inverted.
+
+    The lid must sit ABOVE the shell in a right-side-up assembly (the lid
+    caps the cavity from above). If it does not - the shell's own
+    centroid is at or above the lid's - the assembly is inverted and
+    needs a 180-degree flip (about a horizontal axis) to correct it.
+
+    Pass world-space Z centroids (e.g. the mean of each role's own
+    group-bbox lo/hi) computed in the SAME frame, before any translation
+    that would make the comparison meaningless (rotation-only stages are
+    fine - centroid order is rotation-invariant about the flip axis by
+    construction, since both objects rotate together).
+    """
+    return case_centroid_z >= lid_centroid_z
+
+
 def module_bay_from_bounds(interior: Rect, cells: Rect) -> Rect:
     """The strip of interior the cells do not occupy, on the widest side.
 
