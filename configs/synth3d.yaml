@@ -258,6 +258,13 @@ param_space:
 role_materials:
   case: [shell_white, shell_black, shell_navy, shell_alu]
   case_lid: [shell_white, shell_black, shell_navy, shell_alu]
+  # The inner cell holder (task 3b): same moulded plastic as the shell it
+  # ships inside, so it draws from the same preset list. Only visible in
+  # the `assembled` variant, where it is fully enclosed by the shell/lid
+  # anyway - listed explicitly rather than relying on materials.for_role's
+  # case fallback so a role with a real name has a real (not borrowed)
+  # config entry.
+  case_liner: [shell_white, shell_black, shell_navy, shell_alu]
   cell: [cell_green, cell_blue, cell_black, cell_nickel, cell_purple, cell_grey]
 
 # Ranges are [low, high], sampled per instance, so no two renders share a

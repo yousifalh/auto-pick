@@ -41,6 +41,90 @@ def role_of(subpart_name: str) -> str:
     return ROLE_FALLBACK
 
 
+def classify_case_parts(xy_areas: dict) -> dict:
+    """Decide, among a group of same-named-role `case` parts, which is the
+    outer half-shell (`"case"`) and which are inner cell-holder liners
+    (`"case_liner"`) - purely by XY footprint area. The outer shell always
+    has the larger footprint (~4mm of margin on every real asset, against
+    a 6-7mm z-height difference in the other direction - not a close
+    call); a regex or an index cannot make this distinction at all, since
+    both parts share one name prefix and appear in a DIFFERENT ORDER per
+    asset (the 20100 and 26800 list the holder first). See
+    task-3b-brief.md.
+
+    `xy_areas` is `{id: area_mm2}` for every part sharing the ambiguous
+    role - `id` is whatever the caller uses to identify a part.
+    `catalog.inspect_glb` calls this with subpart names (at STEP-
+    conversion time, via `_split_case_liner` below); `assets.AssetLibrary`
+    calls it a second time with Blender objects (at Blender-import time),
+    because Blender's glTF importer merges the shell and the liner into
+    ONE object - they are two differently-materialled PRIMITIVES of one
+    glTF node, not two nodes - so assets.py has to split that object apart
+    itself before this same decision applies to it. Keeping the decision
+    rule itself here, in bpy-free catalog.py, is what keeps it unit-tested
+    even though it necessarily runs twice at two different layers.
+
+    Returns `{id: "case"}` for the single largest, `{id: "case_liner"}`
+    for every other id. A no-op (`{only_id: "case"}`) when 0 or 1 ids are
+    given - nothing to disambiguate.
+
+    Raises ValueError if the largest and second-largest areas are within
+    1% of each other: that would mean the geometric discriminator is not
+    reliable for this asset, and a silent mis-split puts a solid body
+    back over the bay - worth failing loudly rather than costing another
+    render cycle to find.
+    """
+    if len(xy_areas) <= 1:
+        return {k: "case" for k in xy_areas}
+
+    ranked = sorted(xy_areas.items(), key=lambda kv: kv[1], reverse=True)
+    (_, largest_area), (_, second_area) = ranked[0], ranked[1]
+    if largest_area <= 0 or \
+            (largest_area - second_area) / largest_area < 0.01:
+        raise ValueError(
+            f"classify_case_parts: largest and second-largest XY areas "
+            f"are within 1% of each other ({largest_area:.2f} vs "
+            f"{second_area:.2f} mm^2 among {list(xy_areas)}) - the "
+            f"geometric discriminator cannot reliably tell the outer "
+            f"shell from an inner liner for this assembly")
+
+    out = {ranked[0][0]: "case"}
+    out.update({k: "case_liner" for k, _ in ranked[1:]})
+    return out
+
+
+def _split_case_liner(subparts: List[dict]) -> None:
+    """Geometric post-pass: among an assembly's `case`-role parts, separate
+    the outer half-shell from the inner cell holder via `classify_case_
+    parts` (see its docstring), and mutate `subparts` in place, rewriting
+    the loser(s)' `role` to `case_liner`; the winner keeps `role ==
+    "case"`.
+
+    A no-op when 0 or 1 `case`-role parts are present - nothing to split.
+
+    Asserts the discriminator rather than trusting it: raises ValueError
+    if the assembly does not end up with exactly one `case` part after
+    the split (on top of `classify_case_parts`'s own 1%-margin check) -
+    belt and suspenders, since a silent mis-split here is exactly the
+    failure this function exists to rule out.
+    """
+    cases = [s for s in subparts if s["role"] == "case"]
+    if len(cases) <= 1:
+        return
+
+    areas = {i: s["extents_mm"][0] * s["extents_mm"][1]
+             for i, s in enumerate(cases)}
+    roles = classify_case_parts(areas)
+    for i, s in enumerate(cases):
+        s["role"] = roles[i]
+
+    remaining = [s for s in subparts if s["role"] == "case"]
+    if len(remaining) != 1:
+        raise ValueError(
+            f"_split_case_liner: expected exactly one case part after the "
+            f"split, got {len(remaining)}: {[s['name'] for s in remaining]}")
+
+
 def convert_step(src: str, dst: str, tol_linear: float = 0.05,
                  tol_angular: float = 0.3) -> None:
     """
@@ -71,8 +155,8 @@ def inspect_glb(path: str) -> dict:
 
     scene = trimesh.load(path)
 
-    subparts, counts = [], {}
-    by_role_bounds = {}
+    subparts = []
+    node_bounds = {}          # subpart name -> (lo, hi), millimetres
 
     for node in scene.graph.nodes_geometry:
         transform, gname = scene.graph[node]
@@ -80,19 +164,31 @@ def inspect_glb(path: str) -> dict:
         corners = trimesh.transform_points(
             trimesh.bounds.corners(g.bounds), transform)
         lo, hi = corners.min(axis=0) * MM, corners.max(axis=0) * MM
-
-        role = role_of(node)
-        counts[role] = counts.get(role, 0) + 1
-        by_role_bounds.setdefault(role, []).append((lo, hi))
+        node_bounds[node] = (lo, hi)
 
         subparts.append({
             "name": node,
-            "role": role,
+            "role": role_of(node),
             "extents_mm": [round(float(v) * MM, 2) for v in g.extents],
             "triangles": int(len(g.faces)),
             "volume_mm3": round(float(g.volume) * MM ** 3, 1)
             if g.is_volume else None,
         })
+
+    # Geometric refinement: the name-based role_of() above cannot tell the
+    # outer shell from the inner cell holder - both are `Case*_btm*` with
+    # opaque hash suffixes, ordered differently per asset. This rewrites
+    # the loser(s)' role to `case_liner` in place. Recompute counts/bounds
+    # from `subparts` AFTER this, not before, or `by_role_bounds["case"]`
+    # would still include the liner and tray_outer_mm would stay wrong.
+    _split_case_liner(subparts)
+
+    counts = {}
+    by_role_bounds = {}
+    for s in subparts:
+        role = s["role"]
+        counts[role] = counts.get(role, 0) + 1
+        by_role_bounds.setdefault(role, []).append(node_bounds[s["name"]])
 
     def _aabb(role):
         if role not in by_role_bounds:
@@ -117,7 +213,12 @@ def inspect_glb(path: str) -> dict:
         return float(los.min(axis=0)[2])
 
     cell_union = _aabb("cell")
-    tray_outer = _aabb("case")          # tray only - the lid is `case_lid`
+    # Outer half-shell only, now that _split_case_liner has run - the lid is
+    # `case_lid` and the inner cell holder is `case_liner`. The liner is
+    # narrower than the shell in XY (see _split_case_liner), so this AABB's
+    # x0/y0/x1/y1 are unchanged from before the split; only z (index 4,
+    # the liner's own top) moves down to the shell's own, shorter height.
+    tray_outer = _aabb("case")
 
     out = {
         "extents_mm": [round(float(v) * MM, 2)

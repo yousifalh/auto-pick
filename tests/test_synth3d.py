@@ -141,7 +141,7 @@ def test_load_config_from_yaml():
     assert cfg.layout.area == (0.80, 0.45)
     assert "scatter" in cfg.param_space["layout_mode"]
     assert "jig" in cfg.param_space["layout_mode"]
-    assert set(cfg.role_materials) == {"case", "case_lid", "cell"}
+    assert set(cfg.role_materials) == {"case", "case_lid", "case_liner", "cell"}
     assert cfg.lighting["overcast_softbox"]["kind"] == "camera_softbox"
 
 
@@ -404,7 +404,7 @@ def test_variants_cover_the_three_real_presentations():
 def test_assembled_labels_the_whole_unit_cartridge():
     v = next(v for v in C.VARIANTS if v.name == "assembled")
     assert v.label == "cartridge"
-    assert set(v.keep_roles) == {"cell", "case", "case_lid"}
+    assert set(v.keep_roles) == {"cell", "case", "case_lid", "case_liner"}
 
 
 def test_open_case_labels_roles_separately():
@@ -438,13 +438,28 @@ def test_all_four_assets_present():
 
 
 def test_role_of_classifies_every_real_subpart_name():
-    """All 33 sub-part names from the real CAD must classify correctly."""
+    """All 33 sub-part names from the real CAD must classify correctly by
+    name, EXCEPT the case/case_liner split (task 3b): that split is
+    geometric (catalog.classify_case_parts, by XY footprint area), not
+    name-based, because the two `Case*_btm*` parts share one name prefix
+    and appear in a different order per asset. A `case_liner` subpart's
+    catalog.json role therefore legitimately differs from what role_of()
+    alone would say for its name (which is still "case" - the same
+    fallback role_of gives every `_btm` part) - that gap is exactly why
+    the split had to move into catalog.py's post-pass instead of
+    CLASS_RULES.
+    """
     cat = CAT.load_catalog(str(ASSETS))
     seen = 0
     for asset in cat["assets"]:
         for sp in asset["subparts"]:
             role = CAT.role_of(sp["name"])
-            assert role == sp["role"], f"{sp['name']}: {role} != {sp['role']}"
+            if sp["role"] == "case_liner":
+                assert role == "case", \
+                    f"{sp['name']}: expected name-based case, got {role}"
+            else:
+                assert role == sp["role"], \
+                    f"{sp['name']}: {role} != {sp['role']}"
             assert role in ("cell", "case", "case_lid")
             seen += 1
     assert seen == 33, f"expected 33 sub-parts, catalogued {seen}"
@@ -469,6 +484,116 @@ def test_top_names_classify_as_case_lid():
 
 def test_unknown_subpart_falls_back_to_case():
     assert CAT.role_of("something_unrecognised") == "case"
+
+
+# ------------------------------------------------- case/case_liner split ----
+
+def test_classify_case_parts_picks_the_largest_xy_area():
+    assert CAT.classify_case_parts({"a": 100.0, "b": 50.0}) == \
+        {"a": "case", "b": "case_liner"}
+
+
+def test_classify_case_parts_is_a_noop_for_a_single_part():
+    assert CAT.classify_case_parts({"a": 42.0}) == {"a": "case"}
+
+
+def test_classify_case_parts_is_a_noop_for_no_parts():
+    assert CAT.classify_case_parts({}) == {}
+
+
+def test_classify_case_parts_raises_when_areas_are_within_one_percent():
+    with pytest.raises(ValueError):
+        CAT.classify_case_parts({"a": 100.0, "b": 99.5})
+
+
+def test_classify_case_parts_handles_more_than_two_parts():
+    result = CAT.classify_case_parts({"a": 10.0, "b": 100.0, "c": 50.0})
+    assert result == {"a": "case_liner", "b": "case", "c": "case_liner"}
+
+
+def test_split_case_liner_reclassifies_the_smaller_of_two_case_parts():
+    subparts = [
+        {"name": "outer", "role": "case", "extents_mm": [62.9, 90.9, 11.1]},
+        {"name": "inner", "role": "case", "extents_mm": [59.02, 90.9, 18.32]},
+        {"name": "lid", "role": "case_lid", "extents_mm": [62.9, 90.9, 11.1]},
+    ]
+    CAT._split_case_liner(subparts)
+    roles = {s["name"]: s["role"] for s in subparts}
+    assert roles == {"outer": "case", "inner": "case_liner", "lid": "case_lid"}
+
+
+def test_split_case_liner_is_a_noop_with_only_one_case_part():
+    subparts = [{"name": "outer", "role": "case",
+                "extents_mm": [62.9, 90.9, 11.1]}]
+    CAT._split_case_liner(subparts)
+    assert subparts[0]["role"] == "case"
+
+
+def test_split_case_liner_raises_on_ambiguous_areas():
+    subparts = [
+        {"name": "a", "role": "case", "extents_mm": [62.9, 90.9, 11.1]},
+        {"name": "b", "role": "case", "extents_mm": [62.6, 90.9, 18.32]},
+    ]
+    with pytest.raises(ValueError):
+        CAT._split_case_liner(subparts)
+
+
+def test_all_four_real_assets_split_to_exactly_one_case_and_one_liner():
+    """Verified against the real CAD (task-3b-brief.md's own table): the
+    outer shell always wins by several mm of XY margin."""
+    cat = CAT.load_catalog(str(ASSETS))
+    for asset in cat["assets"]:
+        counts = asset["role_counts"]
+        assert counts.get("case") == 1, asset["name"]
+        assert counts.get("case_liner") == 1, asset["name"]
+        case = next(s for s in asset["subparts"] if s["role"] == "case")
+        liner = next(s for s in asset["subparts"]
+                    if s["role"] == "case_liner")
+        case_area = case["extents_mm"][0] * case["extents_mm"][1]
+        liner_area = liner["extents_mm"][0] * liner["extents_mm"][1]
+        assert case_area > liner_area, asset["name"]
+
+
+def test_tray_outer_z_top_is_the_shell_alone_not_the_taller_liner():
+    """task 3b: tray_outer_mm's z-top must come from the outer shell only
+    (11.10mm on every real asset), not the taller inner liner (~18.2-
+    18.3mm) that used to be lumped into the same `case` role's AABB."""
+    cat = CAT.load_catalog(str(ASSETS))
+    for asset in cat["assets"]:
+        assert asset["tray_outer_mm"][4] == pytest.approx(11.1, abs=0.01), \
+            asset["name"]
+
+
+def test_interior_wall_and_floor_are_unmoved_by_the_liner_split():
+    """The liner is narrower than the shell in XY (never contributed to
+    tray_outer_mm's x0/y0/x1/y1), so everything derived from those - the
+    wall thickness, the interior cavity, the module bay, the cell floor -
+    must be byte-identical to their pre-task-3b values."""
+    cat = CAT.load_catalog(str(ASSETS))
+    expected = {
+        "AnkerPowerCore10000": dict(
+            case_wall_mm=4.0, tray_floor_mm=1.95,
+            interior_mm=[-27.45, -43.0, 27.45, 41.45],
+            module_bay_mm=[-27.45, 22.0, 27.45, 41.45]),
+        "AnkerPowerCore13000": dict(
+            case_wall_mm=3.75, tray_floor_mm=1.95,
+            interior_mm=[-36.6, -44.75, 36.6, 44.75],
+            module_bay_mm=[-36.6, 22.0, 36.6, 44.75]),
+        "AnkerPowerCore20100": dict(
+            case_wall_mm=3.7, tray_floor_mm=1.95,
+            interior_mm=[-27.45, -80.2, 27.45, 80.2],
+            module_bay_mm=[-27.45, 55.0, 27.45, 80.2]),
+        "AnkerPowerCore26800": dict(
+            case_wall_mm=4.25, tray_floor_mm=1.95,
+            interior_mm=[-36.6, -85.75, 36.6, 85.75],
+            module_bay_mm=[-36.6, 55.0, 36.6, 85.75]),
+    }
+    for asset in cat["assets"]:
+        exp = expected[asset["name"]]
+        assert asset["case_wall_mm"] == pytest.approx(exp["case_wall_mm"])
+        assert asset["tray_floor_mm"] == pytest.approx(exp["tray_floor_mm"])
+        assert asset["interior_mm"] == pytest.approx(exp["interior_mm"])
+        assert asset["module_bay_mm"] == pytest.approx(exp["module_bay_mm"])
 
 
 def test_expected_cell_counts_per_asset():

@@ -23,11 +23,22 @@ from typing import Dict, List, Optional, Tuple
 import bpy
 from mathutils import Matrix, Vector
 
-from .catalog import load_catalog, role_of
+from .catalog import classify_case_parts, load_catalog, role_of
 from .config import Variant
 
 
 TEMPLATE_COLLECTION = "_synth3d_templates"
+
+# Custom ID property `_load_template` tags onto every template object with
+# its final role, so scene.py can read a role WITHOUT re-deriving it from
+# the object's (Blender-mangled, e.g. ".001"-suffixed) name. `clone()`'s
+# `src.copy()` carries custom properties over to every instance, so the tag
+# survives instancing. See `object_role` below for why this exists: a plain
+# name regex cannot tell `case` from `case_liner` apart (see
+# catalog.classify_case_parts), and after `_split_multi_material_case`
+# splits them into two Blender objects they still share the same name
+# prefix - only the geometry the tag was computed from knows which is which.
+ROLE_PROP = "synth3d_role"
 
 
 @dataclass
@@ -168,6 +179,107 @@ def clone(src, target=None):
     return dup
 
 
+def _separate_by_material(o):
+    """`bpy.ops.mesh.separate(type="MATERIAL")` on `o`, returning every
+    resulting piece: the original object (now holding only the polygons of
+    its first material) plus one new object per additional material.
+    """
+    before = set(bpy.data.objects)
+    for other in bpy.context.selected_objects:
+        other.select_set(False)
+    o.select_set(True)
+    bpy.context.view_layer.objects.active = o
+    bpy.ops.object.mode_set(mode="EDIT")
+    bpy.ops.mesh.separate(type="MATERIAL")
+    bpy.ops.object.mode_set(mode="OBJECT")
+    o.select_set(False)
+    new = [x for x in bpy.data.objects if x not in before]
+    return [o] + new
+
+
+def _split_multi_material_case(meshes):
+    """Split apart any name-role `case` object Blender's glTF importer
+    merged from multiple materially-distinct primitives.
+
+    `Case*_btm` bundles the outer half-shell and the inner cell holder as
+    TWO PRIMITIVES OF ONE glTF NODE (confirmed against the raw glTF: one
+    node, one mesh, two `primitives`, each with its OWN material) - not
+    two nodes. That means trimesh's own names for them are not even
+    stable across two loads of the same file (a random disambiguating
+    hash, regenerated per load - `catalog.json`'s subpart names for these
+    two cannot be joined back onto a Blender object by name at all), and
+    Blender's importer merges the two primitives into ONE object with two
+    material slots. The only thing that can single the liner back out is
+    splitting that merged object the way it was two bodies in the CAD,
+    which is what this does - via Blender's own material-slot boundary,
+    confirmed to land exactly on the same two triangle counts
+    catalog.json records for the shell and the liner (1180 vs. 712 on
+    AnkerPowerCore10000).
+
+    Only touches objects whose NAME classifies as `case` (not `case_lid`,
+    not `cell` - across all four real assets neither ever carries more
+    than one material) and that actually carry more than one material
+    slot; everything else passes through unchanged. Returns a new list
+    with each split target replaced by its resulting pieces.
+    """
+    out = []
+    for o in meshes:
+        if role_of(o.name) == "case" and len(o.material_slots) > 1:
+            out.extend(_separate_by_material(o))
+        else:
+            out.append(o)
+    return out
+
+
+def _classify_case_liner(by_role):
+    """Disambiguate a `by_role["case"]` group of more than one object -
+    the outer shell plus the inner liner(s) `_split_multi_material_case`
+    just separated - into `"case"`/`"case_liner"`, in place on `by_role`.
+
+    Uses `catalog.classify_case_parts`: the SAME rule (largest XY
+    footprint wins `"case"`) and the SAME 1%-margin assertion
+    `catalog._split_case_liner` applies to catalog.json at conversion
+    time. See that function's docstring for why the decision has to be
+    made a second time here, at Blender-import time, rather than just
+    read back out of catalog.json.
+
+    A no-op when `by_role["case"]` holds 0 or 1 objects.
+    """
+    case_objs = by_role.get("case") or []
+    if len(case_objs) <= 1:
+        return
+
+    bpy.context.view_layer.update()
+    areas = {}
+    for i, o in enumerate(case_objs):
+        lo, hi = group_bbox([o])
+        areas[i] = (hi.x - lo.x) * (hi.y - lo.y)
+
+    roles = classify_case_parts(areas)
+    by_role["case"] = [case_objs[i] for i, r in roles.items() if r == "case"]
+    liners = [case_objs[i] for i, r in roles.items() if r == "case_liner"]
+    if liners:
+        by_role.setdefault("case_liner", []).extend(liners)
+
+
+def object_role(o) -> str:
+    """The role `_load_template` tagged `o` with (see `ROLE_PROP`),
+    falling back to the name-based `catalog.role_of` for anything the tag
+    is absent from - an object `world.py`/`scene.py` built directly (a
+    PCB board, a bay proxy, an obstruction, a seated cell) rather than
+    cloned from a template never gets tagged, and does not need to: those
+    are labelled by scene.py explicitly, not looked up by role.
+
+    This is the ONLY correct way for scene.py to ask a CAD-derived
+    object's role: plain `catalog.role_of(o.name)` cannot tell `case`
+    from `case_liner` apart (see `catalog.classify_case_parts`), and would
+    silently misclassify a `case_liner` object as `case` since both keep
+    the same name prefix after `_split_multi_material_case`.
+    """
+    role = o.get(ROLE_PROP)
+    return role if role else role_of(o.name)
+
+
 # --------------------------------------------------------------------------- #
 #  library
 # --------------------------------------------------------------------------- #
@@ -200,6 +312,13 @@ class AssetLibrary:
         new = [o for o in bpy.data.objects if o not in before]
         meshes = [o for o in new if o.type == "MESH"]
 
+        # Un-merge the case's outer shell from its inner liner BEFORE
+        # anything else touches these objects - see
+        # _split_multi_material_case's docstring. Must run first: the
+        # parent-detach and lay_flat/recentre steps below have to see
+        # both resulting pieces, not the one merged object.
+        meshes = _split_multi_material_case(meshes)
+
         # detach from any imported empties so transforms are independent
         for o in meshes:
             if o.parent:
@@ -227,6 +346,16 @@ class AssetLibrary:
             coll.objects.link(o)
             o.hide_render = True
             by_role.setdefault(role_of(o.name), []).append(o)
+
+        # Geometric refinement: role_of() alone still can't tell the two
+        # split-off case pieces apart (same name prefix), so decide by XY
+        # footprint area - see _classify_case_liner. Then tag every object
+        # with its FINAL role so scene.py never has to re-derive one from
+        # a (possibly ".001"-suffixed) name; object_role() reads this.
+        _classify_case_liner(by_role)
+        for role, objs in by_role.items():
+            for o in objs:
+                o[ROLE_PROP] = role
 
         bpy.context.view_layer.update()
         self._templates[name] = by_role

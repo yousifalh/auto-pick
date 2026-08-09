@@ -34,7 +34,6 @@ from . import bay as B
 from . import layout as L
 from . import materials as M
 from . import world as W
-from .catalog import role_of
 from .config import Config, VARIANTS, Variant
 
 
@@ -186,7 +185,10 @@ def build(params: dict, rng: random.Random, library: A.AssetLibrary,
     meta["backdrop_luma_ref"] = backdrop_luma
     for item in items:
         for obj in item.objects:
-            role = role_of(obj.name)
+            # A.object_role, not catalog.role_of: the case vs. case_liner
+            # split is geometric, not name-based, and role_of(obj.name)
+            # cannot see it - see assets.object_role's docstring.
+            role = A.object_role(obj)
             mat, drawn = M.for_role(role, rng, cfg, avoid_luma=backdrop_luma)
             M.apply_to_object(obj, mat)
             meta["materials"].append(dict(object=obj.name, role=role, **{
@@ -250,7 +252,7 @@ def build(params: dict, rng: random.Random, library: A.AssetLibrary,
 
     for item in items:
         if item.variant == "open_case" and any(
-                role_of(o.name) == "case" for o in item.objects):
+                A.object_role(o) == "case" for o in item.objects):
             lo, hi = A.group_bbox(item.objects)
             entry = library.catalog_entry(item.asset)
             # interior_mm (catalog.json, task 2) is the tray's REAL cavity,
@@ -386,7 +388,7 @@ def build(params: dict, rng: random.Random, library: A.AssetLibrary,
             obj.pass_index = pid
             id_meta[pid] = {"class": item.labels.get(obj.name),
                             "asset": item.asset, "variant": item.variant,
-                            "role": role_of(obj.name)}
+                            "role": A.object_role(obj)}
             objects_by_id[pid] = [obj]
             if item.merge:
                 groups[pid] = gid

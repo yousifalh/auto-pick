@@ -13,7 +13,7 @@
       "triangles": 20790,
       "subparts": [
         {
-          "name": "004696_A;2-Case10000_btm_3e3e36",
+          "name": "004696_A;2-Case10000_btm_102fb0",
           "role": "case",
           "extents_mm": [
             62.9,
@@ -21,17 +21,6 @@
             11.1
           ],
           "triangles": 1180,
-          "volume_mm3": null
-        },
-        {
-          "name": "004696_A;2-Case10000_btm_ebdd7d",
-          "role": "case",
-          "extents_mm": [
-            59.02,
-            90.9,
-            18.32
-          ],
-          "triangles": 712,
           "volume_mm3": null
         },
         {
@@ -43,6 +32,17 @@
             11.1
           ],
           "triangles": 1180,
+          "volume_mm3": null
+        },
+        {
+          "name": "004696_A;2-Case10000_btm_fb3ae6",
+          "role": "case_liner",
+          "extents_mm": [
+            59.02,
+            90.9,
+            18.32
+          ],
+          "triangles": 712,
           "volume_mm3": null
         },
         {
@@ -81,7 +81,8 @@
       ],
       "role_counts": {
         "cell": 3,
-        "case": 2,
+        "case_liner": 1,
+        "case": 1,
         "case_lid": 1
       },
       "cell_union_mm": [
@@ -96,7 +97,7 @@
         -45.45,
         31.45,
         45.45,
-        20.26
+        11.1
       ],
       "case_wall_mm": 4.0,
       "interior_mm": [
@@ -129,7 +130,7 @@
       "triangles": 26696,
       "subparts": [
         {
-          "name": "004703_A;2-Case13000_btm_39d1a2",
+          "name": "004703_A;2-Case13000_btm_33e787",
           "role": "case",
           "extents_mm": [
             80.7,
@@ -137,17 +138,6 @@
             11.1
           ],
           "triangles": 1180,
-          "volume_mm3": null
-        },
-        {
-          "name": "004703_A;2-Case13000_btm_f0bee0",
-          "role": "case",
-          "extents_mm": [
-            76.82,
-            97.0,
-            18.32
-          ],
-          "triangles": 712,
           "volume_mm3": null
         },
         {
@@ -159,6 +149,17 @@
             11.1
           ],
           "triangles": 1180,
+          "volume_mm3": null
+        },
+        {
+          "name": "004703_A;2-Case13000_btm_cdde7f",
+          "role": "case_liner",
+          "extents_mm": [
+            76.82,
+            97.0,
+            18.32
+          ],
+          "triangles": 712,
           "volume_mm3": null
         },
         {
@@ -208,7 +209,8 @@
       ],
       "role_counts": {
         "cell": 4,
-        "case": 2,
+        "case_liner": 1,
+        "case": 1,
         "case_lid": 1
       },
       "cell_union_mm": [
@@ -223,7 +225,7 @@
         -48.5,
         40.35,
         48.5,
-        20.26
+        11.1
       ],
       "case_wall_mm": 3.75,
       "interior_mm": [
@@ -256,18 +258,7 @@
       "triangles": 38364,
       "subparts": [
         {
-          "name": "004706_A;2-Case20100_btm_5045ec",
-          "role": "case",
-          "extents_mm": [
-            58.31,
-            167.8,
-            18.21
-          ],
-          "triangles": 712,
-          "volume_mm3": null
-        },
-        {
-          "name": "004706_A;2-Case20100_btm_d0dd5c",
+          "name": "004706_A;2-Case20100_btm_6f758f",
           "role": "case",
           "extents_mm": [
             62.3,
@@ -286,6 +277,17 @@
             11.1
           ],
           "triangles": 1180,
+          "volume_mm3": null
+        },
+        {
+          "name": "004706_A;2-Case20100_btm_97de9a",
+          "role": "case_liner",
+          "extents_mm": [
+            58.31,
+            167.8,
+            18.21
+          ],
+          "triangles": 712,
           "volume_mm3": null
         },
         {
@@ -357,7 +359,8 @@
       ],
       "role_counts": {
         "cell": 6,
-        "case": 2,
+        "case_liner": 1,
+        "case": 1,
         "case_lid": 1
       },
       "cell_union_mm": [
@@ -372,7 +375,7 @@
         -83.9,
         31.15,
         83.9,
-        20.2
+        11.1
       ],
       "case_wall_mm": 3.7,
       "interior_mm": [
@@ -405,18 +408,7 @@
       "triangles": 50304,
       "subparts": [
         {
-          "name": "004709_A;2-Case26800_btm_b505e5",
-          "role": "case",
-          "extents_mm": [
-            76.77,
-            180.0,
-            17.32
-          ],
-          "triangles": 696,
-          "volume_mm3": null
-        },
-        {
-          "name": "004709_A;2-Case26800_btm_c73c0a",
+          "name": "004709_A;2-Case26800_btm_02f64f",
           "role": "case",
           "extents_mm": [
             81.7,
@@ -435,6 +427,17 @@
             11.1
           ],
           "triangles": 1180,
+          "volume_mm3": null
+        },
+        {
+          "name": "004709_A;2-Case26800_btm_aac221",
+          "role": "case_liner",
+          "extents_mm": [
+            76.77,
+            180.0,
+            17.32
+          ],
+          "triangles": 696,
           "volume_mm3": null
         },
         {
@@ -528,7 +531,8 @@
       ],
       "role_counts": {
         "cell": 8,
-        "case": 2,
+        "case_liner": 1,
+        "case": 1,
         "case_lid": 1
       },
       "cell_union_mm": [
@@ -543,7 +547,7 @@
         -90.0,
         40.85,
         90.0,
-        19.76
+        11.1
       ],
       "case_wall_mm": 4.25,
       "interior_mm": [

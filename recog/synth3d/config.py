@@ -93,10 +93,14 @@ class Variant:
 
 
 VARIANTS: List[Variant] = [
-    # Sealed unit: both shell halves, cells inside contributing no visible
-    # pixels, so the mask pass drops them automatically. Matches the closed
-    # black shells in the lower half of IMG_4426.
-    Variant("assembled", keep_roles=("cell", "case", "case_lid"),
+    # Sealed unit: both shell halves AND the inner cell holder (its own role,
+    # `case_liner`, since task 3b - see catalog.classify_case_parts), cells
+    # inside contributing no visible pixels, so the mask pass drops them
+    # automatically. Matches the closed black shells in the lower half of
+    # IMG_4426. Must stay visually identical to before task 3b: nothing here
+    # changed which roles this variant keeps overall, only that the liner now
+    # has a name of its own instead of hiding under `case`.
+    Variant("assembled", keep_roles=("cell", "case", "case_lid", "case_liner"),
             label="cartridge", weight=3.0),
 
     # Shell removed: loose 18650 cells, scattered individually. Matches the
@@ -104,8 +108,12 @@ VARIANTS: List[Variant] = [
     Variant("cells_only", keep_roles=("cell",), label=None,
             label_roles={"cell": "battery"}, weight=2.0),
 
-    # Opened unit: the TRAY only, lid dropped, so the cavity is visible and
-    # the module and bay proxy sit inside it rather than on a closed lid.
+    # Opened unit: the TRAY only - lid AND inner liner both dropped, so the
+    # cavity is a genuine open tray (9.15mm deep, half an 18650) rather than
+    # filled by the liner the case shares its role with before task 3b. The
+    # module and bay proxy sit on the cavity floor, under where the liner
+    # used to sit. `case_liner` is simply absent from keep_roles - the same
+    # "just don't keep it" mechanism that already dropped `case_lid`.
     Variant("open_case", keep_roles=("cell", "case"), label=None,
             label_roles={"cell": "battery", "case": "cartridge"},
             weight=1.0),
