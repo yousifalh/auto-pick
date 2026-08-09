@@ -1,0 +1,91 @@
+
+Tau independence check: per-SKU correlation between IoU and optimistic error
+==============================================================================
+  checkpoint        : recog/checkpoints/seg/best.pt
+  config            : configs/segmentation.yaml
+  synth config      : recog/dataset3d_seg/manifest.json
+  population        : cartridges with a PREDICTED bay region (P_direct
+                       non-empty) - the same 35 of 126 val crops as
+                       docs/receipts/tau_calibration.txt.
+  method            : ad hoc analysis script, not part of the committed
+                       CLI surface; reads the committed checkpoint and
+                       dataset labels only. No retrain, no dataset
+                       regeneration, no other receipt touched.
+
+Question: a confidence gate needs IoU and error to be NEGATIVELY
+correlated - higher IoU should mean smaller error. Measured here per SKU,
+against both the production formulation of P_derived (WITH the
+electronics/obstruction/battery subtraction - "OLD", what
+plan/arbitration.py actually ships) and an alternative that deletes the
+subtraction ("NEW" / a-lenient), since the subtraction is a proven no-op
+on P_safe's content under an argmax label map (plan/arbitration.py:
+derived_placement; recog/bay_segmenter.py:110 emits
+logits.argmax(dim=1)). Deleting it changes only the IoU denominator, not
+P_safe.
+
+P_safe content invariance was asserted programmatically and held for all
+35 records: OLD and NEW arbitration give BYTE-IDENTICAL P_safe, hence
+identical optimistic_error_px and admits_a_cell - only the IoU (the
+candidate confidence signal) moves between the two formulations. This is
+the same fact plan/arbitration.py's own comment and
+tests/test_arbitration.py:87-100/128-147 already establish algebraically;
+this run confirms it empirically against the trained checkpoint's actual
+predictions, not just against hand-built fixtures.
+
+--- IoU distribution, OLD vs NEW (n=35) ---
+  OLD (current, with subtraction): mean=0.7807 std=0.0817 min=0.5715
+                                    max=0.9607 frac>0.95=0.0286
+                                    (matches docs/receipts/tau_calibration.txt)
+  NEW (a-lenient, no subtraction): mean=0.5357 std=0.1336 min=0.1938
+                                    max=0.7782 frac>0.95=0.0000
+
+  Deleting the subtraction widens the spread substantially - std rises
+  1.64x (0.0817 -> 0.1336), the observed range widens from [0.57, 0.96]
+  to [0.19, 0.78] - but per the invariance above, P_safe and the
+  optimistic error it is judged against do not move at all.
+
+--- SKU counts (val split) ---
+  AnkerPowerCore10000 : n=8
+  AnkerPowerCore13000 : n=10
+  AnkerPowerCore20100 : n=8
+  AnkerPowerCore26800 : n=9
+
+--- Pearson / Spearman correlation, IoU vs optimistic_error_px, per SKU ---
+
+  OLD (production formulation, with subtraction):
+    SKU                    n   abs px (pearson/spearman)   norm by gt_bay_px   norm by direct_px
+    AnkerPowerCore10000    8   0.7623 / 0.6190              0.8030              0.7928
+    AnkerPowerCore13000   10   0.3364 / 0.4182             -0.0851             -0.0817
+    AnkerPowerCore20100    8   0.6500 / 0.6429              0.4140              0.2524
+    AnkerPowerCore26800    9   0.5305 / 0.6833              0.1684              0.1145
+    OVERALL (pooled)      35   0.5194 / 0.5795              0.2761              0.2414
+
+  NEW (a-lenient, subtraction deleted):
+    SKU                    n   abs px (pearson/spearman)   norm by gt_bay_px   norm by direct_px
+    AnkerPowerCore10000    8   0.0715 / 0.5714              0.2507              0.2158
+    AnkerPowerCore13000   10   0.4013 / 0.3576             -0.0015             -0.0475
+    AnkerPowerCore20100    8   0.3636 / 0.0476              0.0067             -0.2205
+    AnkerPowerCore26800    9   0.1590 / -0.1833             -0.3833             -0.4341
+    OVERALL (pooled)      35   0.3368 / 0.3315              0.0377             -0.0267
+
+Reading: a working confidence gate needs these coefficients negative. Under
+the PRODUCTION formulation (OLD), the raw (px) correlation is POSITIVE in
+all four SKUs, both Pearson and Spearman - the opposite sign a gate needs.
+Normalising by area does not rescue it: AnkerPowerCore10000 and
+AnkerPowerCore20100 stay clearly positive under both denominators;
+AnkerPowerCore13000 sits at approximately zero, marginally negative
+(-0.08, on n=10); AnkerPowerCore26800 stays weakly positive (0.11-0.17).
+None crosses into the negative territory a gate needs, and three of four
+are unambiguously the wrong sign.
+
+Deleting the subtraction (NEW) does not recover a usable signal either:
+three of four SKUs (10000, 13000, 20100) sit at zero-to-positive after
+normalising; only AnkerPowerCore26800 (n=9) goes moderately negative
+(-0.38 / -0.43) - a single SKU, small n, and inconsistent with the other
+three, i.e. noise around zero rather than a recovered signal.
+
+Caveat: n=8-10 crops per SKU (9 for 26800). No single coefficient above
+should be read as a precise estimate at this sample size - the load-
+bearing evidence is the SIGN pattern holding across all four SKUs under
+the production formulation (all four positive on raw px), not any
+individual number.

@@ -1865,6 +1865,112 @@ calibrated value; given that the calibration is uninformative, 0.85 is
 as defensible a choice, but the disconnect is recorded rather than
 left for a reader to discover.
 
+**The paragraphs above describe τ as uninformative on this split. A
+follow-up measurement establishes something stronger: the gate cannot
+work at all, structurally, independent of split size or error size —
+and this is now measured rather than suspected.** Two independent
+reasons, both confirmed rather than argued from first principles alone.
+
+*The mechanism.* `recog/bay_segmenter.py:110` emits
+`logits.argmax(dim=1)` — one label per pixel, mutually exclusive by
+construction. `derived_placement`'s three-class subtraction
+(`plan/arbitration.py`, minus `CH_ELECTRONICS`/`CH_OBSTRUCTION`/
+`CH_BATTERY`) therefore removes nothing from `P_safe = P_direct &
+P_derived`: wherever `P_direct` is true, `label_map == CH_BAY` already
+implies the pixel is none of those three classes, so the subtraction
+only ever touches pixels the intersection with `P_direct` was going to
+discard regardless. `P_direct` and `P_derived` are not two independent
+readings of the scene; they are the same argmax read twice, with an
+erosion band applied to one of the two reads. This was already implied
+algebraically by `tests/test_arbitration.py:87-100,128-147`; the full
+derivation connecting it to what τ needs is
+`docs/superpowers/specs/2026-08-10-tau-difficulty-design.md` §2.1.
+
+*The measurement.* A confidence gate needs IoU and error to move in
+OPPOSITE directions — higher agreement between the two estimates
+should mean smaller optimistic error. Measured per SKU on the same
+35-crop population above (`docs/receipts/tau_independence_correlation.txt`),
+the correlation between IoU and `optimistic_error_px` is **positive in
+all four SKUs** under the production formulation — `AnkerPowerCore10000`
+(n=8) Pearson 0.76, `AnkerPowerCore13000` (n=10) 0.34,
+`AnkerPowerCore20100` (n=8) 0.65, `AnkerPowerCore26800` (n=9) 0.53 —
+Spearman agreeing in sign throughout. Normalising by area does not
+rescue it: with scale controlled for both by SKU and by a denominator
+(bay area or `P_direct` area), `10000` and `20100` stay clearly
+positive (0.79/0.41); `13000` sits at approximately zero, marginally
+negative (−0.08, n=10); `26800` stays weakly positive (0.11–0.17). An
+alternative formulation that deletes the class-exclusion subtraction
+entirely widens the IoU spread substantially (std 0.0817 → 0.1336 —
+confirming the mechanism above by construction, since `P_safe` is
+provably unchanged by the deletion) but still leaves three of four SKUs
+at zero-to-positive after normalising, with only `26800` (n=9)
+moderately negative (−0.38/−0.43): noise around zero on a small sample,
+not a recovered signal. **Sample-size caveat, stated plainly so no
+single figure is over-read: each SKU carries 8–10 crops. The load-bearing
+evidence is the SIGN pattern holding across all four SKUs under the
+production formulation — every one positive, the wrong sign for a
+gate — not the magnitude of any individual coefficient.**
+
+**τ is therefore retired as a confidence gate. `P_safe` is retained as
+a hard geometric constraint — these are different claims, and this
+document keeps them separate deliberately.** Intersecting `P_direct`
+with the eroded, centre-connected interior is a real safety property
+regardless of what their IoU means: it stops the packer from ever being
+handed a region outside the visible cartridge cavity, independent of
+any threshold. What fails is layering a confidence decision on top of
+that intersection using their IoU — the two masks disagree by a
+mechanism (a rim-width erosion band) that has no reason to track the
+segmenter's own accuracy, and above is measured, not assumed, to not
+track it in either direction of the class-exclusion design.
+`SegmentationPlacementAreaExtractor` should keep applying `P_safe`
+unconditionally rather than gating on `iou >= tau`; the gate is inert
+data, not a safety mechanism, and treating it as one would be worse
+than leaving it uncalibrated.
+
+**Scope of this conclusion, and the option that was not tested.**
+Everything above is scoped to the current *geometric* family of
+`P_derived`: an eroded, centre-connected region minus an
+argmax-derived exclusion that the mechanism above shows cannot add
+information given a single-channel label map. A genuinely different
+formulation — operating on the segmenter's per-class SOFT probabilities
+instead of the argmax label map, so the subtraction becomes a real
+operation on continuous evidence rather than a redundant check on a
+decision already made — was **not tested**. It was not rejected on
+evidence; it is untested future work, and the reason it was not
+attempted is itself worth recording as a cost: `recog/bay_segmenter.py`
+would need to return a full per-class probability tensor per crop
+instead of the single-channel argmax it returns today — roughly 6×
+the per-pixel output for the six `SEG_CHANNELS`, on the order of 24×
+the stored data per crop against an 8-bit label map at the same
+resolution — and `plan/arbitration.py` would need `torch` (or an
+equivalent numeric API) to consume it, a module whose own docstring
+states it stays torch-free specifically because it runs inside the
+8 ms O3 planning-cycle budget. Neither change is free, and neither was
+attempted here.
+
+**A second, independent reason τ never had material to work with: a
+geometric ceiling on `P_safe` itself, for two of the four SKUs.** Per
+`docs/superpowers/specs/2026-08-10-tau-difficulty-design.md` §4.3,
+eroding each SKU's CAD `tray_outer_mm` by the production `wall_inset`
+(4.25 mm / 7 px, `docs/receipts/tau_calibration.txt`) and subtracting
+`module_bay_mm` gives the largest area `P_safe` can ever occupy for
+that SKU, independent of segmenter accuracy: `AnkerPowerCore10000`
+fails to admit an 18.3×65.0 mm cell in **either** orientation (short by
+1.9 mm), and `AnkerPowerCore13000` clears by only 1.1 mm — thin enough
+that rendering/annotation discretisation could plausibly erase it.
+Only `AnkerPowerCore20100` and `AnkerPowerCore26800` have real headroom
+(≥69.5 mm). **This is arithmetic from CAD bounding boxes, not a
+measurement against rendered masks**, and the design spec says so
+explicitly — it assumes an ideal rectangle eroding uniformly on every
+side, which the actual foreground blob at pixel resolution is not. It
+has not been render-verified and should be before being relied on.
+Taken with the correlation result above, it is a second, structurally
+independent reason the 35-crop validation split could never have
+produced a τ worth calibrating: even in a world where the correlation
+sign were the one a gate needs, `admits_a_cell` is close to
+geometrically unreachable on two of the four cataloged SKUs at the
+current default `wall_inset`.
+
 **One safety defect was found and fixed during integration.** The
 routine selecting a cartridge's foreground component within a crop
 originally fell back to the *largest* foreground blob when the
@@ -1921,13 +2027,14 @@ clean re-measurement in `docs/receipts/seg_eval.txt`) is set aside.
 Δcells (§13.2.1) got *worse* on the metric that matters most —
 now 2 of 126 crops in the damage direction (was 1 of 126 pre-fix, 2 of
 54 on the smaller pre-scale-up split) — while its mean is unchanged at
-+0.032. Bounded by sample size, and still bounded by error size, but in
-the opposite direction than the last report: τ, on 35 cartridges none
-of which exercised the admission criterion, because even the largest
-observed error — now 42.0 % of one cell's area, down from 79.4 % — sits
-further from, not closer to, the area a cell needs to be admitted. A
-more geometrically correct generator produced a *harder* validation
-target for τ, not an easier one. Not demonstrated: synthetic-to-real
++0.032. τ has moved from "uninformative on this split" to **retired as
+a confidence gate**: per-SKU, IoU and optimistic error correlate
+POSITIVELY in all four SKUs (`docs/receipts/tau_independence_correlation.txt`),
+the opposite sign a gate needs, traced to the argmax mechanism in
+`plan/arbitration.py` that makes `P_direct` and `P_derived` the same
+read twice rather than independent estimates. `P_safe`'s intersection
+is retained as a geometric constraint; the IoU threshold on top of it
+is not. Not demonstrated: synthetic-to-real
 transfer — the real-photo comparison now sits at three points (0.211,
 0.232, 0.318) against the 0.218 threshold, from three checkpoints that
 differ in more than just training duration this time (fresh

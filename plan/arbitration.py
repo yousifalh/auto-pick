@@ -103,6 +103,26 @@ def derived_placement(label_map: np.ndarray,
     Built from the channels the direct estimate does NOT use, so the two
     are genuinely independent and their disagreement carries
     information.
+
+    NOT LOAD-BEARING, measured: the loop below (minus CH_ELECTRONICS /
+    CH_OBSTRUCTION / CH_BATTERY) is a structural no-op on P_safe's
+    content, and therefore on the confidence signal arbitrate() reports.
+    recog/bay_segmenter.py:110 emits logits.argmax(dim=1) - one label
+    per pixel, mutually exclusive by construction - so wherever
+    direct_placement() is True, label_map == CH_BAY already implies the
+    pixel is none of these three classes. The subtraction can only ever
+    remove pixels where direct_placement() is already False, which
+    P_safe = P_direct & P_derived discards regardless. P_direct and
+    P_derived are consequently NOT independent estimates: they are the
+    same argmax read twice, with an erosion band applied to one read.
+    Per-SKU correlation between the resulting IoU and the optimistic
+    error is POSITIVE in all four cataloged SKUs (the wrong sign for a
+    confidence gate) - docs/receipts/tau_independence_correlation.txt,
+    docs/FDR_v3.md section 13.2.1. tau is retired as a confidence gate
+    for this reason; P_safe itself is kept, because the geometric
+    intersection is a real constraint independent of what the IoU means.
+    This function's BEHAVIOUR is unchanged by that finding - do not
+    "simplify" this loop away on the strength of this comment alone.
     """
     keep = centre_component(label_map)
     interior = keep.astype(np.uint8)

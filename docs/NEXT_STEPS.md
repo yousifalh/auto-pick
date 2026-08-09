@@ -44,12 +44,19 @@ not forgotten.
 Two corrections to how this document previously reasoned about the
 constraint, both worked through in full below:
 
-1. **τ calibration was implied to be blocked on real data. It is not**
-   (item 4 below). The measured diagnosis is that the *error size* in
-   the current synthetic validation split is too small, not that the
-   data is synthetic. The fix is *harder synthetic scenes* — still
-   synthetic, still reachable without a single photograph — which is
-   why it now leads "What to do, in order."
+1. **τ calibration was implied to be blocked on real data, then on
+   error size in the synthetic split. Neither is the live diagnosis
+   any more.** τ is now RETIRED as a confidence gate outright (item 4
+   below), not merely waiting on harder scenes: the two masks it
+   compares are not independent (an argmax mechanism, `plan/arbitration.py`)
+   and, measured directly per SKU, their IoU and the optimistic error
+   correlate in the WRONG direction for a gate, in all four SKUs. No
+   scene-difficulty work fixes a mis-signed correlation. `P_safe`'s
+   geometric intersection is unaffected and stays in place. What *does*
+   still lead "What to do, in order" is spec #2's generalisation
+   measurement (item 4 no longer motivates the clutter/occlusion work
+   the way it used to — see Step 2 below for why that work is retained
+   on different grounds).
 2. **Everywhere else, the strategy changes from measuring a gap to
    widening a distribution nothing can confirm is wide enough.** Two
    proxies replace "measure transfer": spec #2's cross-distribution
@@ -238,16 +245,31 @@ erosion (to 2 mm). None removes both negatives — `scene_00117` is untouched
 across the entire sweep — while costing up to 30 % of the ground truth's
 placeable cells. No code changed.
 
-### 4. τ is still uncalibrated — not because the data is synthetic, but because the errors in it are too small
+### 4. τ is retired as a confidence gate — measured, not merely uncalibrated
 
-**A precision correction, stated explicitly because an earlier reading of
-this section could be taken as "blocked until real data arrives," and
-that reading is wrong.** τ calibration is not blocked on the data being
-synthetic. It is blocked on the *errors* in the current synthetic split
-being too small — measured below, not assumed. The fix is harder
-synthetic scenes: still synthetic, and reachable without a single
-photograph. That is why the τ-targeted half of spec #4 now leads "What
-to do, in order," ahead of everything else remaining on this project.
+**This item used to read "blocked on error size, fixable with harder
+synthetic scenes." That diagnosis has been superseded by a stronger,
+measured one: the gate cannot work at all, and no amount of scene
+difficulty changes that.** Two structural reasons, both confirmed
+against the tray-fix checkpoint rather than argued from first
+principles. First, `recog/bay_segmenter.py:110` emits
+`logits.argmax(dim=1)`, a single label per pixel; `P_direct` and
+`P_derived` are therefore not independent — the electronics/
+obstruction/battery subtraction inside `P_derived` is a structural
+no-op on `P_safe`'s content, since any pixel `P_direct` claims already
+excludes those three classes by construction. Second, measured directly
+per SKU on the 35-crop population below
+(`docs/receipts/tau_independence_correlation.txt`): IoU and the
+optimistic error correlate POSITIVELY in all four SKUs — the opposite
+sign a confidence gate needs — and normalising by area does not rescue
+it. Full derivation and the correlation table: FDR §13.2.1. `P_safe`'s
+intersection remains a real, retained safety property (it still keeps
+placements inside the visible cartridge cavity); only the IoU threshold
+on top of it is retired. The paragraphs below are kept as the
+historical record of how that error-size diagnosis was reached — they
+are still accurate as a description of the 35-crop split's error sizes —
+but the conclusion they point toward ("harder scenes will fix τ") no
+longer holds and should not be acted on.
 
 Retrained to completion again — from a fresh initialisation, on a fully
 re-rendered 502-scene / 841-crop dataset (the tray-interior fix; see the
@@ -281,24 +303,24 @@ fails the admission test *on area alone*; the morphological-versus-areal
 distinction that `admits_a_cell` exists for (Task 2's blob-versus-rim
 demonstration) is still never exercised.
 
-So the blocker is **still not sample size** — and now demonstrably not
-simply "scale the dataset further," since a geometry fix moved the
-number backward relative to that trend. A validation set with *larger
-errors* would be a stronger test of τ than merely a larger one — and
-with real photographs not obtainable for this project (see "The
-constraint this plan works around" above), the only route left is
-**deliberately harder synthetic scenes**: cluttered bays and occlusion,
-which directly enlarge the optimistic error this section measures. That
-is spec #4's τ-targeted subset, promoted ahead of the rest of that spec
-in "What to do, in order" below for exactly this reason — this is a
-reachable next step, not a dead end. More of the same renders, at any
-scale, will not get there, and a more geometrically accurate generator
-moves further away, not closer — but a *harder* one should move it
-forward.
+**Everything in the two paragraphs above was the state of the diagnosis
+before the mechanism and correlation measurement described at the top
+of this item.** Growing the validation split's errors — via cluttered
+bays and occlusion, spec #4's τ-targeted subset — was the conclusion
+that diagnosis pointed to, and it is **no longer the right conclusion**:
+a larger or harder-error validation split cannot fix a gate whose two
+inputs are not independent and whose measured correlation has the wrong
+sign. Building cluttered-bay content is still worth doing (Step 2
+below), but on its own merits — `obstruction` and `battery` are
+measurably the weakest two segmentation classes, IoU 0.6579 and 0.6907
+respectively (`docs/receipts/seg_eval.txt`) — not because it will ever
+make τ calibratable.
 
 `plan/placement_area.py` still defaults to 0.85 and nothing reads the
-calibrated value. That remains the right call: wiring in a number this split
-cannot justify would make it look calibrated without being so.
+calibrated value. That remains the right call, now for a stronger
+reason than before: the calibration is not merely uninformative on this
+split, it is retired as a mechanism. Wiring in any calibrated number
+would misrepresent an inert gate as a working safety threshold.
 
 ### 5. The validation split is small — still modest, and its per-class composition keeps shifting with the generator
 
@@ -313,9 +335,10 @@ for the full table), but the pooled selected mean IoU dipped slightly
 (0.8045 → 0.8032) even as the checkpoint's own per-epoch selection metric
 rose (0.8096 → 0.8126), and Δcells' negative-direction fraction got worse
 (1/126 → 2/126). `obstruction` in particular is still a 24-instance number
-and should be read as such. And per item 4: for τ specifically, sample
-size is still not the binding constraint — error size is, and it moved in
-the harder direction this time.
+and should be read as such. And per item 4 (superseded above): for τ
+specifically, neither sample size nor error size is the binding
+constraint any more — τ is retired as a confidence gate outright,
+independent of what a larger or harder split would show.
 
 ---
 
@@ -329,45 +352,18 @@ reordered around what is actually measurable without photographs. The
 reasoning for the new order is given inline at each step, not just the
 order itself.
 
-### Step 1 — The τ-targeted subset of spec #4: cluttered bays and occlusion
+### Step 1 — Spec #2: procedural trays and 21700/26650 cell formats
 
-**Now the single highest-value action**, replacing the old Step 1 ("collect
-real photographs"), which is no longer possible. Per item 4's precision
-correction: τ needs *larger* errors in the validation split, not more of
-the same renders and not real data. Cluttered bays and occlusion are the
-scene elements most likely to enlarge the optimistic error between
-`P_direct` and `P_derived` past a cell's footprint — currently 42.0% of one
-cell's area at the largest, down from 79.4% pre-tray-fix
-(`docs/receipts/tau_calibration.txt`).
-
-- Build the cluttered-bay and occlusion halves of spec #4
-  (`docs/superpowers/specs/2026-08-08-tray-interior-design.md` §8: "4 —
-  Difficulty. Occlusion and clutter, lighting extremes, truncation and
-  framing, and cluttered bays.") ahead of its lighting, truncation and
-  framing halves, which move to Step 3 below.
-- **This is a deliberate deviation from the ordering that spec recorded**,
-  which scheduled #4 last "so it stresses the generalised and realistic
-  generator rather than the current one" — an ordering that assumed
-  photographs would eventually be available to validate against. With none
-  coming, τ becomes the primary measurable deliverable left on this
-  project, and the τ-relevant half of #4 does not need #2 or #3 to exist
-  first — it only needs harder bays, which sit in scope for the current
-  generator already. The rest of spec #4 (lighting extremes, truncation,
-  framing) stays where it was: last, folded into Step 3.
-- **What this unblocks:** `plan/arbitration.py`'s two-estimate confidence
-  gate runs on every cartridge today but has never yet rejected one in any
-  calibration run measured (currently 0 of 35 — see item 4 and
-  `docs/receipts/tau_calibration.txt`) — not because the gate is broken,
-  but because no validation split so far has contained an error close
-  enough to a cell's footprint to trip it. This step is what would make
-  that gate functional rather than structurally inert.
-- Re-run `python -m recog.calibrate_tau` against the harder split once it
-  exists. Success looks like a τ the sweep *locates* by trading safety
-  against throughput, rather than one it reports because it is the
-  sample's minimum (contrast with the current sweep result in
-  `docs/receipts/tau_calibration.txt`, where the fail budget never binds).
-
-### Step 2 — Spec #2: procedural trays and 21700/26650 cell formats
+**Now the single highest-value action**, promoted ahead of the
+clutter/occlusion work that used to lead this list. That work was
+ordered first on the theory that it would make τ calibratable; per
+item 4 above, τ is now retired as a confidence gate for structural
+reasons no amount of scene difficulty can fix (the two masks it
+compares are not independent, and their measured correlation has the
+wrong sign in all four SKUs), so that justification no longer applies
+and nothing else took its place at the top until now. Spec #2 does not
+depend on that outcome at all — it answers a different, still-open
+question — which is why it leads instead.
 
 `docs/superpowers/specs/2026-08-08-tray-interior-design.md` §8: 21700 and
 26650 cell formats (the `battery` class definition already names 21700; no
@@ -391,10 +387,40 @@ whether it transfers to photographs, which item 1 above and "The
 constraint this plan works around" have already established cannot be
 measured on this project.
 
+### Step 2 — The clutter/occlusion subset of spec #4: cluttered bays and occlusion
+
+**Retained, but on different grounds than before.** This used to be
+Step 1, justified as the way to make τ calibratable. Per item 4 above,
+that justification is gone — no scene difficulty fixes a gate whose two
+inputs are provably not independent and whose measured correlation has
+the wrong sign. It is kept, demoted to second, because it is separately
+worth doing: `obstruction` and `battery` are the weakest two
+segmentation classes measured, IoU 0.6579 (24 instances) and 0.6907 (24
+instances) respectively (`docs/receipts/seg_eval.txt`), and cluttered
+bays / occlusion place exactly the kind of content — foreign objects
+inside the visible bay floor — that these two classes need to get
+better at distinguishing from clear floor. The success criterion is
+therefore **segmenter IoU/boundary-displacement improvement on
+`obstruction` and `battery`**, not a τ that starts rejecting cartridges.
+
+- Build the cluttered-bay and occlusion halves of spec #4
+  (`docs/superpowers/specs/2026-08-08-tray-interior-design.md` §8: "4 —
+  Difficulty. Occlusion and clutter, lighting extremes, truncation and
+  framing, and cluttered bays.") ahead of its lighting, truncation and
+  framing halves, which stay in Step 3 below.
+- Re-run `python -m recog.seg_evaluate` against the harder split once it
+  exists and compare `obstruction`/`battery` IoU and boundary
+  displacement to the current 0.6579/0.6907 and 1.184 mm baselines
+  (`docs/receipts/seg_eval.txt`). Re-running
+  `python -m recog.calibrate_tau` is no longer a meaningful success
+  criterion for this step — τ is retired regardless of what that split
+  shows (item 4) — though the receipt can still be regenerated for the
+  record.
+
 ### Step 3 — Spec #3 realism and the remainder of spec #4, as domain randomisation
 
 `docs/superpowers/specs/2026-08-09-spec3-realism-decisions.md` plus the
-parts of spec #4 not pulled into Step 1: lighting extremes, truncation and
+parts of spec #4 not pulled into Step 2: lighting extremes, truncation and
 framing.
 
 **The logic changes here and should be stated, not assumed.** When the
@@ -418,9 +444,11 @@ encountered."
   character) even though, per item 2 above, that set cannot validate the
   result quantitatively.
 - This step stays last among the three: it is the widest and least
-  targeted of them. It does not address the one thing currently measured
-  and blocked (τ, Step 1), and unlike Step 2 it does not produce a
-  measurement at all — only broader coverage.
+  targeted of them. τ is no longer "the one thing currently measured and
+  blocked" this step could address — it is retired outright, not scene-
+  difficulty-dependent (item 4) — and unlike Step 1's generalisation
+  measurement, this step does not produce a measurement at all, only
+  broader coverage.
 
 ### Step 4 — Scale the synthetic set — DONE
 
@@ -465,9 +493,13 @@ the scale-up described in this step.
 
 ### Step 5 — Close the loop on the open items
 
-- Wire the calibrated τ, or delete the config key and state that 0.85 is a
-  fixed conservative default (currently the key exists and nothing reads it).
-  Depends on Step 1 producing a τ worth wiring — the current value is not.
+- Delete the `tau` config key, or repurpose it as a fixed, explicitly
+  un-calibrated conservative default (currently the key exists and
+  nothing reads it; 0.85 is what `plan/placement_area.py` actually
+  applies). No longer "depends on a future step producing a τ worth
+  wiring" — per item 4, τ is retired as a confidence gate outright, so
+  no scene-difficulty or dataset-scale step downstream will ever produce
+  one worth wiring in.
 - Resolve the 2/126 damage cases (was 1/126 pre-fix, 2/54 before that) per
   item 3 above — not yet individually re-investigated on the current split.
 - Consider hardening `tests/test_synth3d.py`'s bpy-boundary check: it is a
