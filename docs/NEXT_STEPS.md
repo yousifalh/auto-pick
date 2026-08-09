@@ -23,7 +23,7 @@ Four plans were executed end to end. Every number below has a receipt in
 | A | Forbidden-mask FFDH shelf advance | 3.17 → **14.28 cells** at 2.5 % coverage, 40/40 paired seed wins |
 | B | Five-class segmentation ground truth from CAD | `placement_area` = currently-free floor, **0 overlapping pixels** across 3280 mask pairs (full 502-scene tray-interior dataset; was 139 pairs on a 32-scene spot check) |
 | C | Per-ROI bay segmenter | IoU 0.8126; boundary displacement **0.949 mm** (bay) vs the 2.9 mm a mask head would quantise to |
-| D | Integration and arbitration | Planning **2.0 ms/cartridge** vs an 8 ms budget; segmentation 40.9 ms for 8 crops vs 50 ms (was 16.7 ms; see the tray-interior retrain note below) |
+| D | Integration and arbitration | Planning **2.0 ms/cartridge** vs an 8 ms budget; segmentation 20.2 ms for 8 crops vs 50 ms (was 16.7 ms; an intermediate 40.9 ms reading was GPU-contention noise, since superseded by a clean re-measurement — see the tray-interior retrain note below) |
 
 New modules: `recog/synth3d/bay.py`, `recog/seg_dataset.py`,
 `recog/seg_training.py`, `recog/seg_evaluate.py`, `recog/bay_segmenter.py`,
