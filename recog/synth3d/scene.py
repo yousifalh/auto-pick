@@ -253,28 +253,25 @@ def build(params: dict, rng: random.Random, library: A.AssetLibrary,
                 role_of(o.name) == "case" for o in item.objects):
             lo, hi = A.group_bbox(item.objects)
             entry = library.catalog_entry(item.asset)
-            # case_wall_mm (catalog.json, task 10): the module and bay
-            # proxy below are inset from the cartridge's own footprint by
-            # this much on every side, so a rim of the case's own shell
-            # mesh survives as `cartridge` pixels instead of being
-            # completely covered - see bay.py's module docstring.
-            # `.get(..., 0.0) or 0.0` degrades a catalog written before
-            # this field existed to the old (uninset, whole-footprint)
-            # behaviour rather than crashing on a missing key.
-            wall_mm = (entry.get("case_wall_mm", 0.0) or 0.0) if entry \
-                else 0.0
+            # interior_mm (catalog.json, task 2) is the tray's REAL cavity,
+            # already inset by the measured case wall - the wall is actual
+            # geometry now, not an artificial margin, so no further inset
+            # is applied here (task 3 retires the task-10 wall_mm inset;
+            # see bay.py's module docstring for why keeping it would have
+            # double-inset the cavity).
+            floor_z = hi.z          # fallback: an asset with no measurement
+            if entry and entry.get("tray_floor_mm"):
+                floor_z = lo.z + entry["tray_floor_mm"] / 1000.0
             module_placement = None
             if entry and entry.get("module_bay_mm") \
                     and entry.get("interior_mm"):
                 module_placement = B.module_world_placement(
-                    item.footprint,
-                    tuple(entry["module_bay_mm"]),
                     tuple(entry["interior_mm"][:4]),
+                    tuple(entry["module_bay_mm"]),
                     item.rot_deg, item.placed_xy,
-                    wall_mm=wall_mm,
                 )
             board, pcb_meta = W.build_pcb(
-                (lo.x, lo.y, hi.x, hi.y), hi.z, rng,
+                (lo.x, lo.y, hi.x, hi.y), floor_z, rng,
                 module_placement=module_placement, rot_deg=item.rot_deg)
             item.module_object = board
             meta.setdefault("pcbs", []).append(pcb_meta)
@@ -288,14 +285,12 @@ def build(params: dict, rng: random.Random, library: A.AssetLibrary,
             if entry and entry.get("module_bay_mm") \
                     and entry.get("interior_mm"):
                 placement_placement = B.placement_world_placement(
-                    item.footprint,
-                    tuple(entry["module_bay_mm"]),
                     tuple(entry["interior_mm"][:4]),
+                    tuple(entry["module_bay_mm"]),
                     item.rot_deg, item.placed_xy,
-                    wall_mm=wall_mm,
                 )
                 proxy, proxy_meta = W.build_bay_proxy(
-                    placement_placement, hi.z, rng, rot_deg=item.rot_deg)
+                    placement_placement, floor_z, rng, rot_deg=item.rot_deg)
                 item.bay_object = proxy
                 meta.setdefault("bays", []).append(proxy_meta)
 
@@ -310,16 +305,14 @@ def build(params: dict, rng: random.Random, library: A.AssetLibrary,
                 # rotates with it instead of staying at a fixed world (x, y)
                 # while the bay turns out from under it.
                 placement_rect = B.placement_rect_local(
-                    item.footprint,
-                    tuple(entry["module_bay_mm"]),
                     tuple(entry["interior_mm"][:4]),
-                    wall_mm=wall_mm,
+                    tuple(entry["module_bay_mm"]),
                 )
                 local_poses = B.sample_obstructions(
                     placement_rect, cfg.obstruction, rng)
                 world_poses = B.obstruction_world_poses(
                     local_poses, item.rot_deg, item.placed_xy)
-                built = W.build_obstructions(world_poses, hi.z, rng)
+                built = W.build_obstructions(world_poses, floor_z, rng)
                 item.obstruction_objects = [o for o, _ in built]
                 meta.setdefault("obstructions", []).extend(
                     m for _, m in built)
@@ -362,7 +355,7 @@ def build(params: dict, rng: random.Random, library: A.AssetLibrary,
                     world_seats = B.seated_cell_world_poses(
                         local_seats, item.rot_deg, item.placed_xy)
                     item.seated_objects = W.seat_cells(
-                        library, item.asset, world_seats, hi.z, rng,
+                        library, item.asset, world_seats, floor_z, rng,
                         cfg, backdrop_luma=backdrop_luma)
                     meta.setdefault("seated_cells", []).append(
                         {"asset": item.asset, "n": len(item.seated_objects)})

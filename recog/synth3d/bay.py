@@ -10,16 +10,30 @@ Units follow the caller. `module_bay_from_bounds` is used on millimetre CAD
 bounds at conversion time and on metre scene bounds at render time; it is scale
 free.
 
-Task-10 amendment note: `case_interior_mm` is the case meshes' OUTER AABB, not
-a true interior, so the module and bay proxy used to tile it completely -
-leaving zero `cartridge` (shell) pixels on an open unit, because nothing was
-ever left uncovered for the case's own top-face mesh to show through.
-`case_wall_from_bounds` measures the case wall thickness from the CAD at
-conversion time; `_local_footprint_rect`'s `wall_mm` parameter (threaded
-through `module_rect_local`/`placement_rect_local`/`module_world_placement`/
-`placement_world_placement`) reserves that margin around all four sides of the
-cartridge's own footprint so a rim of shell survives. Defaults to 0.0
-everywhere, which reproduces the exact pre-amendment behaviour.
+Task-10 amendment note (superseded by task 3): `case_interior_mm` used to be
+the case meshes' OUTER AABB, not a true interior, so the module and bay proxy
+tiled it completely - leaving zero `cartridge` (shell) pixels on an open
+unit. A `wall_mm` parameter threaded through `module_rect_local`/
+`placement_rect_local`/`module_world_placement`/`placement_world_placement`
+used to inset an artificial margin, via a lerp from `interior_mm`'s frame
+onto the cartridge's own outer footprint, to fake a rim.
+
+Task 2 replaced `case_interior_mm` with a REAL `interior_mm` - the tray's
+actual cavity, already inset by the measured wall (`interior_from_tray`).
+That made the lerp both unnecessary and wrong: it was only an identity
+mapping while `interior_mm` and the footprint were (near enough) the same
+rectangle, which stopped being true once `interior_mm` became a genuinely
+smaller, real cavity - the lerp then stretched the module/placement rects
+back OUT across the whole footprint, including the wall, instead of
+confining them to the cavity.
+
+Task 3 removes the lerp and `wall_mm` entirely. `tray_outer_mm` (and so
+`interior_mm` and `module_bay_mm`) are measured centred on (0, 0) in the
+CAD's own frame, and an item's local frame (`assets.place_item`'s pivot) is
+centred the same way - they are the SAME frame, differing only by
+millimetres vs. metres. `module_rect_local`/`placement_rect_local` now take
+`interior_mm`/`bay_mm` directly and only convert units; no footprint
+argument, no `wall_mm`, no lerp.
 """
 
 from __future__ import annotations
@@ -182,112 +196,104 @@ def interior_from_tray(tray_outer: Rect, cells_union: Rect,
     return (max(ix0, tx0), max(iy0, ty0), min(ix1, tx1), min(iy1, ty1))
 
 
-def _local_footprint_rect(footprint: Tuple[float, float],
-                          wall_mm: float = 0.0) -> Rect:
-    """The cartridge's own local frame - centred on its pivot, before any
-    placement rotation - inset by the case wall on every side.
+def _bay_edge(interior_mm: Rect, bay_mm: Rect, tol: float = 1e-6) -> str:
+    """Which single edge of `interior_mm` the strip `bay_mm` is flush
+    against, as one of `"-x"`, `"+x"`, `"-y"`, `"+y"`.
 
-    `footprint` is in METRES (see `module_rect_local`'s docstring);
-    `wall_mm` is catalog.json's `case_wall_mm`, measured in millimetres at
-    CAD-conversion time (`case_wall_from_bounds`) - this is the one place
-    that unit crossing happens, so every caller can pass the catalog value
-    straight through.
+    `bay_mm` (catalog.json's `module_bay_mm`, from `module_bay_from_bounds`)
+    is always a rectangle spanning `interior_mm`'s FULL width on one axis
+    and flush against one edge on the other - "the module runs wall to
+    wall" (see that function's docstring). This checks that shape
+    explicitly rather than assuming it, because both `module_rect_local`
+    and `placement_rect_local` need to know which edge to build the
+    complement against, and a bad upstream measurement (module_bay_mm not
+    actually a full-span strip) should fail loudly here rather than
+    silently return a plausible-looking rectangle - the way a wrong
+    `case_wall_mm` upstream already once corrupted `interior_mm` unnoticed.
 
-    `wall_mm=0.0` (the default) reproduces the un-inset footprint exactly,
-    so every caller that does not pass it keeps the exact pre-amendment
-    behaviour: `module_rect_local`/`placement_rect_local` tiling the WHOLE
-    footprint with nothing left over. That was the bug this parameter
-    exists to fix (see the module docstring's task-10 note) - a non-zero
-    wall_mm reserves a wall_mm-wide margin around all four sides that
-    neither the module nor the placement proxy ever claims, so the case's
-    own shell mesh (the `cartridge` class) shows through there instead of
-    being completely covered.
-
-    Raises ValueError if `wall_mm` leaves no room for anything - i.e. if
-    twice the wall meets or exceeds either footprint dimension.
+    Raises ValueError if `bay_mm` is not a full-span strip flush against
+    exactly one edge of `interior_mm` (including the degenerate case where
+    `bay_mm` spans both axes fully, i.e. equals `interior_mm` itself).
     """
-    fw, fh = footprint
-    wall_m = wall_mm / 1000.0
-    x0, y0 = -fw / 2 + wall_m, -fh / 2 + wall_m
-    x1, y1 = fw / 2 - wall_m, fh / 2 - wall_m
-    if x0 >= x1 or y0 >= y1:
+    ix0, iy0, ix1, iy1 = interior_mm
+    bx0, by0, bx1, by1 = bay_mm
+
+    x_full = math.isclose(bx0, ix0, abs_tol=tol) and \
+        math.isclose(bx1, ix1, abs_tol=tol)
+    y_full = math.isclose(by0, iy0, abs_tol=tol) and \
+        math.isclose(by1, iy1, abs_tol=tol)
+
+    candidates = []
+    if x_full:
+        if math.isclose(by0, iy0, abs_tol=tol) and \
+                not math.isclose(by1, iy1, abs_tol=tol):
+            candidates.append("-y")
+        if math.isclose(by1, iy1, abs_tol=tol) and \
+                not math.isclose(by0, iy0, abs_tol=tol):
+            candidates.append("+y")
+    if y_full:
+        if math.isclose(bx0, ix0, abs_tol=tol) and \
+                not math.isclose(bx1, ix1, abs_tol=tol):
+            candidates.append("-x")
+        if math.isclose(bx1, ix1, abs_tol=tol) and \
+                not math.isclose(bx0, ix0, abs_tol=tol):
+            candidates.append("+x")
+
+    if len(candidates) != 1:
         raise ValueError(
-            f"_local_footprint_rect: wall_mm={wall_mm:g} leaves no room in "
-            f"footprint {footprint} (metres) once inset by it on both "
-            f"sides of each axis")
-    return x0, y0, x1, y1
+            f"bay {bay_mm} is not a full-span strip flush against exactly "
+            f"one edge of interior {interior_mm} (candidates: {candidates})"
+            f" - module_bay_mm should always run wall to wall on one axis; "
+            f"a bad upstream measurement must fail loudly rather than "
+            f"silently return a plausible rectangle")
+    return candidates[0]
 
 
-def _lerp_rect(rect: Rect, src: Rect, dst: Rect) -> Rect:
-    """Map `rect` from the `src` box's frame into the `dst` box's frame."""
-    sx0, sy0, sx1, sy1 = src
-    dx0, dy0, dx1, dy1 = dst
-    sw = (sx1 - sx0) or 1.0
-    sh = (sy1 - sy0) or 1.0
-    fx = (dx1 - dx0) / sw
-    fy = (dy1 - dy0) / sh
-    x0, y0, x1, y1 = rect
-    return (dx0 + (x0 - sx0) * fx, dy0 + (y0 - sy0) * fy,
-            dx0 + (x1 - sx0) * fx, dy0 + (y1 - sy0) * fy)
-
-
-def module_rect_local(footprint: Tuple[float, float], bay_mm: Rect,
-                      interior_mm: Rect, wall_mm: float = 0.0) -> Rect:
+def module_rect_local(interior_mm: Rect, bay_mm: Rect) -> Rect:
     """Where the electronics module sits, in the cartridge's OWN local
     frame - centred on the cartridge's own pivot, before any placement
-    rotation or translation.
+    rotation or translation. Returns metres.
 
-    `footprint` is `assets.Item.footprint` (metres): the cartridge's
-    un-rotated (size_x, size_y), the same numbers `layout.plan` packs
-    with. `bay_mm`/`interior_mm` come from catalog.json in millimetres.
-    `wall_mm` is catalog.json's `case_wall_mm` (millimetres); see
-    `_local_footprint_rect` for what it does and why it defaults to 0.
+    `interior_mm`/`bay_mm` are catalog.json's `interior_mm`/`module_bay_mm`,
+    in millimetres. No lerp and no footprint argument: `tray_outer_mm` (and
+    therefore `interior_mm` and `bay_mm`, both derived from it) is measured
+    centred on (0, 0) in the CAD's own frame, and an item's local frame
+    (`assets.place_item`'s pivot) is centred on the SAME point - they are
+    the same frame, differing only by millimetres vs. metres. `bay_mm`
+    already IS the module's true position within the cavity; it needs
+    unit conversion, not remapping. (See the module docstring for why this
+    replaces a lerp through the cartridge's outer footprint, which stopped
+    being correct once `interior_mm` became a real, smaller cavity.)
 
-    A cartridge's own axis-aligned bbox `[lo, hi]` is, trivially, centred
-    on `(lo+hi)/2` - that is what "centre" means - so representing it as
-    `(-w/2, -h/2, w/2, h/2)` (or, with `wall_mm` inset, the same rect
-    shrunk by the wall on every side) is exact, not an approximation, for
-    ANY cartridge shape. `_lerp_rect` only uses fractional position within
-    each rect's own span, so it does not matter where interior_mm's
-    absolute origin sits either. The bay keeps its proportion of the
-    interior, so the module lands against the same short side at the same
-    relative depth whatever the scene scale - and, because this never
-    touches a rotated world AABB, at the cartridge's true physical size
-    regardless of how the placement later rotates it. Use
-    `module_world_placement` for the world-space centre and size after a
-    `layout.Placement` is applied.
+    Use `module_world_placement` for the world-space centre and size after
+    a `layout.Placement` is applied.
     """
-    local = _local_footprint_rect(footprint, wall_mm)
-    return _lerp_rect(bay_mm, interior_mm, local)
+    _bay_edge(interior_mm, bay_mm)          # validate; raises if malformed
+    x0, y0, x1, y1 = bay_mm
+    return (x0 / 1000.0, y0 / 1000.0, x1 / 1000.0, y1 / 1000.0)
 
 
-def placement_rect_local(footprint: Tuple[float, float], bay_mm: Rect,
-                         interior_mm: Rect, wall_mm: float = 0.0) -> Rect:
+def placement_rect_local(interior_mm: Rect, bay_mm: Rect) -> Rect:
     """The battery placement area, in the same local frame as
-    `module_rect_local`: the (wall-inset) local footprint minus the module
-    bay, taken on whichever axis the bay occupies. Same `wall_mm` contract
-    as `module_rect_local` - pass the SAME value both places, or the two
-    rects stop being complementary.
+    `module_rect_local`: `interior_mm`'s complement of `bay_mm`, on
+    whichever edge `bay_mm` is flush against - found generically via
+    `_bay_edge` rather than assumed to be any particular side. Returns
+    metres.
     """
-    fx0, fy0, fx1, fy1 = _local_footprint_rect(footprint, wall_mm)
-    mx0, my0, mx1, my1 = module_rect_local(footprint, bay_mm, interior_mm,
-                                           wall_mm)
-
-    # The bay spans one full axis; the placement area is what is left on
-    # the other. Compare against the footprint edges to find which.
-    tol = 1e-9
-    if abs(mx0 - fx0) < tol and abs(mx1 - fx1) < tol:
-        # Bay spans full width -> it took a y side.
-        return (fx0, my1, fx1, fy1) if abs(my0 - fy0) < tol \
-            else (fx0, fy0, fx1, my0)
-    return (mx1, fy0, fx1, fy1) if abs(mx0 - fx0) < tol \
-        else (fx0, fy0, mx0, fy1)
+    edge = _bay_edge(interior_mm, bay_mm)
+    ix0, iy0, ix1, iy1 = interior_mm
+    bx0, by0, bx1, by1 = bay_mm
+    rect_mm = {
+        "-x": (bx1, iy0, ix1, iy1),
+        "+x": (ix0, iy0, bx0, iy1),
+        "-y": (ix0, by1, ix1, iy1),
+        "+y": (ix0, iy0, ix1, by0),
+    }[edge]
+    return tuple(v / 1000.0 for v in rect_mm)
 
 
-def module_world_placement(footprint: Tuple[float, float], bay_mm: Rect,
-                           interior_mm: Rect, rot_deg: float,
-                           translate: Tuple[float, float],
-                           wall_mm: float = 0.0
+def module_world_placement(interior_mm: Rect, bay_mm: Rect, rot_deg: float,
+                           translate: Tuple[float, float]
                            ) -> Tuple[float, float, float, float]:
     """The module's centre and TRUE size in world space.
 
@@ -295,9 +301,7 @@ def module_world_placement(footprint: Tuple[float, float], bay_mm: Rect,
     SAME `layout.Placement.rot_deg` and `(x, y)` the cartridge itself was
     placed with - the caller (world.py) still has to rotate the board
     MESH by `rot_deg` about `(cx, cy)` to match the cartridge's actual
-    orientation; this only gets the centre and size right. `wall_mm` is
-    catalog.json's `case_wall_mm`; see `_local_footprint_rect` for what it
-    does and why it defaults to 0.
+    orientation; this only gets the centre and size right.
 
     This works in `module_rect_local`'s frame and applies ONE rigid
     rotate-then-translate to the module's centre - the same composition
@@ -306,21 +310,19 @@ def module_world_placement(footprint: Tuple[float, float], bay_mm: Rect,
     exact for ANY `rot_deg`, including the jitter `layout.plan` adds on
     top of every k*90 turn.
 
-    That last point is the reason this function exists rather than a
-    single `bay_mm -> world AABB` lerp: `layout.plan` rotates by
+    That last point is the reason this function rotates a POINT rather
+    than re-bounding a rotated RECTANGLE: `layout.plan` rotates by
     `quarter*90 + jitter` (jitter up to a few degrees), and the AABB of a
     rotated rectangle is LARGER than the rectangle - its diagonal projects
-    wider than either side. Mapping the bay proportionally into that
-    AABB (as a naive world-footprint lerp does) inflates and mislocates
-    the module by several percent even at a couple of degrees of jitter,
-    enough to visibly overhang the case - measured on an 81.7x180mm case
-    at 2 degrees: the AABB is 87.9x182.8, a 7.6% inflation on the short
-    axis. Rotating one POINT (the centre) instead of re-bounding a whole
-    rotated RECTANGLE has no such effect: a point has no extent to
-    inflate.
+    wider than either side. Mapping the bay proportionally into that AABB
+    (a naive world-footprint lerp) inflates and mislocates the module by
+    several percent even at a couple of degrees of jitter, enough to
+    visibly overhang the case - measured on an 81.7x180mm case at 2
+    degrees: the AABB is 87.9x182.8, a 7.6% inflation on the short axis.
+    Rotating one POINT (the centre) instead has no such effect: a point
+    has no extent to inflate.
     """
-    lx0, ly0, lx1, ly1 = module_rect_local(footprint, bay_mm, interior_mm,
-                                           wall_mm)
+    lx0, ly0, lx1, ly1 = module_rect_local(interior_mm, bay_mm)
     w, h = lx1 - lx0, ly1 - ly0
     lcx, lcy = (lx0 + lx1) / 2, (ly0 + ly1) / 2
     theta = math.radians(rot_deg)
@@ -330,10 +332,9 @@ def module_world_placement(footprint: Tuple[float, float], bay_mm: Rect,
     return wcx, wcy, w, h
 
 
-def placement_world_placement(footprint: Tuple[float, float], bay_mm: Rect,
-                              interior_mm: Rect, rot_deg: float,
-                              translate: Tuple[float, float],
-                              wall_mm: float = 0.0
+def placement_world_placement(interior_mm: Rect, bay_mm: Rect,
+                              rot_deg: float,
+                              translate: Tuple[float, float]
                               ) -> Tuple[float, float, float, float]:
     """The placement area's centre and TRUE size in world space.
 
@@ -346,11 +347,9 @@ def placement_world_placement(footprint: Tuple[float, float], bay_mm: Rect,
     local frame, so carrying each through this same one-rotate-one-translate
     pipeline keeps them exact AND keeps them adjacent-not-overlapping after
     a `layout.plan` jitter, because a rigid transform applied identically to
-    two disjoint rectangles cannot make them overlap. Same `wall_mm`
-    contract as `module_world_placement` - pass the SAME value both places.
+    two disjoint rectangles cannot make them overlap.
     """
-    lx0, ly0, lx1, ly1 = placement_rect_local(footprint, bay_mm, interior_mm,
-                                              wall_mm)
+    lx0, ly0, lx1, ly1 = placement_rect_local(interior_mm, bay_mm)
     w, h = lx1 - lx0, ly1 - ly0
     lcx, lcy = (lx0 + lx1) / 2, (ly0 + ly1) / 2
     theta = math.radians(rot_deg)

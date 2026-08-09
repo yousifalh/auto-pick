@@ -192,208 +192,162 @@ def test_catalog_records_the_measured_case_wall(name, wall):
 from recog.synth3d.bay import (module_rect_local, module_world_placement,
                                placement_rect_local, placement_world_placement)
 
-# `footprint` for these is `assets.Item.footprint`: the cartridge's own
-# UN-ROTATED (size_x, size_y) in metres - not a world AABB. See
-# `module_world_placement`'s docstring for why that distinction is load
-# bearing: a world AABB is inflated by rotation, an un-rotated footprint is
-# not.
+# Task 3 (2026-08-09-tray-interior, revised brief): `module_rect_local` /
+# `placement_rect_local` used to lerp `bay_mm`'s fractional position within
+# `interior_mm` onto `assets.Item.footprint` (a THIRD rect, the cartridge's
+# outer un-rotated size) via a `wall_mm`-inset margin. That was only an
+# identity mapping while `interior_mm` and the footprint were (near enough)
+# the same rectangle - true only because `case_interior_mm` was misnamed
+# and actually held the outer AABB. Task 2 made `interior_mm` a REAL,
+# smaller (and sometimes asymmetric) cavity, which made the lerp wrong: it
+# stretched the module/placement rects back OUT across the whole footprint,
+# including the wall (see task-3-report.md for the measured numbers).
+#
+# The fix removes the lerp, the footprint argument and `wall_mm` entirely:
+# `tray_outer_mm` (and so `interior_mm`/`bay_mm`) is measured centred on
+# (0, 0) in the CAD's own frame, which IS the item's local pivot frame, so
+# `bay_mm` needs only a millimetre -> metre conversion, no remapping.
+
+CATALOG_FIXTURES = [
+    # name, interior_mm, bay_mm - copied from recog/synth3d/assets/
+    # catalog.json so these tests exercise the real measured geometry, not
+    # an invented rectangle.
+    ("AnkerPowerCore10000", (-27.45, -43.0, 27.45, 41.45),
+     (-27.45, 22.0, 27.45, 41.45)),
+    ("AnkerPowerCore13000", (-36.6, -44.75, 36.6, 44.75),
+     (-36.6, 22.0, 36.6, 44.75)),
+    ("AnkerPowerCore20100", (-27.45, -80.2, 27.45, 80.2),
+     (-27.45, 55.0, 27.45, 80.2)),
+    ("AnkerPowerCore26800", (-36.6, -85.75, 36.6, 85.75),
+     (-36.6, 55.0, 36.6, 85.75)),
+]
 
 
-def test_module_rect_local_anchors_to_the_plus_y_side_and_scales():
-    # Catalog: interior 0..60 x 0..90 mm, bay is the +y strip 66..90.
-    interior_mm = (0.0, 0.0, 60.0, 90.0)
-    bay_mm = (0.0, 66.0, 60.0, 90.0)
-    footprint = (0.060, 0.090)         # same proportions, 1000x smaller
-    x0, y0, x1, y1 = module_rect_local(footprint, bay_mm, interior_mm)
-    assert (x0, x1) == pytest.approx((-0.030, 0.030))       # full width
-    assert (y0, y1) == pytest.approx((0.021, 0.045))        # +y strip
+@pytest.mark.parametrize("name,interior_mm,bay_mm", CATALOG_FIXTURES)
+def test_module_and_placement_rects_tile_the_interior_exactly(
+        name, interior_mm, bay_mm):
+    """The design spec's §7 acceptance criterion: the pair tiles the
+    INTERIOR, not the cartridge's outer footprint. This is the test that
+    would have caught the lerp-through-the-footprint bug (see
+    task-3-report.md's Amendment C measurements)."""
+    m = module_rect_local(interior_mm, bay_mm)
+    p = placement_rect_local(interior_mm, bay_mm)
 
+    ox = min(m[2], p[2]) - max(m[0], p[0])
+    oy = min(m[3], p[3]) - max(m[1], p[1])
+    assert ox <= 1e-9 or oy <= 1e-9, f"{name}: module and placement overlap"
 
-def test_module_rect_local_anchors_to_the_minus_x_side():
-    interior_mm = (0.0, 0.0, 90.0, 60.0)
-    bay_mm = (0.0, 0.0, 24.0, 60.0)
-    footprint = (0.090, 0.060)
-    x0, y0, x1, y1 = module_rect_local(footprint, bay_mm, interior_mm)
-    assert (x0, x1) == pytest.approx((-0.045, -0.021))
-    assert (y0, y1) == pytest.approx((-0.030, 0.030))
+    ix0, iy0, ix1, iy1 = (v / 1000.0 for v in interior_mm)
+    union = (min(m[0], p[0]), min(m[1], p[1]), max(m[2], p[2]), max(m[3], p[3]))
+    assert union == pytest.approx((ix0, iy0, ix1, iy1))
 
-
-def test_module_rect_local_is_a_strict_subset_of_the_local_footprint():
-    interior_mm = (0.0, 0.0, 60.0, 90.0)
-    bay_mm = (0.0, 66.0, 60.0, 90.0)
-    footprint = (0.060, 0.090)
-    mx0, my0, mx1, my1 = module_rect_local(footprint, bay_mm, interior_mm)
-    fw, fh = footprint
-    fx0, fy0, fx1, fy1 = -fw / 2, -fh / 2, fw / 2, fh / 2
-    assert fx0 - 1e-9 <= mx0 < mx1 <= fx1 + 1e-9
-    assert fy0 - 1e-9 <= my0 < my1 <= fy1 + 1e-9
-
-
-# ---- wall_mm: the amendment's inset. Defaults to 0.0 everywhere (every
-# test above calls these functions with no wall_mm and is therefore an
-# unchanged regression pin for the pre-amendment behaviour); these tests
-# cover the non-zero case directly.
-
-def test_module_rect_local_wall_mm_zero_is_the_default_behaviour():
-    interior_mm = (0.0, 0.0, 60.0, 90.0)
-    bay_mm = (0.0, 66.0, 60.0, 90.0)
-    footprint = (0.060, 0.090)
-    assert module_rect_local(footprint, bay_mm, interior_mm, 0.0) == \
-        pytest.approx(module_rect_local(footprint, bay_mm, interior_mm))
-
-
-def test_module_rect_local_insets_by_wall_mm():
-    interior_mm = (0.0, 0.0, 60.0, 90.0)
-    bay_mm = (0.0, 66.0, 60.0, 90.0)
-    footprint = (0.060, 0.090)
-    x0, y0, x1, y1 = module_rect_local(footprint, bay_mm, interior_mm,
-                                       wall_mm=3.0)
-    assert (x0, x1) == pytest.approx((-0.027, 0.027))
-    assert (y0, y1) == pytest.approx((0.0196, 0.042))
-
-
-def test_placement_rect_local_insets_by_wall_mm():
-    interior_mm = (0.0, 0.0, 60.0, 90.0)
-    bay_mm = (0.0, 66.0, 60.0, 90.0)
-    footprint = (0.060, 0.090)
-    x0, y0, x1, y1 = placement_rect_local(footprint, bay_mm, interior_mm,
-                                          wall_mm=3.0)
-    assert (x0, x1) == pytest.approx((-0.027, 0.027))
-    assert (y0, y1) == pytest.approx((-0.042, 0.0196))
-
-
-def test_wall_mm_leaves_a_rim_around_all_four_sides_of_the_true_footprint():
-    """The whole point of the amendment: module + placement no longer tile
-    the cartridge's true physical footprint completely, so the case's own
-    shell mesh shows through on every side by exactly wall_mm."""
-    interior_mm = (0.0, 0.0, 60.0, 90.0)
-    bay_mm = (0.0, 66.0, 60.0, 90.0)
-    footprint = (0.060, 0.090)
-    wall_mm = 3.0
-    wall_m = wall_mm / 1000.0
-    fw, fh = footprint
-    true_fx0, true_fy0 = -fw / 2, -fh / 2
-    true_fx1, true_fy1 = fw / 2, fh / 2
-
-    m = module_rect_local(footprint, bay_mm, interior_mm, wall_mm)
-    p = placement_rect_local(footprint, bay_mm, interior_mm, wall_mm)
-
-    # Both sides of the x axis are inset (module and placement share the
-    # same x span, since the bay is on the y axis here).
-    assert m[0] == p[0] == pytest.approx(true_fx0 + wall_m)
-    assert m[2] == p[2] == pytest.approx(true_fx1 - wall_m)
-    # module owns the far (+y) edge, placement owns the near (-y) edge.
-    assert m[3] == pytest.approx(true_fy1 - wall_m)
-    assert p[1] == pytest.approx(true_fy0 + wall_m)
-
-
-def test_module_and_placement_tile_only_the_inset_footprint_with_wall_mm():
-    interior_mm = (0.0, 0.0, 60.0, 90.0)
-    bay_mm = (0.0, 66.0, 60.0, 90.0)
-    footprint = (0.060, 0.090)
-    wall_mm = 3.0
-    wall_m = wall_mm / 1000.0
-    fw, fh = footprint
-
-    m = module_rect_local(footprint, bay_mm, interior_mm, wall_mm)
-    p = placement_rect_local(footprint, bay_mm, interior_mm, wall_mm)
     area = lambda r: (r[2] - r[0]) * (r[3] - r[1])
-    inset_area = (fw - 2 * wall_m) * (fh - 2 * wall_m)
-    assert area(m) + area(p) == pytest.approx(inset_area)
-    # ... and strictly less than the un-inset footprint, i.e. some area was
-    # actually reserved for the shell rim.
-    assert area(m) + area(p) < fw * fh
+    assert area(m) + area(p) == pytest.approx((ix1 - ix0) * (iy1 - iy0))
 
 
-def test_wall_mm_too_large_for_the_footprint_raises():
+@pytest.mark.parametrize("name,interior_mm,bay_mm", CATALOG_FIXTURES)
+def test_neither_rect_exceeds_the_interior(name, interior_mm, bay_mm):
+    ix0, iy0, ix1, iy1 = (v / 1000.0 for v in interior_mm)
+    for r in (module_rect_local(interior_mm, bay_mm),
+             placement_rect_local(interior_mm, bay_mm)):
+        assert ix0 - 1e-9 <= r[0] < r[2] <= ix1 + 1e-9
+        assert iy0 - 1e-9 <= r[1] < r[3] <= iy1 + 1e-9
+
+
+@pytest.mark.parametrize("name,interior_mm,bay_mm", CATALOG_FIXTURES)
+def test_module_rect_equals_bay_mm_converted_to_metres(name, interior_mm, bay_mm):
+    m = module_rect_local(interior_mm, bay_mm)
+    assert m == pytest.approx(tuple(v / 1000.0 for v in bay_mm))
+
+
+def test_bay_not_flush_against_any_interior_edge_raises():
+    """A bay floating in the middle of the interior (touching no edge) is a
+    bad upstream measurement; both rect functions must fail loudly on it
+    rather than silently return a plausible-looking rectangle."""
     interior_mm = (0.0, 0.0, 60.0, 90.0)
-    bay_mm = (0.0, 66.0, 60.0, 90.0)
-    footprint = (0.060, 0.090)
+    bay_mm = (10.0, 10.0, 50.0, 50.0)
     with pytest.raises(ValueError):
-        module_rect_local(footprint, bay_mm, interior_mm, wall_mm=31.0)
+        module_rect_local(interior_mm, bay_mm)
+    with pytest.raises(ValueError):
+        placement_rect_local(interior_mm, bay_mm)
 
 
-def test_placement_rect_local_is_the_complement_of_the_module_rect():
-    interior_mm = (0.0, 0.0, 60.0, 90.0)
-    bay_mm = (0.0, 66.0, 60.0, 90.0)
-    footprint = (0.060, 0.090)
+def test_the_10000s_asymmetric_interior_survives_into_the_placement_rect():
+    """interior_from_tray widened AnkerPowerCore10000's y0 edge to -43.0mm
+    to contain the cells - NOT a symmetric wall inset, which would have put
+    it at -41.45mm (= tray_outer's -45.45 + case_wall_mm's 4.0). The old
+    lerp-through-the-footprint destroyed exactly this asymmetry (it can only
+    reproduce a UNIFORM inset of the footprint); pin the true value
+    explicitly so it cannot silently regress."""
+    interior_mm = (-27.45, -43.0, 27.45, 41.45)
+    bay_mm = (-27.45, 22.0, 27.45, 41.45)
+    p = placement_rect_local(interior_mm, bay_mm)
+    assert p[1] == pytest.approx(-0.0430, abs=1e-6)
+    assert p[1] != pytest.approx(-0.04145, abs=1e-4)
 
-    m = module_rect_local(footprint, bay_mm, interior_mm)
-    p = placement_rect_local(footprint, bay_mm, interior_mm)
 
-    # Disjoint, adjacent, and together they tile the footprint.
-    assert p[3] == pytest.approx(m[1])
-    fw, fh = footprint
-    assert (p[0], p[1], p[2]) == pytest.approx((-fw / 2, -fh / 2, fw / 2))
+@pytest.mark.parametrize("interior,bay,edge", [
+    ((0.0, 0.0, 60.0, 90.0), (0.0, 66.0, 60.0, 90.0), "+y"),
+    ((0.0, 0.0, 60.0, 90.0), (0.0, 0.0, 60.0, 24.0), "-y"),
+    ((0.0, 0.0, 90.0, 60.0), (66.0, 0.0, 90.0, 60.0), "+x"),
+    ((0.0, 0.0, 90.0, 60.0), (0.0, 0.0, 24.0, 60.0), "-x"),
+])
+def test_bay_edge_detected_generically_on_all_four_sides(interior, bay, edge):
+    """`_bay_edge` must not hardcode any one side - every real asset
+    happens to have its bay on +y, but nothing in the geometry guarantees
+    that for a future one, and the brief explicitly warns against assuming
+    it."""
+    from recog.synth3d.bay import _bay_edge
+    assert _bay_edge(interior, bay) == edge
+
+    m = module_rect_local(interior, bay)
+    p = placement_rect_local(interior, bay)
     area = lambda r: (r[2] - r[0]) * (r[3] - r[1])
-    assert area(m) + area(p) == pytest.approx(fw * fh)
+    ix0, iy0, ix1, iy1 = (v / 1000.0 for v in interior)
+    assert area(m) + area(p) == pytest.approx((ix1 - ix0) * (iy1 - iy0))
 
 
 # ---- module_world_placement: `layout.plan` rotates by quarter*90 + a few
 # degrees of jitter, and a naive lerp into the ROTATED case's world AABB
-# (what `module_rect_local`'s predecessor did) inflates the module, because
-# the AABB of a rotated rectangle is larger than the rectangle. These pin
-# down that the fix - rotating the LOCAL centre as a point, which has no
-# extent to inflate - keeps the module's true size for ANY rotation angle,
-# not just the k*90 multiples the old quarter-only fix handled.
+# inflates the module, because the AABB of a rotated rectangle is larger
+# than the rectangle. These pin down that rotating the LOCAL centre as a
+# point, which has no extent to inflate, keeps the module's true size for
+# ANY rotation angle, not just the k*90 multiples a quarter-only fix would
+# handle. Unchanged by this task other than dropping `footprint`/`wall_mm`
+# from the call - "do not change how they rotate" (task-3-brief.md).
 
 def test_module_world_placement_size_is_invariant_to_rotation_angle():
     # AnkerPowerCore26800's real numbers: 81.7mm-wide interior, a 35.0mm
     # bay on the +y end - the case measured on the contact sheet as
-    # overhanging by 3.3% at ~2 degrees of jitter under the old lerp.
-    footprint = (0.0817, 0.180)
+    # overhanging by 3.3% at ~2 degrees of jitter under the old naive lerp.
     bay_mm = (-40.85, 55.0, 40.85, 90.0)
     interior_mm = (-40.85, -90.0, 40.85, 90.0)
     for rot_deg in (0.0, 2.0, 47.3, 90.0, 91.7, 137.0, 180.0, 270.0, 358.0):
         _, _, w, h = module_world_placement(
-            footprint, bay_mm, interior_mm, rot_deg, (0.0, 0.0))
+            interior_mm, bay_mm, rot_deg, (0.0, 0.0))
         assert w == pytest.approx(0.0817, abs=1e-9)
         assert h == pytest.approx(0.035, abs=1e-9)
 
 
 def test_module_world_placement_matches_the_local_case_at_zero_rotation():
-    footprint = (0.060, 0.090)
-    bay_mm = (0.0, 66.0, 60.0, 90.0)
-    interior_mm = (0.0, 0.0, 60.0, 90.0)
-    # A cartridge placed with its centre at (0.130, 0.245) sits at world
-    # AABB 0.100..0.160 x 0.200..0.290 - the same case the un-rotated
-    # module_rect tests above use.
+    # A synthetic but CENTRED (item-pivot-frame) 60x90mm interior, bay on
+    # +y - the real assets' shape, at round numbers.
+    bay_mm = (-30.0, 21.0, 30.0, 45.0)
+    interior_mm = (-30.0, -45.0, 30.0, 45.0)
     cx, cy, w, h = module_world_placement(
-        footprint, bay_mm, interior_mm, 0.0, (0.130, 0.245))
+        interior_mm, bay_mm, 0.0, (0.130, 0.245))
     assert (w, h) == pytest.approx((0.060, 0.024))
     assert (cx, cy) == pytest.approx((0.130, 0.278))
 
 
 def test_module_world_placement_centre_rotates_about_the_translate_point():
-    footprint = (0.0817, 0.180)
     bay_mm = (-40.85, 55.0, 40.85, 90.0)
     interior_mm = (-40.85, -90.0, 40.85, 90.0)
     cx, cy, w, h = module_world_placement(
-        footprint, bay_mm, interior_mm, 90.0, (0.0, 0.0))
+        interior_mm, bay_mm, 90.0, (0.0, 0.0))
     # Local centre is (0, 0.0725); a +90 degree turn sends +y to -x.
     assert (cx, cy) == pytest.approx((-0.0725, 0.0), abs=1e-6)
     assert (w, h) == pytest.approx((0.0817, 0.035))
-
-
-def test_module_world_placement_wall_mm_shrinks_size_but_stays_rotation_invariant():
-    # Same AnkerPowerCore26800 fixture, with its measured case_wall_mm
-    # (4.2mm). The x axis is inset by the wall on both sides exactly
-    # (0.0817 - 2*0.0042 = 0.0733: the module always spans interior's full
-    # perpendicular axis, which is now the inset local width). The y axis
-    # shrinks too, but not by a simple 2*wall - it is the SAME proportional
-    # lerp as before, now mapping into a smaller destination span; 0.03337
-    # is that lerp's exact result, not a rounded approximation. Either way
-    # w, h stay invariant to rotation - the point-rotation argument does
-    # not care how "local" was computed.
-    footprint = (0.0817, 0.180)
-    bay_mm = (-40.85, 55.0, 40.85, 90.0)
-    interior_mm = (-40.85, -90.0, 40.85, 90.0)
-    for rot_deg in (0.0, 2.0, 47.3, 90.0, 137.0, 358.0):
-        _, _, w, h = module_world_placement(
-            footprint, bay_mm, interior_mm, rot_deg, (0.0, 0.0),
-            wall_mm=4.2)
-        assert w == pytest.approx(0.0733, abs=1e-9)
-        assert h == pytest.approx(0.033366666666666656, abs=1e-9)
 
 
 # ---- proxy geometry: the placement_area label is the complementary
@@ -406,12 +360,11 @@ def test_module_world_placement_wall_mm_shrinks_size_but_stays_rotation_invarian
 def test_module_and_placement_local_rects_do_not_overlap():
     """The proxy must not be drawn under the module, or the two labels
     would fight for the same pixels and the winner would be z-order."""
-    interior_mm = (0.0, 0.0, 62.9, 90.9)
-    bay_mm = (0.0, 67.4, 62.9, 90.9)
-    footprint = (0.0629, 0.0909)
+    interior_mm = (-31.45, -45.45, 31.45, 45.45)
+    bay_mm = (-31.45, 22.6, 31.45, 45.45)
 
-    m = module_rect_local(footprint, bay_mm, interior_mm)
-    p = placement_rect_local(footprint, bay_mm, interior_mm)
+    m = module_rect_local(interior_mm, bay_mm)
+    p = placement_rect_local(interior_mm, bay_mm)
 
     ox = min(m[2], p[2]) - max(m[0], p[0])
     oy = min(m[3], p[3]) - max(m[1], p[1])
@@ -422,32 +375,29 @@ def test_placement_world_placement_size_is_invariant_to_rotation_angle():
     # Same fixture as module_world_placement's rotation-invariance test:
     # AnkerPowerCore26800, 81.7mm interior, a 35.0mm bay on the +y end.
     # The complement is the 90 - 35 = 55.0mm strip on the -y side.
-    footprint = (0.0817, 0.180)
     bay_mm = (-40.85, 55.0, 40.85, 90.0)
     interior_mm = (-40.85, -90.0, 40.85, 90.0)
     for rot_deg in (0.0, 2.0, 47.3, 90.0, 91.7, 137.0, 180.0, 270.0, 358.0):
         _, _, w, h = placement_world_placement(
-            footprint, bay_mm, interior_mm, rot_deg, (0.0, 0.0))
+            interior_mm, bay_mm, rot_deg, (0.0, 0.0))
         assert w == pytest.approx(0.0817, abs=1e-9)
         assert h == pytest.approx(0.145, abs=1e-9)
 
 
 def test_placement_world_placement_matches_the_local_case_at_zero_rotation():
-    footprint = (0.060, 0.090)
-    bay_mm = (0.0, 66.0, 60.0, 90.0)
-    interior_mm = (0.0, 0.0, 60.0, 90.0)
+    bay_mm = (-30.0, 21.0, 30.0, 45.0)
+    interior_mm = (-30.0, -45.0, 30.0, 45.0)
     cx, cy, w, h = placement_world_placement(
-        footprint, bay_mm, interior_mm, 0.0, (0.130, 0.245))
+        interior_mm, bay_mm, 0.0, (0.130, 0.245))
     assert (w, h) == pytest.approx((0.060, 0.066))
     assert (cx, cy) == pytest.approx((0.130, 0.233))
 
 
 def test_placement_world_placement_centre_rotates_about_the_translate_point():
-    footprint = (0.0817, 0.180)
     bay_mm = (-40.85, 55.0, 40.85, 90.0)
     interior_mm = (-40.85, -90.0, 40.85, 90.0)
     cx, cy, w, h = placement_world_placement(
-        footprint, bay_mm, interior_mm, 90.0, (0.0, 0.0))
+        interior_mm, bay_mm, 90.0, (0.0, 0.0))
     # placement_rect_local's centre here is (0, -0.0175); a +90 degree turn
     # sends +y to -x, so (lcx, lcy) = (0, -0.0175) -> (0.0175, 0).
     assert (cx, cy) == pytest.approx((0.0175, 0.0), abs=1e-6)
@@ -762,14 +712,13 @@ def test_placement_and_module_world_rects_do_not_overlap_after_rotation():
     """A rigid rotate-then-translate applied identically to two disjoint
     local rectangles cannot make them overlap; this pins that down at the
     world-placement level, not just the local-frame level."""
-    footprint = (0.0817, 0.180)
     bay_mm = (-40.85, 55.0, 40.85, 90.0)
     interior_mm = (-40.85, -90.0, 40.85, 90.0)
     for rot_deg in (0.0, 2.0, 47.3, 90.0, 137.0, 358.0):
         mcx, mcy, mw, mh = module_world_placement(
-            footprint, bay_mm, interior_mm, rot_deg, (0.3, 0.2))
+            interior_mm, bay_mm, rot_deg, (0.3, 0.2))
         pcx, pcy, pw, ph = placement_world_placement(
-            footprint, bay_mm, interior_mm, rot_deg, (0.3, 0.2))
+            interior_mm, bay_mm, rot_deg, (0.3, 0.2))
         # Both rectangles keep their true, un-rotated size; the join across
         # their shared edge is invariant to the rigid transform, so the
         # distance between centres along the local bay axis must equal
