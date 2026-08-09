@@ -136,6 +136,12 @@
       "shell_navy",
       "shell_alu"
     ],
+    "case_lid": [
+      "shell_white",
+      "shell_black",
+      "shell_navy",
+      "shell_alu"
+    ],
     "cell": [
       "cell_green",
       "cell_blue",

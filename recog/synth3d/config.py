@@ -63,7 +63,12 @@ CLASS_RULES: List[Tuple[str, str]] = [
     # NX increments instance names, so cells appear as Cell_18650, Cell_18651,
     # Cell_18650_18652 ... - match "Cell_" + digits, not a literal.
     (r"Cell[_ ]?\d+", "cell"),
-    (r"Case.*_(top|btm)", "case"),
+    # The lid gets its OWN role so `open_case` can drop it. Both halves shared
+    # one role until now, which is why every "open" cartridge rendered closed
+    # and the bay was painted on the outside of the lid. Order matters: the
+    # `_top` rule must precede the general one.
+    (r"Case.*_top", "case_lid"),
+    (r"Case.*_btm", "case"),
 ]
 
 ROLE_FALLBACK = "case"          # unmatched sub-parts are treated as shell
@@ -88,19 +93,19 @@ class Variant:
 
 
 VARIANTS: List[Variant] = [
-    # Sealed unit. Cells are inside the shell and contribute no visible pixels,
-    # so the mask pass drops them automatically - no special casing anywhere.
-    # Matches the closed black shells in the lower half of IMG_4426.
-    Variant("assembled", keep_roles=("cell", "case"), label="cartridge",
-            weight=3.0),
+    # Sealed unit: both shell halves, cells inside contributing no visible
+    # pixels, so the mask pass drops them automatically. Matches the closed
+    # black shells in the lower half of IMG_4426.
+    Variant("assembled", keep_roles=("cell", "case", "case_lid"),
+            label="cartridge", weight=3.0),
 
     # Shell removed: loose 18650 cells, scattered individually. Matches the
     # top rows of cells in the real photos.
     Variant("cells_only", keep_roles=("cell",), label=None,
             label_roles={"cell": "battery"}, weight=2.0),
 
-    # Opened unit: shell present, cells visible beside it. Matches the middle
-    # pockets of IMG_4426.
+    # Opened unit: the TRAY only, lid dropped, so the cavity is visible and
+    # the module and bay proxy sit inside it rather than on a closed lid.
     Variant("open_case", keep_roles=("cell", "case"), label=None,
             label_roles={"cell": "battery", "case": "cartridge"},
             weight=1.0),

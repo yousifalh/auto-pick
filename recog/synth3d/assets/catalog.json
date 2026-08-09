@@ -36,7 +36,7 @@
         },
         {
           "name": "004697_A;2-Case10000_top",
-          "role": "case",
+          "role": "case_lid",
           "extents_mm": [
             62.9,
             90.9,
@@ -80,8 +80,9 @@
         }
       ],
       "role_counts": {
-        "cell": 3,
-        "case": 3
+        "case": 2,
+        "case_lid": 1,
+        "cell": 3
       },
       "cell_union_mm": [
         -27.45,
@@ -144,7 +145,7 @@
         },
         {
           "name": "004704_A;2-Case13000_top",
-          "role": "case",
+          "role": "case_lid",
           "extents_mm": [
             80.7,
             97.0,
@@ -199,8 +200,9 @@
         }
       ],
       "role_counts": {
-        "cell": 4,
-        "case": 3
+        "case": 2,
+        "case_lid": 1,
+        "cell": 4
       },
       "cell_union_mm": [
         -36.6,
@@ -263,7 +265,7 @@
         },
         {
           "name": "004707_A;2-Case20100_top",
-          "role": "case",
+          "role": "case_lid",
           "extents_mm": [
             62.3,
             167.8,
@@ -340,8 +342,9 @@
         }
       ],
       "role_counts": {
-        "cell": 6,
-        "case": 3
+        "case": 2,
+        "case_lid": 1,
+        "cell": 6
       },
       "cell_union_mm": [
         -27.45,
@@ -404,7 +407,7 @@
         },
         {
           "name": "004710_A;2-Case26800_top",
-          "role": "case",
+          "role": "case_lid",
           "extents_mm": [
             81.7,
             180.0,
@@ -503,8 +506,9 @@
         }
       ],
       "role_counts": {
-        "cell": 8,
-        "case": 3
+        "case": 2,
+        "case_lid": 1,
+        "cell": 8
       },
       "cell_union_mm": [
         -36.6,

@@ -257,6 +257,7 @@ param_space:
 # Which materials each CAD role may draw from.
 role_materials:
   case: [shell_white, shell_black, shell_navy, shell_alu]
+  case_lid: [shell_white, shell_black, shell_navy, shell_alu]
   cell: [cell_green, cell_blue, cell_black, cell_nickel, cell_purple, cell_grey]
 
 # Ranges are [low, high], sampled per instance, so no two renders share a

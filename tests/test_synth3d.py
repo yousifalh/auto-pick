@@ -141,7 +141,7 @@ def test_load_config_from_yaml():
     assert cfg.layout.area == (0.80, 0.45)
     assert "scatter" in cfg.param_space["layout_mode"]
     assert "jig" in cfg.param_space["layout_mode"]
-    assert set(cfg.role_materials) == {"case", "cell"}
+    assert set(cfg.role_materials) == {"case", "case_lid", "cell"}
     assert cfg.lighting["overcast_softbox"]["kind"] == "camera_softbox"
 
 
@@ -404,7 +404,7 @@ def test_variants_cover_the_three_real_presentations():
 def test_assembled_labels_the_whole_unit_cartridge():
     v = next(v for v in C.VARIANTS if v.name == "assembled")
     assert v.label == "cartridge"
-    assert set(v.keep_roles) == {"cell", "case"}
+    assert set(v.keep_roles) == {"cell", "case", "case_lid"}
 
 
 def test_open_case_labels_roles_separately():
@@ -445,7 +445,7 @@ def test_role_of_classifies_every_real_subpart_name():
         for sp in asset["subparts"]:
             role = CAT.role_of(sp["name"])
             assert role == sp["role"], f"{sp['name']}: {role} != {sp['role']}"
-            assert role in ("cell", "case")
+            assert role in ("cell", "case", "case_lid")
             seen += 1
     assert seen == 33, f"expected 33 sub-parts, catalogued {seen}"
 
@@ -458,8 +458,13 @@ def test_cell_regex_matches_nx_incremented_names():
 
 
 def test_case_names_classify_as_case():
-    for name in ("004697_A;2-Case10000_top", "004697_A;1-Case26800_btm"):
+    for name in ("004696_A;2-Case10000_btm", "004697_A;1-Case26800_btm"):
         assert CAT.role_of(name) == "case", name
+
+
+def test_top_names_classify_as_case_lid():
+    for name in ("004697_A;2-Case10000_top", "004710_A;2-Case26800_top"):
+        assert CAT.role_of(name) == "case_lid", name
 
 
 def test_unknown_subpart_falls_back_to_case():
@@ -1614,9 +1619,9 @@ def test_unmatched_subparts_is_empty_for_the_real_anker_names():
 def test_unmatched_subparts_distinguishes_fallback_from_a_real_case_match():
     """role_of cannot: its fallback role is 'case', which rules also produce."""
     from recog.synth3d.catalog import role_of
-    assert role_of("Case10000_top") == role_of("SOLID_BODY_1") == "case"
+    assert role_of("Case10000_btm") == role_of("SOLID_BODY_1") == "case"
     assert CC.unmatched_subparts([{"name": "SOLID_BODY_1"}]) == ["SOLID_BODY_1"]
-    assert CC.unmatched_subparts([{"name": "Case10000_top"}]) == []
+    assert CC.unmatched_subparts([{"name": "Case10000_btm"}]) == []
 
 
 # ---------------------------------------------------- catalog merging ----
@@ -1751,3 +1756,35 @@ def test_convert_step_is_importable_when_cascadio_is_present():
     """Smoke-check only - tessellating a real STEP file is far too slow here."""
     from recog.synth3d.catalog import convert_step
     assert callable(convert_step)
+
+
+# --------------------------------------------------------- tray interior
+
+def test_lid_and_tray_are_distinct_roles():
+    """open_case cannot drop the lid while both halves share one role."""
+    from recog.synth3d.catalog import role_of
+
+    assert role_of("004697_A;2-Case10000_top") == "case_lid"
+    assert role_of("004696_A;2-Case10000_btm") == "case"
+    assert role_of("004696_A;2-Case10000_btm_1") == "case"
+    assert role_of("004695_A;1-Cell_18650") == "cell"
+
+
+def test_open_case_drops_the_lid_and_assembled_keeps_it():
+    from recog.synth3d.config import VARIANTS
+
+    by_name = {v.name: v for v in VARIANTS}
+    assert "case_lid" not in by_name["open_case"].keep_roles, (
+        "an open cartridge must show its tray, not a closed assembly")
+    assert "case" in by_name["open_case"].keep_roles
+    assert "case_lid" in by_name["assembled"].keep_roles, (
+        "a sealed cartridge must keep both halves")
+    assert "case" in by_name["assembled"].keep_roles
+
+
+def test_open_case_labels_the_tray_as_cartridge():
+    from recog.synth3d.config import VARIANTS
+
+    oc = {v.name: v for v in VARIANTS}["open_case"]
+    assert oc.label_roles.get("case") == "cartridge"
+    assert oc.label_roles.get("cell") == "battery"
