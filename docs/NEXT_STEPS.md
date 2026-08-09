@@ -80,7 +80,7 @@ New modules: `recog/synth3d/bay.py`, `recog/seg_dataset.py`,
 `recog/seg_ablation.py`, `recog/calibrate_tau.py`, `plan/arbitration.py`,
 `scripts/forbidden_bench.py`.
 
-570 tests. The torch-free demo (`python main.py --config configs/demo.yaml`)
+621 tests. The torch-free demo (`python main.py --config configs/demo.yaml`)
 still runs, which is what the FDR's reproducibility claim rests on.
 
 The segmentation checkpoint referenced throughout this document (Plan C's
