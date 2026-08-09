@@ -20,7 +20,7 @@ Per-class IoU (pooled over the validation split; NaN = class absent from both pr
   ----------------------------------
   selected mean IoU over ['bay', 'electronics', 'obstruction'] (instances={'bay': 36, 'electronics': 36, 'obstruction': 24}): 0.8032
   note: background IoU (0.3629 on 126 crops) is STRUCTURAL, not a comparable failure - a crop is the union of the unit's OWN boxes, so background is only the thin leftover corners and gaps, a small region where IoU is naturally harsh. It is not evidence against the model.
-  note: cartridge (126 instances) and bay (36 instances) come from DISJOINT crop populations - sealed units carry a cartridge mask and no bay, open units carry a bay and no cartridge mask (see seg_dataset.py's module docstring). 0.9398 and 0.8903 side by side is not evidence the model handles a sealed and an open unit within the SAME image.
+  note: cartridge (126 instances) and bay (36 instances) crop populations are OVERLAPPING on this validation split, measured fresh this run (not assumed): 90 crops carry cartridge only, 0 carry bay only, 36 carry BOTH in the SAME crop, 0 carry neither. See seg_dataset.py's module docstring for why this can no longer be assumed disjoint (real tray-wall geometry, commits 27cbd97..9fcf136). Either way, 0.9398 and 0.8903 are each pooled independently over their own class's pixels across the whole split - a marginal per-class statistic, not a per-crop joint one - so this is still not evidence the model handles both together within the SAME crop, even on crops where both truly co-occur.
   note: checkpoint selection is noise-limited - best.pt 0.8126 and last.pt 0.8091 differ by 0.0036 on 36/36/24 (bay/electronics/obstruction) val instances, and both ship.
 
 Boundary displacement, mm (mean distance from a predicted boundary pixel to
@@ -50,9 +50,9 @@ n calls) - the path batching replaced. This is the single measured source for
 the batching-latency figure; quote THIS receipt rather than a hand-measured one.
    cartridges   total_ms  per_cart_ms  within_50ms   looped_ms
   ------------------------------------------------------------
-            1       13.0        13.03         True        15.2
-            2       16.6         8.30         True        40.3
-            4       19.4         4.85         True        59.7
-            8       40.9         5.11         True       157.0
+            1        9.4         9.43         True         8.8
+            2       14.7         7.37         True        17.7
+            4       14.0         3.51         True        35.8
+            8       20.2         2.53         True        76.5
   ------------------------------------------------------------
-  at 8 cartridges: 40.9 ms batched vs 157.0 ms looped (3.8x) - batching is load-bearing, not an optimisation: the looped figure breaches the 50 ms end-to-end budget on its own.
+  at 8 cartridges: 20.2 ms batched vs 76.5 ms looped (3.8x) - batching is load-bearing, not an optimisation: the looped figure breaches the 50 ms end-to-end budget on its own.

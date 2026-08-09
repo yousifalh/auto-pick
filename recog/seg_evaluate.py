@@ -271,6 +271,12 @@ def evaluate(segmenter, full_dataset, val_indices: Sequence[int],
     displacement and area error are per-crop: a per-crop mean is the
     "typical cartridge" figure, and the per-crop values are also summed
     for a "total exposure over the split" figure.
+
+    Also measures, per crop, whether `cartridge` and `bay` pixels
+    co-occur (``cartridge_bay_crops`` in the return value) - this used
+    to be assumed disjoint in prose; it no longer is (see
+    seg_dataset.py's module docstring), so format_report reads the
+    real count instead of restating an assumption.
     """
     from PIL import Image
 
@@ -282,6 +288,18 @@ def evaluate(segmenter, full_dataset, val_indices: Sequence[int],
     boundary_defined: Dict[str, int] = {c: 0 for c in SELECT_ON}
     area_opt_mm2: Dict[str, List[float]] = {c: [] for c in SELECT_ON}
     area_cons_mm2: Dict[str, List[float]] = {c: [] for c in SELECT_ON}
+
+    # cartridge/bay crop-population overlap, measured fresh every run
+    # rather than asserted in prose. Before the tray-interior fix
+    # (27cbd97..9fcf136) a closed shell's cartridge mask and an open
+    # unit's bay mask genuinely never shared a crop; the fix gave open
+    # units real tray walls, which paint `cartridge` pixels alongside
+    # their own bay/electronics/obstruction pixels in the SAME crop
+    # (see seg_dataset.py's module docstring). Recomputing this here
+    # means the receipt's note can never silently outlive the geometry
+    # it describes again.
+    cart_c, bay_c = SEG_CHANNELS["cartridge"], SEG_CHANNELS["bay"]
+    cb_cart_only = cb_bay_only = cb_both = cb_neither = 0
 
     for idx in val_indices:
         img_meta, anns, unit_box = full_dataset.samples[idx]
@@ -300,6 +318,17 @@ def evaluate(segmenter, full_dataset, val_indices: Sequence[int],
             union[c] += u
             if (target == c).any():
                 counts[c] += 1
+
+        has_cart = bool((target == cart_c).any())
+        has_bay = bool((target == bay_c).any())
+        if has_cart and has_bay:
+            cb_both += 1
+        elif has_cart:
+            cb_cart_only += 1
+        elif has_bay:
+            cb_bay_only += 1
+        else:
+            cb_neither += 1
 
         for name in SELECT_ON:
             c = SEG_CHANNELS[name]
@@ -330,6 +359,12 @@ def evaluate(segmenter, full_dataset, val_indices: Sequence[int],
         "area_cons_mm2_mean": {c: _mean_or_nan(area_cons_mm2[c]) for c in SELECT_ON},
         "area_opt_mm2_total": {c: float(sum(area_opt_mm2[c])) for c in SELECT_ON},
         "area_cons_mm2_total": {c: float(sum(area_cons_mm2[c])) for c in SELECT_ON},
+        "cartridge_bay_crops": {
+            "cartridge_only": cb_cart_only,
+            "bay_only": cb_bay_only,
+            "both": cb_both,
+            "neither": cb_neither,
+        },
     }
 
 
@@ -477,14 +512,29 @@ def format_report(results: Dict[str, Any], latency: List[dict], *,
     if cart_n and bay_n:
         cart_iou = results["ious"].get("cartridge", float("nan"))
         bay_iou = results["ious"].get("bay", float("nan"))
+        overlap = results.get("cartridge_bay_crops")
+        if overlap is not None:
+            verdict = "DISJOINT" if overlap["both"] == 0 else "OVERLAPPING"
+            pop_note = (
+                f"{verdict} on this validation split, measured fresh this "
+                f"run (not assumed): {overlap['cartridge_only']} crops "
+                f"carry cartridge only, {overlap['bay_only']} carry bay "
+                f"only, {overlap['both']} carry BOTH in the SAME crop, "
+                f"{overlap['neither']} carry neither. See seg_dataset.py's "
+                "module docstring for why this can no longer be assumed "
+                "disjoint (real tray-wall geometry, commits "
+                "27cbd97..9fcf136).")
+        else:                                    # pragma: no cover - guard
+            pop_note = "of unmeasured overlap (cartridge_bay_crops missing)"
         lines.append(
             f"  note: cartridge ({cart_n} instances) and bay ({bay_n} "
-            "instances) come from DISJOINT crop populations - sealed "
-            "units carry a cartridge mask and no bay, open units carry a "
-            f"bay and no cartridge mask (see seg_dataset.py's module "
-            f"docstring). {cart_iou:.4f} and {bay_iou:.4f} side by side "
-            "is not evidence the model handles a sealed and an open unit "
-            "within the SAME image.")
+            f"instances) crop populations are {pop_note} Either way, "
+            f"{cart_iou:.4f} and {bay_iou:.4f} are each pooled "
+            "independently over their own class's pixels across the "
+            "whole split - a marginal per-class statistic, not a "
+            "per-crop joint one - so this is still not evidence the "
+            "model handles both together within the SAME crop, even on "
+            "crops where both truly co-occur.")
     if checkpoint_note:
         lines.append(checkpoint_note)
     lines.append("")

@@ -5,16 +5,38 @@ Reads the COCO-RLE sidecar recog/generate3d.py writes and turns each
 physical UNIT into one training crop: the image inside a jittered union
 box, plus a dense label map over the same window.
 
-Grouping is by unit, not by `cartridge` annotation. An OPEN cartridge has
-no surviving `cartridge` mask at all - the electronics module and bay
-proxy cover the shell's entire top face, so the index pass reports no
-shell pixels (see recog/synth3d/annotate.py's masks_from_index and
-scene.py's unit_id comments). Cropping to `cartridge` annotations was
-measured to yield 43 crops containing zero bay, electronics or
-obstruction pixels - the segmenter would have trained on nothing. Every
+Grouping is by unit, not by `cartridge` annotation. BEFORE the
+tray-interior fix (commits 27cbd97..9fcf136), an OPEN cartridge had no
+surviving `cartridge` mask at all - the electronics module and bay proxy
+sat flush on the outer top face and covered it entirely, so the index
+pass reported no shell pixels, and cropping to `cartridge` annotations
+was measured to yield 43 crops containing zero bay, electronics or
+obstruction pixels (the segmenter would have trained on nothing). That
+motivated grouping by `unit_id` instead of by annotation class - every
 annotation carries a `unit_id` linking one physical unit's parts
 (cartridge, module, bay, obstructions, seated cells), and grouping by it
-gives a crop that actually contains a bay.
+gives a crop that actually contains a bay regardless of which classes
+that unit happens to carry.
+
+AFTER the fix, an open unit's tray walls are real standing geometry
+(not a flat decal), so they are visible and DO carry a `cartridge`
+annotation - and that annotation now typically shares its `unit_id`,
+and therefore its crop, with the SAME unit's own bay/electronics/
+obstruction annotations, because both come from the one physical
+object. This is no longer the disjoint case the paragraph above
+describes for the pre-fix generator: as a snapshot (measured
+2026-08-09 on the 502-scene / 841-crop dataset that shipped in
+`43aa607`, not a claim that holds for whatever dataset exists when you
+read this), 210 of 841 units/crops carry a `cartridge` annotation
+together with at least one of `placement_area`/`electronics_module`/
+`obstruction` on the SAME `unit_id` (176 of 502 scenes at the coarser
+per-image level); 630 carry `cartridge` alone, 1 carries a bay-class
+annotation with no `cartridge`, and none carry neither. Do not treat
+that snapshot as current fact - `recog.seg_evaluate` computes the
+same contingency (at the rasterised-pixel level, which is what the
+model is actually scored against) fresh every run and prints it in
+`docs/receipts/seg_eval.txt`; read the number there, not here, since a
+docstring cannot recompute itself when the dataset changes.
 
 Crops come from JITTERED boxes on purpose. At inference the crop comes
 from the detector, whose boxes are not ground truth; training on perfect
@@ -213,13 +235,21 @@ class BaySegDataset:
 
         # One sample per UNIT, not per `cartridge` annotation.
         #
-        # This is not a stylistic choice. An OPEN cartridge has no
-        # surviving `cartridge` mask at all: the electronics module and
-        # bay proxy cover the shell's entire top face, so the index pass
-        # reports no shell pixels. Cropping to `cartridge` annotations
-        # therefore yields only SEALED units - measured before the fix as
-        # 43 crops containing zero bay, electronics or obstruction
-        # pixels. The segmenter would have trained on nothing.
+        # This is not a stylistic choice. BEFORE the tray-interior fix
+        # (27cbd97..9fcf136), an OPEN cartridge had no surviving
+        # `cartridge` mask at all: the electronics module and bay proxy
+        # covered the shell's entire top face, so the index pass reported
+        # no shell pixels. Cropping to `cartridge` annotations therefore
+        # yielded only SEALED units - measured before the fix as 43 crops
+        # containing zero bay, electronics or obstruction pixels. The
+        # segmenter would have trained on nothing. AFTER the fix an open
+        # unit's tray walls are real geometry and DO carry a `cartridge`
+        # annotation (see the module docstring), so this specific failure
+        # mode no longer applies as stated - but grouping by `unit_id`
+        # remains correct and is now load-bearing for a different reason:
+        # it is what puts a unit's `cartridge` and bay-class annotations
+        # in the SAME crop when both exist, rather than requiring a second
+        # pass to merge them.
         #
         # Every annotation now carries a `unit_id` linking the parts of
         # one physical unit - its cartridge, module, bay, obstructions
@@ -237,14 +267,25 @@ class BaySegDataset:
         # never carries a `placement_area` member to pass a
         # placement_area-only filter. Requiring `placement_area` here
         # would silently drop every sealed unit and make SEG_CHANNELS
-        # ["cartridge"] unreachable in the whole dataset: measured over a
-        # 24-scene regeneration, 174 units split cleanly into 132 pure
-        # `{"battery"}` (loose cells, no cartridge context - excluded),
-        # 31 pure `{"cartridge"}` (sealed shells - must be kept for the
-        # channel to ever appear), and 11 combinations containing
-        # `placement_area`; no unit ever mixes `cartridge` with anything
-        # else. Only the pure-`{"battery"}` loose scatter has nothing to
-        # segment; everything else is kept.
+        # ["cartridge"] unreachable in the whole dataset.
+        #
+        # PRE-fix (measured over a 24-scene regeneration), 174 units split
+        # cleanly into 132 pure `{"battery"}` (loose cells, no cartridge
+        # context - excluded), 31 pure `{"cartridge"}` (sealed shells -
+        # must be kept for the channel to ever appear), and 11
+        # combinations containing `placement_area`; no unit mixed
+        # `cartridge` with anything else, because an open unit's
+        # `cartridge` mask did not survive at all back then. POST-fix
+        # (measured 2026-08-09 on the current 502-scene dataset - a
+        # snapshot, not a claim that holds for whatever dataset exists
+        # when you read this) that is no longer true: of 841 kept units,
+        # 630 are pure `{"cartridge"}` (sealed) but 210 mix `cartridge`
+        # with `placement_area`/`electronics_module`/`obstruction` on the
+        # SAME unit_id (open units, whose tray walls are now real
+        # geometry - see the module docstring), and 1 carries a bay-class
+        # annotation with no `cartridge` at all. Only the pure-
+        # `{"battery"}` loose scatter has nothing to segment; everything
+        # else is kept regardless of which classes it mixes.
         _CARTRIDGE_RELATED = {"cartridge", "placement_area",
                               "electronics_module", "obstruction"}
         self.samples: List[Tuple[dict, List[dict], Tuple[int, int, int, int]]] = []
