@@ -18,10 +18,10 @@ this figure was dominated by the packer abandoning shelves, not by mask error.
   validation crops (n=126):
     mean   : 0.032
     median : 0.000
-    range  : [-1, 2]
+    range  : [-2, 2]
     positive (cells lost)   : 4 / 126
-    negative (cells packed where forbidden) : 1 / 126
-    zero (no difference)    : 121 / 126
+    negative (cells packed where forbidden) : 2 / 126
+    zero (no difference)    : 120 / 126
 
 Heuristic vs segmenter on the real photographs (recog/realtest)
 ------------------------------------------------------------------
@@ -40,37 +40,37 @@ mask at all, so it is comparable without inventing one.
 
     # image           heuristic  segmenter    delta  note
   -------------------------------------------------------
-    1 IMG_4426.jpg        0.341      0.190   -0.151
-    2 IMG_4426.jpg        0.000      0.188   +0.188
-    3 IMG_4426.jpg        0.360      0.167   -0.193
-    4 IMG_4426.jpg        0.097      0.223   +0.127
-    5 IMG_4426.jpg        0.000      0.230   +0.230
-    6 IMG_4427.jpg        0.000      0.469   +0.469
-    7 IMG_4427.jpg        0.344      0.294   -0.051
-    8 IMG_4429.jpg        0.394      0.162   -0.231
-    9 IMG_4429.jpg        0.321      0.250   -0.071
-   10 IMG_4429.jpg        0.000      0.307   +0.307
-   11 IMG_4429.jpg        0.124      0.175   +0.051
-   12 IMG_4429.jpg        0.000      0.002   +0.002
-   13 IMG_4433.jpg        0.297      0.408   +0.112
-   14 IMG_4433.jpg        0.000      0.554   +0.554
-   15 IMG_4434.jpg        0.335      0.190   -0.145
-   16 IMG_4434.jpg        0.000      0.283   +0.283
-   17 IMG_4434.jpg        0.571      0.242   -0.328
-   18 IMG_4434.jpg        0.151      0.205   +0.054
-   19 IMG_4434.jpg        0.523      0.104   -0.419
-   20 IMG_4435.jpg        0.489      0.003   -0.487
+    1 IMG_4426.jpg        0.341      0.260   -0.081
+    2 IMG_4426.jpg        0.000      0.404   +0.404
+    3 IMG_4426.jpg        0.360      0.286   -0.074
+    4 IMG_4426.jpg        0.097      0.275   +0.179
+    5 IMG_4426.jpg        0.000      0.363   +0.363
+    6 IMG_4427.jpg        0.000      0.512   +0.512
+    7 IMG_4427.jpg        0.344      0.280   -0.064
+    8 IMG_4429.jpg        0.394      0.327   -0.066
+    9 IMG_4429.jpg        0.321      0.318   -0.002
+   10 IMG_4429.jpg        0.000      0.380   +0.380
+   11 IMG_4429.jpg        0.124      0.251   +0.128
+   12 IMG_4429.jpg        0.000      0.166   +0.166
+   13 IMG_4433.jpg        0.297      0.235   -0.062
+   14 IMG_4433.jpg        0.000      0.577   +0.577
+   15 IMG_4434.jpg        0.335      0.232   -0.102
+   16 IMG_4434.jpg        0.000      0.365   +0.365
+   17 IMG_4434.jpg        0.571      0.388   -0.182
+   18 IMG_4434.jpg        0.151      0.276   +0.125
+   19 IMG_4434.jpg        0.523      0.333   -0.189
+   20 IMG_4435.jpg        0.489      0.126   -0.363
   -------------------------------------------------------
 
                           mean    median   n_zero
   heuristic              0.217     0.224        7 / 20
-  segmenter              0.232     0.214        0 / 20
+  segmenter              0.318     0.302        0 / 20
   baseline (spec 1.1)     0.218                  7 / 20
 
   heuristic RuntimeWarning fired: 20 / 20 cartridges (suppressed above; scope-limit warning,
   see plan.placement_area.HeuristicPlacementAreaExtractor).
 
-  verdict: the segmenter beats the measured baseline (0.232 > 0.218) and has no zero-area cartridges.
+  verdict: the segmenter beats the measured baseline (0.318 > 0.218) and has no zero-area cartridges.
 
   wall_inset_mm used: 4.25. mm_per_px for these photos is NOT calibrated (no fixed-
   mount framing exists for handheld phone photos); each cartridge's own scale is

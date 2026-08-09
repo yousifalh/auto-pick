@@ -1572,6 +1572,52 @@ most, synthetic-to-real transfer. Receipts are
 `docs/receipts/seg_eval.txt`, `tau_calibration.txt` and
 `seg_ablation.txt`.
 
+**Every figure below was regenerated after a rendering defect was found
+and fixed: the generator had been drawing the tray upside down.**
+Blender's glTF importer maps (x,y,z)→(x,−z,y); this CAD's up-axis is Y
+with the cavity opening toward −Y, so −Y landed on −Z and the tray
+faced the ground, while `lay_flat` picked *which* axis was vertical but
+had no notion of which *end* of it was up. The practical effect: the
+electronics module and the `placement_area` plane were painted on the
+outer surface of a *closed lid* rather than seated inside the open
+tray's cavity, for every `open_case` scene ever rendered before commit
+`9fcf136`. Proof was exact rather than approximate — the shell measured
+z ∈ [11.1, 22.2] mm against the CAD's [0, 11.1] mm, a mirror about the
+lid's own mid-plane — and it survived one false fix along the way (an
+early "phantom cap" removal that punched through the shell's real
+underside, read as progress because it also made the cavity visible,
+for the wrong reason). Every label geometry therefore moved: the module
+and bay proxy now sit on the tray's measured cavity floor instead of
+the assembly's outer top face, seated cells now render below the rim,
+and the tray walls are real standing geometry rather than a flat
+decal. The dataset (502 scenes / 841 crops, same scale as before) and
+the checkpoint trained on it were both regenerated from scratch —
+`recog/dataset3d_seg` deleted and re-rendered, not resumed, since
+resuming would have silently mixed the old and new label conventions
+in one dataset. Every number in this subsection is from that
+regeneration; none is copied forward from the pre-fix receipts.
+
+Two direct checks on the regenerated labels, before any model was
+retrained. The five-class pixel-exact disjointness invariant —
+`placement_area` against `battery`/`obstruction`/`electronics_module` —
+holds at **0 overlapping pixels across 3280 mask pairs**, swept over
+every image in the full regenerated dataset (a stronger check than the
+139-pair spot sample this invariant was last reported against). And
+`cartridge`-labelled pixels on `open_case` units, previously
+documented in this section as zero (the module and bay proxy tiled the
+whole flush top face), are now real and substantial — mean 3403 px,
+median 3087 px, range 1133–11416 px across 210 open-unit instances —
+because the tray walls are now standing geometry rather than a decal.
+One side effect of that: an open unit's crop can now carry `cartridge`
+(wall) pixels *and* the bay classes together in the same image (176 of
+502 scenes do), which was structurally impossible before and
+contradicts a still-uncorrected assumption baked into
+`seg_evaluate.py`'s receipt output and `seg_dataset.py`'s module
+docstring (both describe the crop populations as disjoint). That code
+was not touched — this task's scope was measurement and documentation,
+not source changes — so it is recorded here as a known follow-up
+rather than fixed in place.
+
 **The motivation is now a measurement.** Earlier drafts justified
 this item on the grounds that a bounding rectangle is a coarse
 approximation of a cartridge interior — an argument, not a result.
@@ -1591,51 +1637,67 @@ roughly 131 × 288 px, so one mask cell covers **2.9 × 6.4 mm**.
 Against an 18.3 mm cell diameter, the 6.4 mm axis is a third of a
 cell — and "does the last cell fit" is exactly the decision at stake.
 Measured mean boundary displacement of the per-ROI segmenter, against
-synthetic ground truth on the 126-crop validation split (up from 54
-crops; the dataset was scaled to 502 scenes / 841 crops and the model
-retrained for the full 40-epoch schedule since the figures below were
-last published), is:
+synthetic ground truth on the 126-crop validation split (unchanged in
+size — 502 scenes / 841 crops — but every scene re-rendered with the
+tray right-side up, and the model retrained from scratch since the
+figures below were last published), is:
 
 | Class | Boundary displacement | Crops | Class IoU |
 |-------------|---------------:|------:|----------:|
-| bay         | 1.299 mm       | 37    | 0.908     |
-| electronics | 1.085 mm       | 37    | 0.880     |
-| obstruction | 1.633 mm       | 16    | 0.625     |
+| bay         | 0.949 mm       | 35    | 0.890     |
+| electronics | 0.987 mm       | 35    | 0.861     |
+| obstruction | 1.184 mm       | 24    | 0.658     |
 
 The IoU column is pooled over the whole split; the checkpoint's own
 selection metric averages per crop instead and reads slightly
-differently (0.915 / 0.890 / 0.624, mean 0.8096). Both conventions
-appear below and neither is adjusted to match the other.
+differently (0.891 / 0.880 / 0.667, mean 0.8126). Both conventions
+appear below and neither is adjusted to match the other. **All three
+boundary-displacement figures improved over the pre-fix numbers**
+(1.299→0.949 mm bay, 1.085→0.987 mm electronics, 1.633→1.184 mm
+obstruction) — the largest single-class move either direction in this
+retrain — plausibly because the tray's walls are now real standing
+geometry the model can key on, rather than a flat decal whose edges
+were partly an artefact of the wall-inset arithmetic.
 
 All three sit below 2.9 mm, the *finer* of the two mask-head
 quantisation axes, so the architecture argument still rests on
-measurement rather than reasoning. Three qualifications keep it from
+measurement rather than reasoning. Two qualifications keep it from
 being oversold. The margin is narrowest on `obstruction`, which
-clears the finer axis by a factor of 1.8 and remains the weakest class
-in the set, on 16 crops; `bay` and `electronics` clear it by 2.2× and
-2.7× respectively. The retrain moved the three classes unevenly rather
-than uniformly — `obstruction`'s displacement improved while `bay`'s
-worsened — which is a reminder that this is one stochastic training
-run's outcome, not a monotonic trend with dataset size (§13.2.1's
-τ discussion below returns to this same point). The mask-head
-resolution is a configurable trade rather than a hard ceiling, so the
-sound claim is not "Mask R-CNN cannot do this" but that operating on
-the crop sidesteps the trade — masks arrive at crop resolution, which
-is where the placement decision is made. And these are *synthetic*
-figures, measured in the domain the model trained in: evidence about
-the architecture, not about real photographs.
+clears the finer axis by a factor of 2.4 and remains the weakest class
+in the set, on 24 crops; `bay` and `electronics` clear it by 3.1× and
+2.9× respectively — every class now clears by a wider margin than
+before the tray fix, but the mask-head resolution is a configurable
+trade rather than a hard ceiling, so the sound claim is still not
+"Mask R-CNN cannot do this," only that operating on the crop sidesteps
+the trade. And these are *synthetic* figures, measured in the domain
+the model trained in: evidence about the architecture, not about real
+photographs.
 
-**The latency budget holds, and batching is load-bearing.**
-Segmentation was moved out of Planning and into Recognition, on the
-grounds that it is perception and belongs in the perception budget.
-Planning then performs mask arithmetic only, measured at **2.0–2.2 ms
-per cartridge** against the tested 8 ms O3 budget of §10.4.
-Segmentation itself runs at **16.7 ms for 8 crops batched**, inside
-the 50 ms end-to-end PPR budget. Batching is a requirement rather
-than an optimisation: the same eight crops on the same RTX 3060, same
-checkpoint, same warm-up, give 16.7 ms batched against **60.0 ms if
-they are segmented one at a time (3.6×)**, which breaches the
-end-to-end budget outright. Both figures come from one measurement
+**The latency budget still holds, but with far less margin than last
+measured, and this is reported as-measured rather than re-run until it
+looked better.** Segmentation was moved out of Planning and into
+Recognition, on the grounds that it is perception and belongs in the
+perception budget. Planning then performs mask arithmetic only,
+measured at **2.0–2.2 ms per cartridge** against the tested 8 ms O3
+budget of §10.4. Segmentation itself now runs at **40.9 ms for 8 crops
+batched** (was 16.7 ms) — still inside the 50 ms end-to-end PPR budget,
+but by 9 ms rather than 33. Batching is still a requirement rather than
+an optimisation: the same eight crops, same checkpoint, same warm-up
+give 40.9 ms batched against **157.0 ms if they are segmented one at a
+time (3.8×, was 3.6×)**, which breaches the end-to-end budget outright
+either way. A repeat measurement immediately afterward gave 42.5 ms
+batched / 154.8 ms looped — consistent, not a fluke. This machine was
+carrying substantial unrelated GPU load at measurement time (`nvidia-smi`
+showed 85% utilisation from desktop applications sharing the same GPU,
+none of them part of this pipeline), which is the leading candidate
+explanation and was not present during the original 16.7 ms
+measurement; it has **not** been isolated as the sole cause, so the
+number is reported as measured rather than dismissed. Either way, the
+architecture conclusion is unchanged and now less comfortable: batching
+remains load-bearing, and the margin against the 50 ms budget has
+shrunk by roughly 4×, which is worth re-measuring on an otherwise-idle
+GPU before this figure is relied on for a production sizing decision.
+Both figures come from one measurement
 (`docs/receipts/seg_eval.txt`, regenerated by `recog.seg_evaluate`) —
 previously this comparison was quoted at three different values across
 the FDR, the README and a docstring, none of them tied to a committed
@@ -1645,7 +1707,7 @@ was sized for, or a fallback to fp32 — breaks the budget rather than
 degrading gracefully.
 
 **Δcells is the packing-level number, and it has now been re-measured
-against the grown, 126-crop validation split.** Mask IoU is an
+against the same 126-crop validation split, post tray fix.** Mask IoU is an
 intermediate; what the packer cares about is cells. The figure
 originally reported here (+0.148 cells, 0 of 54 negative) was produced
 by a packer-count helper that quantised the forbidden mask at an
@@ -1657,63 +1719,74 @@ was +0.037 mean, 2 of 54 negative. Re-measured again using
 `plan.placement_area._rasterise_mask` — production's own rasteriser,
 unchanged — running the fixed packer of §6.3.1 on the ground-truth
 mask and on the predicted mask from the completed 40-epoch checkpoint
-gives a mean difference of **+0.032 cells** over the grown **126**
-validation crops: **121 of 126 exact**, 4 losing a cell to
-conservatism (range up to +2), and — the figure that matters for
-safety — **1 of 126 in the negative direction** (Δ = −1 cell, a
-smaller fraction than the previous 2 of 54). Positive means cells the
+gives a mean difference of **+0.032 cells** over the same **126**
+validation crops (numerically unchanged from the pre-fix figure at
+this rounding — a coincidence of the mean, not of the underlying
+distribution): **120 of 126 exact** (was 121), 4 losing a cell to
+conservatism (unchanged), and — the figure that matters for safety —
+**2 of 126 in the negative direction** (was 1 of 126; range widened to
+[−2, +2] from [−1, +2]). This is a regression on the metric that
+matters most and is reported as one: the damage-direction fraction
+got *worse* after the tray fix, not better. Positive means cells the
 ground truth would have placed and the prediction gave up; negative
 means a cell packed where the truth forbids it, the direction that
-puts a cell on a PCB. The earlier split's two negative crops were
-inspected individually and explained: in each, the ground-truth safe
-region covers more pixels than the prediction's but is shaped too
-thin and elongated to admit a full cell footprint anywhere, while the
-prediction's smaller, more compact region does — the
-morphological-vs-areal distinction `plan.arbitration.admits_a_cell`
+puts a cell on a PCB. The earlier split's two negative crops (from the
+pre-fix dataset) were inspected individually and explained: in each,
+the ground-truth safe region covers more pixels than the prediction's
+but is shaped too thin and elongated to admit a full cell footprint
+anywhere, while the prediction's smaller, more compact region does —
+the morphological-vs-areal distinction `plan.arbitration.admits_a_cell`
 exists to catch (Task 2's blob-vs-rim demonstration). **This split's
-single negative crop has not been individually re-investigated**; the
-retrain that grew the validation split also changed which crops the
-model gets wrong, so the mechanism above is documented for the earlier
-finding, not confirmed for this one — the improved fraction should be
-read as one more data point, not as evidence the damage-direction risk
-is understood to be shrinking. Two caveats carry over unchanged: this
-is measured on the segmenter's own synthetic validation split, because
-Δcells needs a ground-truth label map and `recog/realtest/` has none;
-and it is gated on the §6.3.1 packer fix, since on the unfixed
-shelf-cursor logic the figure was dominated by shelf abandonment
-rather than by mask error.
+two negative crops have not been individually re-investigated**; both
+the dataset and the model changed in this retrain, so the mechanism
+above is documented for the earlier finding, not confirmed for this
+one — whether the new pair fails for the same reason, or for a reason
+specific to the corrected tray geometry (e.g. a real wall edge now
+being mistaken for a packable boundary), is open. Two caveats carry
+over unchanged: this is measured on the segmenter's own synthetic
+validation split, because Δcells needs a ground-truth label map and
+`recog/realtest/` has none; and it is gated on the §6.3.1 packer fix,
+since on the unfixed shelf-cursor logic the figure was dominated by
+shelf abandonment rather than by mask error.
 
-**The real-photograph comparison is the headline, and it has flipped
-sign since it was last published — which is itself the most useful
-thing about it.** The criterion was set in advance, in the design
-spec: the heuristic's measured baseline is a mean placeable fraction
-of 0.218, and any segmenter that cannot beat that is not worth
-shipping. On the 20 annotated cartridges (across 6 images) the
-completed-schedule checkpoint scores **0.232 against the heuristic's
+**The real-photograph comparison now has a THIRD data point from a
+third, materially different training run, and it moved again — up
+this time, by the largest margin yet.** The criterion was set in
+advance, in the design spec: the heuristic's measured baseline is a
+mean placeable fraction of 0.218, and any segmenter that cannot beat
+that is not worth shipping. On the 20 annotated cartridges (across 6
+images) the tray-fix checkpoint scores **0.318 against the heuristic's
 own 0.217** on the same cartridges, with zero cartridges returning no
-placeable area at all (down from 2 of 20 at the mid-schedule
-checkpoint, and 7 of 20 for the heuristic). Taken alone, that is the
-segmenter beating the baseline it was built to replace, for the first
-time this project has measured it.
+placeable area at all (same as the previous checkpoint; 7 of 20 for
+the heuristic). Taken alone, that is the largest margin over the
+heuristic this project has measured.
 
-**It should not be read that way, and the project's own numbers say
-why.** A mid-schedule checkpoint (epoch 24 of the same run, selected
-mean IoU 0.8209 on synthetic data) scored 0.211 on this identical
-real-photo set — *below* the heuristic, the result previously
-published here. The completed 40-epoch schedule, trained from a fresh
-random initialisation on the *same* dataset and config, scored *worse*
-on synthetic IoU (0.8096) and *better* on this real-photo comparison
-(0.232). Two checkpoints of the same recipe therefore produced
-opposite verdicts against the same 0.218 criterion, with the synthetic
-and real-photo numbers moving in opposite directions between them.
-That is not consistent with a stable, reproducible property of the
-architecture; it is consistent with both measurements sitting inside
-run-to-run training noise, compounded by the real-photo set's own
-n = 20 sample noise. This was checked for a measurement artefact
-rather than assumed away in both runs: the raw `bay` channel is
-genuinely small on real photographs before any wall-inset erosion is
-applied, in both — a real domain gap either way, not an arithmetic
-artefact in the comparison.
+**It should be read even more cautiously than the previous flip, not
+less.** The three checkpoints measured against this same 20-cartridge
+set now read **0.211 → 0.232 → 0.318** — an epoch-24 checkpoint, a
+completed 40-epoch checkpoint from the same run, and this task's
+completed 40-epoch checkpoint trained from scratch on the
+tray-corrected dataset. The first two shared a training run and
+dataset and only differed by epoch; this third one differs in *every*
+respect — fresh initialisation, fresh 502-scene render, corrected
+label geometry — so unlike the previous flip, no single variable can
+be blamed or credited for the jump. That makes it weaker evidence for
+a real improvement, not stronger: three points with three different
+confounds show a trend only if you want to see one. The synthetic
+selected mean IoU moved in the opposite direction expected if this
+were simply "a better checkpoint" — pooled IoU **fell** slightly this
+retrain (0.8045 → 0.8032; the checkpoint's own per-epoch metric rose,
+0.8096 → 0.8126) — while the real-photo number rose by far more than
+either synthetic figure moved. This was checked for a measurement
+artefact rather than assumed away: the raw `bay` channel is genuinely
+small on real photographs before any wall-inset erosion is applied, as
+in both prior runs — a real domain gap either way, not an arithmetic
+artefact in the comparison. **No transfer claim is made here in either
+direction; three same-architecture runs producing 0.211, 0.232 and
+0.318 against a 0.218 threshold is itself the finding** — this
+comparison does not stabilise with more training runs of the same
+recipe, and will not until real ground truth (item (4)) exists to
+measure against.
 
 Two limits bound how far that reads, in both directions, and they now
 matter more than when this comparison first ran negative. It is
@@ -1731,52 +1804,54 @@ demonstration of that, not merely an assertion of it. No transfer
 figure is published here in either direction. The prerequisite is a
 50–100 image polygon-annotated set, folding into item (4).
 
-**The τ calibration is a null result, and scaling the dataset has
-sharpened why rather than fixed it.** The arbitration compares two
-independent estimates and rejects a cartridge whose estimates disagree
-by more than a threshold τ. Calibrating τ against a 5 % safety budget,
-on the completed 40-epoch checkpoint and the grown 126-crop validation
-split, returned **τ = 0.3180 with a rejected fraction of 0.0** over
-the 37 validation cartridges for which a bay was predicted — up from
-19 cartridges and τ = 0.7492 on the original 54-crop split. That
-number should still not be quoted as a calibrated safety threshold,
-for the same structural reason as before: **not one of the 37
-cartridges ever admitted a cell into the disputed region, at any
-threshold**. The safety budget therefore never bound, and the sweep
-returned the smallest candidate it was offered — simply the lowest
-IoU this split happened to contain, which fell from 0.7492 to 0.3180
-because a harder crop entered the larger split, not because the
-calibration procedure changed. It remains a lower bound on where an
-unsafe boundary might sit, not a boundary located by trading safety
-against throughput, and it is evidence neither that IoU below it is
-unsafe nor that IoU above it is safe.
+**The τ calibration is still a null result, and the tray fix moved it
+in the OPPOSITE direction from every previous scale-up — worth
+reporting precisely because it contradicts the earlier trend.** The
+arbitration compares two independent estimates and rejects a cartridge
+whose estimates disagree by more than a threshold τ. Calibrating τ
+against a 5 % safety budget, on the tray-fix checkpoint and the same
+126-crop validation split, returned **τ = 0.5715 with a rejected
+fraction of 0.0** over 35 validation cartridges for which a bay was
+predicted (down from 37; population size moves with which crops the
+model predicts a bay for, not by design). τ itself jumped up sharply
+from 0.3180. That number should still not be quoted as a calibrated
+safety threshold, for the same structural reason as before: **not one
+of the 35 cartridges ever admitted a cell into the disputed region, at
+any threshold**. The safety budget therefore still never bound, and
+the sweep still returned the smallest candidate it was offered —
+simply the lowest IoU this split happened to contain (0.5715, up from
+0.3180) — not a boundary located by trading safety against throughput.
 
-**Scaling the validation set from 19 to 37 cartridges did not fix
-this, and that is itself the finding worth reporting.** On the
-original split, every optimistic error observed was under 27 % of one
-cell's footprint (815 px² against a 3045 px² cell). On the grown
-split the largest is **2418 px against the same 3045 px² cell
-footprint — 79.4 % of one cell's area** — larger, not smaller, than
-before. Every record in the split still fails the admission test on
-*area alone*: the morphological cell-admission test that
-`plan.arbitration.admits_a_cell` exists to apply, precisely because an
-areal test is inadequate (Task 2's blob-vs-rim demonstration), is
-never exercised by this data, at either split size. **The blocker is
-therefore error size, not sample size.** A larger validation set drawn
-from the same synthetic generator predictably contains a harder crop
-or two — that is exactly what happened between 19 and 37 cartridges —
-but it does not predictably contain an error close enough to a cell's
-footprint to exercise the shape-vs-area distinction the test exists
-for. What would is a validation set with structurally larger errors:
-real photographs, where the errors are already known to be larger
-(the real-photograph comparison above), or deliberately harder
-synthetic scenes designed to produce them. More of the same renders,
-at any scale, will not. At n = 37 a single admitting cartridge would
-still breach a 5 % budget, so the procedure remains a zero-tolerance
-test in practice rather than the tolerance test it is specified as —
-but that sample-size caveat is no longer the binding one. The honest
-conclusion is **"the validation set needs larger errors, not more
-crops"**, not "τ = 0.3180". Consistent with that, the extractor still
+**The largest optimistic error SHRANK — 79.4 % of one cell's area down
+to 42.0 % — which is the opposite of what would be needed to make τ
+calibratable, and the opposite of the trend the last two dataset
+scale-ups produced.** The two prior scale-ups (19→37 cartridges, then
+this task) were compared on the assumption that a larger validation
+set predictably surfaces a harder crop; that held for 19→37 (27 %→79.4
+%) and broke here: the largest observed optimistic error is now
+**1278 px against the same 3045 px² cell footprint — 42.0 % of one
+cell's area**, roughly half the pre-fix figure. The direct read is
+that the corrected tray geometry made the two independent placement
+estimates (`P_direct`, `P_derived`) *more* self-consistent, not less —
+plausible, since both estimates are now computed against a real
+cavity floor instead of one of them (the derived estimate) inferring a
+floor from a flat top face. Every record in the split still fails the
+admission test on *area alone*: the morphological cell-admission test
+that `plan.arbitration.admits_a_cell` exists to apply, precisely
+because an areal test is inadequate (Task 2's blob-vs-rim
+demonstration), is still never exercised by this data. **The blocker
+remains error size, not sample size — and a geometry fix can move
+error size in either direction, which this one did downward.** A
+validation set with structurally larger errors is still what τ needs:
+real photographs, where the errors are already known to be larger (the
+real-photograph comparison above), or deliberately harder synthetic
+scenes designed to produce them. At n = 35 a single admitting
+cartridge would still breach a 5 % budget, so the procedure remains a
+zero-tolerance test in practice rather than the tolerance test it is
+specified as. The honest conclusion is unchanged in kind, sharper in
+degree: **"the validation set needs larger errors, not more crops, and
+a more accurate generator produces SMALLER errors, which moves this
+further away, not closer."** Consistent with that, the extractor still
 defaults to the pre-calibration τ = 0.85 and does not read the
 calibrated value; given that the calibration is uninformative, 0.85 is
 as defensible a choice, but the disconnect is recorded rather than
@@ -1812,35 +1887,51 @@ concentrated in the two classes the inset shrank (electronics
 0.923 → 0.843, obstruction 0.625 → 0.554) while `bay` barely moved
 (0.899 → 0.894). The lower figure was the honest one at the time, on
 the 220-scene / 361-crop dataset this correction was measured against;
-the dataset has since been scaled to 502 scenes / 841 crops and the
-model retrained (the boundary-displacement table and IoU figures
-earlier in this subsection are the current numbers, not these). This
-comparison is retained as the historical record of what the inset fix
-cost, not as a claim about the present checkpoint. The lesson matches
-§6.3.1's: two estimates that agree perfectly are likelier to be one
-estimate computed twice than independent confirmation.
+the dataset has since been scaled to 502 scenes / 841 crops, and then —
+this task — re-rendered at the same scale with the tray the right way
+up and the model retrained from scratch on the corrected labels (the
+boundary-displacement table and IoU figures earlier in this subsection
+are the current numbers, not these). This comparison is retained as
+the historical record of what the inset fix cost, not as a claim about
+the present checkpoint. The lesson matches §6.3.1's: two estimates that
+agree perfectly are likelier to be one estimate computed twice than
+independent confirmation — and the upside-down tray (this task) is a
+third instance of the same family of lesson: `open_case` cartridges
+rendered as *closed* ones for the whole life of the tray-fix branch
+until now, and every test in the suite stayed green throughout, because
+`world.py` and `scene.py` import bpy and are not unit-tested — the only
+evidence that ever caught it was looking at the rendered pixels and
+comparing frames against the source CAD, not running the tests.
 
 **Status.** Supported by measurement: the resolution argument for the
-architecture, the latency budget including the necessity of batching,
-and Δcells (§13.2.1) — now a +0.032 mean with 1 of 126 crops in the
-damage direction (was +0.037 with 2 of 54 on the smaller validation
-split; both are far from the 0 of 54 originally reported before a
-packer-count stride bug was fixed). Bounded by sample size, and now
-bounded by error size as well: τ, on 37 cartridges none of which
-exercised the admission criterion, because even the largest observed
-error — 79.4 % of one cell's area — stayed under the area a cell needs
-to be admitted, and that gap did not close when the validation set
-nearly doubled (§13.2.1 above). Not demonstrated: synthetic-to-real
-transfer — the real-photo comparison now favours the segmenter
-(0.232 vs 0.218) where the previous checkpoint's identical comparison
-did not (0.211 vs 0.218), and that disagreement between two checkpoints
-of the same recipe is itself the evidence that neither reading should
-be trusted at n = 20. Item (5) is therefore a completed prototype
-whose real-photo comparison has already flipped sign once on identical
-code and data, and the next step remains item (4)'s annotated real
-corpus rather than further model iteration — there is currently no
-real-image metric precise enough to score iteration against, and no
-basis for expecting a third training run not to flip it again.
+architecture (now with more margin than before — boundary displacement
+improved on all three classes) and the latency budget's *shape*
+(batching is still load-bearing), though its *margin* shrank sharply
+(16.7→40.9 ms at 8 crops, against a 50 ms budget) under GPU contention
+that was not isolated as the sole cause and is worth re-measuring
+cleanly. Δcells (§13.2.1) got *worse* on the metric that matters most —
+now 2 of 126 crops in the damage direction (was 1 of 126 pre-fix, 2 of
+54 on the smaller pre-scale-up split) — while its mean is unchanged at
++0.032. Bounded by sample size, and still bounded by error size, but in
+the opposite direction than the last report: τ, on 35 cartridges none
+of which exercised the admission criterion, because even the largest
+observed error — now 42.0 % of one cell's area, down from 79.4 % — sits
+further from, not closer to, the area a cell needs to be admitted. A
+more geometrically correct generator produced a *harder* validation
+target for τ, not an easier one. Not demonstrated: synthetic-to-real
+transfer — the real-photo comparison now sits at three points (0.211,
+0.232, 0.318) against the 0.218 threshold, from three checkpoints that
+differ in more than just training duration this time (fresh
+initialisation, fresh dataset, corrected geometry), which is weaker
+evidence for a real effect than the earlier two-point flip was, not
+stronger. Item (5) is therefore a completed prototype, now built on
+correctly-oriented geometry, whose real-photo comparison has moved on
+every one of the three occasions it has been measured, in both
+directions and by increasing margins — and the next step remains item
+(4)'s annotated real corpus rather than further model iteration; there
+is currently no real-image metric precise enough to score iteration
+against, and three runs in, no basis for expecting a fourth not to move
+it again.
 
 ### 13.3 Critical reflection
 
