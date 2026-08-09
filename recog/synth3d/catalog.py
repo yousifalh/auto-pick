@@ -66,7 +66,8 @@ def inspect_glb(path: str) -> dict:
     import numpy as np
     import trimesh
 
-    from .bay import case_wall_from_bounds, module_bay_from_bounds
+    from .bay import (case_wall_from_bounds, interior_from_tray,
+                      module_bay_from_bounds)
 
     scene = trimesh.load(path)
 
@@ -102,8 +103,21 @@ def inspect_glb(path: str) -> dict:
         return [round(float(v), 2) for v in
                 (lo[0], lo[1], hi[0], hi[1], hi[2])]
 
+    def _role_zmin(role):
+        """Minimum world-space z, in millimetres, over a role's meshes.
+
+        `by_role_bounds` is already in millimetres (see the `* MM` above),
+        so this is a direct min - no further scaling. `_aabb` returns
+        z_max as its last element and never z_min, which is why this is a
+        separate helper rather than a read out of `cell_union_mm`.
+        """
+        if role not in by_role_bounds:
+            return None
+        los = np.array([b[0] for b in by_role_bounds[role]])
+        return float(los.min(axis=0)[2])
+
     cell_union = _aabb("cell")
-    case_interior = _aabb("case")
+    tray_outer = _aabb("case")          # tray only - the lid is `case_lid`
 
     out = {
         "extents_mm": [round(float(v) * MM, 2)
@@ -112,15 +126,44 @@ def inspect_glb(path: str) -> dict:
         "subparts": sorted(subparts, key=lambda s: (s["role"], s["name"])),
         "role_counts": counts,
         "cell_union_mm": cell_union,
-        "case_interior_mm": case_interior,
+        "tray_outer_mm": tray_outer,
     }
-    if cell_union and case_interior:
-        out["case_wall_mm"] = round(case_wall_from_bounds(
-            tuple(case_interior[:4]), tuple(cell_union[:4])), 2)
+
+    if cell_union and tray_outer:
+        # Wall thickness. The plan's literal Step 4 (docs/superpowers/plans/
+        # 2026-08-09-tray-interior.md) takes this as the plain
+        # min(gap for gap in the four cell-to-tray clearances if gap > 0).
+        # For AnkerPowerCore10000 (the smallest assembly) that picks up the
+        # near/closed-end gap (2.45mm) instead of the true side wall
+        # (4.0mm), because that gap happens to be SMALLER than the wall on
+        # this one asset - exactly the "spring-contact recess" case
+        # `case_wall_from_bounds`'s docstring documents ("plausibly a
+        # spring-contact recess ... at least on the smallest case").
+        # Task-2's brief (Amendment C) anticipates this and says to stop
+        # and report rather than accept a wall value that has moved by
+        # more than ~0.5mm from the previously-measured 4.0/3.75/3.7/4.25mm
+        # figures. `case_wall_from_bounds` already exists, is tested against
+        # those exact four figures, and deliberately excludes the bay-axis
+        # near side for this reason - reuse it instead of a naive min() that
+        # would silently corrupt interior_mm/module_bay_mm for this asset.
+        wall = round(case_wall_from_bounds(
+            tuple(tray_outer[:4]), tuple(cell_union[:4])), 2)
+
+        interior = interior_from_tray(
+            tuple(tray_outer[:4]), tuple(cell_union[:4]), wall)
+
+        out["case_wall_mm"] = wall
+        out["interior_mm"] = [round(v, 2) for v in interior]
         out["module_bay_mm"] = [
             round(v, 2) for v in module_bay_from_bounds(
-                tuple(case_interior[:4]), tuple(cell_union[:4]))
+                interior, tuple(cell_union[:4]))
         ]
+        # The cells rest ON the cavity floor in assembled pose, so their
+        # minimum z IS the floor. `by_role_bounds` is already in
+        # millimetres (the `* MM` above), so `_role_zmin` must NOT be
+        # scaled again here.
+        out["tray_floor_mm"] = round(_role_zmin("cell"), 2)
+
     return out
 
 

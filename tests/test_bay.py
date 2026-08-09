@@ -146,13 +146,22 @@ def test_case_wall_from_bounds_rejects_an_asymmetric_wall():
         case_wall_from_bounds(interior, cells)
 
 
+# Task 2 (2026-08-09-tray-interior): module_bay_mm is now derived from
+# interior_mm - the tray's outer AABB inset by case_wall_mm - rather than
+# from the raw (un-inset) outer AABB the pre-task-2 catalog used. The bay's
+# far edge used to run all the way to the tray's outer wall, i.e. it
+# covered the wall tops too (see bay.py's module docstring and the task-2
+# brief); insetting by the wall correctly shrinks the depth by exactly
+# case_wall_mm per asset: 23.45-4.0=19.45, 26.5-3.75=22.75, 28.9-3.7=25.2,
+# 35.0-4.25=30.75. These are the physically-correct depths, not a
+# regression - the old figures described the bug this task fixes.
 @pytest.mark.skipif(not os.path.isfile(os.path.join(ASSETS, "catalog.json")),
                     reason="catalog.json not built")
 @pytest.mark.parametrize("name,depth", [
-    ("AnkerPowerCore10000", 23.5),
-    ("AnkerPowerCore13000", 26.5),
-    ("AnkerPowerCore20100", 28.9),
-    ("AnkerPowerCore26800", 35.0),
+    ("AnkerPowerCore10000", 19.45),
+    ("AnkerPowerCore13000", 22.75),
+    ("AnkerPowerCore20100", 25.2),
+    ("AnkerPowerCore26800", 30.75),
 ])
 def test_catalog_records_the_measured_bay_depth(name, depth):
     with open(os.path.join(ASSETS, "catalog.json")) as fh:
@@ -768,3 +777,97 @@ def test_placement_and_module_world_rects_do_not_overlap_after_rotation():
         dist = math.hypot(mcx - pcx, mcy - pcy)
         assert dist == pytest.approx((mh + ph) / 2 if
                                      abs(mw - pw) < 1e-9 else (mw + pw) / 2)
+
+
+# ---- interior_from_tray: task 2 - the tray's cavity footprint (its outer
+# rect inset by the wall), replacing case_interior_mm which held the
+# assembly's OUTER extent despite its name.
+
+def test_interior_is_the_tray_inset_by_the_wall():
+    from recog.synth3d.bay import interior_from_tray
+
+    tray = (0.0, 0.0, 60.0, 90.0)
+    cells = (4.0, 4.0, 56.0, 66.0)
+    # wall 4.0 -> interior runs 4..56 x 4..86
+    assert interior_from_tray(tray, cells, 4.0) == pytest.approx(
+        (4.0, 4.0, 56.0, 86.0))
+
+
+def test_interior_never_exceeds_the_tray():
+    from recog.synth3d.bay import interior_from_tray
+
+    tray = (0.0, 0.0, 60.0, 90.0)
+    cells = (4.0, 4.0, 56.0, 66.0)
+    x0, y0, x1, y1 = interior_from_tray(tray, cells, 4.0)
+    assert x0 >= tray[0] and y0 >= tray[1]
+    assert x1 <= tray[2] and y1 <= tray[3]
+
+
+def test_interior_contains_the_cells():
+    """The cells demonstrably fit inside the cavity in assembled pose, so an
+    interior that excludes them is measured wrong."""
+    from recog.synth3d.bay import interior_from_tray
+
+    tray = (0.0, 0.0, 60.0, 90.0)
+    cells = (4.0, 4.0, 56.0, 66.0)
+    ix0, iy0, ix1, iy1 = interior_from_tray(tray, cells, 4.0)
+    assert ix0 <= cells[0] and iy0 <= cells[1]
+    assert ix1 >= cells[2] and iy1 >= cells[3]
+
+
+def test_interior_raises_when_the_wall_would_swallow_the_cavity():
+    from recog.synth3d.bay import interior_from_tray
+
+    with pytest.raises(ValueError):
+        interior_from_tray((0.0, 0.0, 20.0, 20.0),
+                           (2.0, 2.0, 18.0, 18.0), 12.0)
+
+
+@pytest.mark.skipif(not os.path.isfile(os.path.join(ASSETS, "catalog.json")),
+                    reason="catalog.json not built")
+@pytest.mark.parametrize("name", [
+    "AnkerPowerCore10000", "AnkerPowerCore13000",
+    "AnkerPowerCore20100", "AnkerPowerCore26800",
+])
+def test_catalog_records_a_tray_cavity(name):
+    with open(os.path.join(ASSETS, "catalog.json")) as fh:
+        cat = json.load(fh)
+    entry = next(a for a in cat["assets"] if a["name"] == name)
+
+    for key in ("tray_outer_mm", "tray_floor_mm", "interior_mm",
+                "case_wall_mm", "module_bay_mm"):
+        assert key in entry, f"{name} missing {key}; re-run recog.convert_cad"
+
+    assert "case_interior_mm" not in entry, (
+        "case_interior_mm was the assembly's OUTER extent despite its name "
+        "and must not survive alongside a real interior measurement")
+
+    tx0, ty0, tx1, ty1, _ = entry["tray_outer_mm"]
+    ix0, iy0, ix1, iy1 = entry["interior_mm"]
+    assert tx0 <= ix0 < ix1 <= tx1
+    assert ty0 <= iy0 < iy1 <= ty1
+    assert entry["tray_floor_mm"] > 0.0
+
+
+@pytest.mark.skipif(not os.path.isfile(os.path.join(ASSETS, "catalog.json")),
+                    reason="catalog.json not built")
+@pytest.mark.parametrize("name,expected_floor", [
+    ("AnkerPowerCore10000", 1.95),
+    ("AnkerPowerCore13000", 1.95),
+    ("AnkerPowerCore20100", 1.95),
+    ("AnkerPowerCore26800", 1.95),
+])
+def test_tray_floor_matches_where_the_cells_rest(name, expected_floor):
+    """The cells sit ON the cavity floor in assembled pose, so the floor is
+    where their lowest point is. Hand-measured from the CAD: every assembly
+    rests its cells at z = 1.95 mm. If Step 4's derivation disagrees, the
+    floor is measured wrong and every label sits at the wrong height.
+
+    If a regenerated catalog reports a materially different value for an
+    assembly, do NOT relax this test - re-measure that asset and find out
+    why it differs, exactly as the bay depths were established.
+    """
+    with open(os.path.join(ASSETS, "catalog.json")) as fh:
+        cat = json.load(fh)
+    entry = next(a for a in cat["assets"] if a["name"] == name)
+    assert entry["tray_floor_mm"] == pytest.approx(expected_floor, abs=0.3)

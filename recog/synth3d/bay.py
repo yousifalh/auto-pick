@@ -150,6 +150,38 @@ def case_wall_from_bounds(interior: Rect, cells: Rect) -> float:
     return (a + b) / 2.0
 
 
+def interior_from_tray(tray_outer: Rect, cells_union: Rect,
+                       wall: float) -> Rect:
+    """The tray's cavity footprint: its outer rectangle inset by the wall.
+
+    `case_interior_mm` used to hold the AABB of every case mesh - the
+    assembly's OUTER extent - despite its name. This is the real thing: the
+    space a cell can actually occupy.
+
+    The cavity is widened if necessary to contain the cells, which
+    demonstrably fit in assembled pose. A wall measurement that excludes
+    them is wrong, and trusting it would shrink every placement area.
+    """
+    tx0, ty0, tx1, ty1 = tray_outer
+    cx0, cy0, cx1, cy1 = cells_union
+
+    ix0, iy0 = tx0 + wall, ty0 + wall
+    ix1, iy1 = tx1 - wall, ty1 - wall
+
+    if ix1 - ix0 <= 0.0 or iy1 - iy0 <= 0.0:
+        raise ValueError(
+            f"interior_from_tray: wall {wall} swallows the cavity of "
+            f"{tray_outer}")
+
+    # The cells sit inside the cavity in the CAD. If the inset excludes any
+    # of them the wall is over-measured, so widen rather than propagate the
+    # error.
+    ix0, iy0 = min(ix0, cx0), min(iy0, cy0)
+    ix1, iy1 = max(ix1, cx1), max(iy1, cy1)
+
+    return (max(ix0, tx0), max(iy0, ty0), min(ix1, tx1), min(iy1, ty1))
+
+
 def _local_footprint_rect(footprint: Tuple[float, float],
                           wall_mm: float = 0.0) -> Rect:
     """The cartridge's own local frame - centred on its pivot, before any

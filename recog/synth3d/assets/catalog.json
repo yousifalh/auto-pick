@@ -13,18 +13,7 @@
       "triangles": 20790,
       "subparts": [
         {
-          "name": "004696_A;2-Case10000_btm_934dcc",
-          "role": "case",
-          "extents_mm": [
-            59.02,
-            90.9,
-            18.32
-          ],
-          "triangles": 712,
-          "volume_mm3": null
-        },
-        {
-          "name": "004696_A;2-Case10000_btm_a2fb87",
+          "name": "004696_A;2-Case10000_btm_3e3e36",
           "role": "case",
           "extents_mm": [
             62.9,
@@ -32,6 +21,17 @@
             11.1
           ],
           "triangles": 1180,
+          "volume_mm3": null
+        },
+        {
+          "name": "004696_A;2-Case10000_btm_ebdd7d",
+          "role": "case",
+          "extents_mm": [
+            59.02,
+            90.9,
+            18.32
+          ],
+          "triangles": 712,
           "volume_mm3": null
         },
         {
@@ -80,9 +80,9 @@
         }
       ],
       "role_counts": {
+        "cell": 3,
         "case": 2,
-        "case_lid": 1,
-        "cell": 3
+        "case_lid": 1
       },
       "cell_union_mm": [
         -27.45,
@@ -91,20 +91,27 @@
         22.0,
         20.25
       ],
-      "case_interior_mm": [
+      "tray_outer_mm": [
         -31.45,
         -45.45,
         31.45,
         45.45,
-        22.2
+        20.26
       ],
       "case_wall_mm": 4.0,
-      "module_bay_mm": [
-        -31.45,
-        22.0,
-        31.45,
-        45.45
+      "interior_mm": [
+        -27.45,
+        -43.0,
+        27.45,
+        41.45
       ],
+      "module_bay_mm": [
+        -27.45,
+        22.0,
+        27.45,
+        41.45
+      ],
+      "tray_floor_mm": 1.95,
       "name": "AnkerPowerCore10000",
       "source": "004694_A_1-AnkerPowerCore10000.stp",
       "file": "AnkerPowerCore10000.glb",
@@ -122,18 +129,7 @@
       "triangles": 26696,
       "subparts": [
         {
-          "name": "004703_A;2-Case13000_btm_34bde0",
-          "role": "case",
-          "extents_mm": [
-            76.82,
-            97.0,
-            18.32
-          ],
-          "triangles": 712,
-          "volume_mm3": null
-        },
-        {
-          "name": "004703_A;2-Case13000_btm_9b9c12",
+          "name": "004703_A;2-Case13000_btm_39d1a2",
           "role": "case",
           "extents_mm": [
             80.7,
@@ -141,6 +137,17 @@
             11.1
           ],
           "triangles": 1180,
+          "volume_mm3": null
+        },
+        {
+          "name": "004703_A;2-Case13000_btm_f0bee0",
+          "role": "case",
+          "extents_mm": [
+            76.82,
+            97.0,
+            18.32
+          ],
+          "triangles": 712,
           "volume_mm3": null
         },
         {
@@ -200,9 +207,9 @@
         }
       ],
       "role_counts": {
+        "cell": 4,
         "case": 2,
-        "case_lid": 1,
-        "cell": 4
+        "case_lid": 1
       },
       "cell_union_mm": [
         -36.6,
@@ -211,20 +218,27 @@
         22.0,
         20.25
       ],
-      "case_interior_mm": [
+      "tray_outer_mm": [
         -40.35,
         -48.5,
         40.35,
         48.5,
-        22.2
+        20.26
       ],
       "case_wall_mm": 3.75,
-      "module_bay_mm": [
-        -40.35,
-        22.0,
-        40.35,
-        48.5
+      "interior_mm": [
+        -36.6,
+        -44.75,
+        36.6,
+        44.75
       ],
+      "module_bay_mm": [
+        -36.6,
+        22.0,
+        36.6,
+        44.75
+      ],
+      "tray_floor_mm": 1.95,
       "name": "AnkerPowerCore13000",
       "source": "004702_A_2-AnkerPowerCore13000.stp",
       "file": "AnkerPowerCore13000.glb",
@@ -242,18 +256,7 @@
       "triangles": 38364,
       "subparts": [
         {
-          "name": "004706_A;2-Case20100_btm_b2fba3",
-          "role": "case",
-          "extents_mm": [
-            62.3,
-            167.8,
-            11.1
-          ],
-          "triangles": 1036,
-          "volume_mm3": null
-        },
-        {
-          "name": "004706_A;2-Case20100_btm_c6f552",
+          "name": "004706_A;2-Case20100_btm_5045ec",
           "role": "case",
           "extents_mm": [
             58.31,
@@ -261,6 +264,17 @@
             18.21
           ],
           "triangles": 712,
+          "volume_mm3": null
+        },
+        {
+          "name": "004706_A;2-Case20100_btm_d0dd5c",
+          "role": "case",
+          "extents_mm": [
+            62.3,
+            167.8,
+            11.1
+          ],
+          "triangles": 1036,
           "volume_mm3": null
         },
         {
@@ -342,9 +356,9 @@
         }
       ],
       "role_counts": {
+        "cell": 6,
         "case": 2,
-        "case_lid": 1,
-        "cell": 6
+        "case_lid": 1
       },
       "cell_union_mm": [
         -27.45,
@@ -353,20 +367,27 @@
         55.0,
         20.25
       ],
-      "case_interior_mm": [
+      "tray_outer_mm": [
         -31.15,
         -83.9,
         31.15,
         83.9,
-        22.2
+        20.2
       ],
       "case_wall_mm": 3.7,
-      "module_bay_mm": [
-        -31.15,
-        55.0,
-        31.15,
-        83.9
+      "interior_mm": [
+        -27.45,
+        -80.2,
+        27.45,
+        80.2
       ],
+      "module_bay_mm": [
+        -27.45,
+        55.0,
+        27.45,
+        80.2
+      ],
+      "tray_floor_mm": 1.95,
       "name": "AnkerPowerCore20100",
       "source": "004705_A_2-AnkerPowerCore20100.stp",
       "file": "AnkerPowerCore20100.glb",
@@ -384,18 +405,7 @@
       "triangles": 50304,
       "subparts": [
         {
-          "name": "004709_A;2-Case26800_btm_45b801",
-          "role": "case",
-          "extents_mm": [
-            81.7,
-            180.0,
-            11.1
-          ],
-          "triangles": 1180,
-          "volume_mm3": null
-        },
-        {
-          "name": "004709_A;2-Case26800_btm_58be00",
+          "name": "004709_A;2-Case26800_btm_b505e5",
           "role": "case",
           "extents_mm": [
             76.77,
@@ -403,6 +413,17 @@
             17.32
           ],
           "triangles": 696,
+          "volume_mm3": null
+        },
+        {
+          "name": "004709_A;2-Case26800_btm_c73c0a",
+          "role": "case",
+          "extents_mm": [
+            81.7,
+            180.0,
+            11.1
+          ],
+          "triangles": 1180,
           "volume_mm3": null
         },
         {
@@ -506,9 +527,9 @@
         }
       ],
       "role_counts": {
+        "cell": 8,
         "case": 2,
-        "case_lid": 1,
-        "cell": 8
+        "case_lid": 1
       },
       "cell_union_mm": [
         -36.6,
@@ -517,20 +538,27 @@
         55.0,
         20.25
       ],
-      "case_interior_mm": [
+      "tray_outer_mm": [
         -40.85,
         -90.0,
         40.85,
         90.0,
-        22.2
+        19.76
       ],
       "case_wall_mm": 4.25,
-      "module_bay_mm": [
-        -40.85,
-        55.0,
-        40.85,
-        90.0
+      "interior_mm": [
+        -36.6,
+        -85.75,
+        36.6,
+        85.75
       ],
+      "module_bay_mm": [
+        -36.6,
+        55.0,
+        36.6,
+        85.75
+      ],
+      "tray_floor_mm": 1.95,
       "name": "AnkerPowerCore26800",
       "source": "004708_A_2-AnkerPowerCore26800.stp",
       "file": "AnkerPowerCore26800.glb",

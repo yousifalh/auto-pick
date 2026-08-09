@@ -265,11 +265,11 @@ def build(params: dict, rng: random.Random, library: A.AssetLibrary,
                 else 0.0
             module_placement = None
             if entry and entry.get("module_bay_mm") \
-                    and entry.get("case_interior_mm"):
+                    and entry.get("interior_mm"):
                 module_placement = B.module_world_placement(
                     item.footprint,
                     tuple(entry["module_bay_mm"]),
-                    tuple(entry["case_interior_mm"][:4]),
+                    tuple(entry["interior_mm"][:4]),
                     item.rot_deg, item.placed_xy,
                     wall_mm=wall_mm,
                 )
@@ -286,11 +286,11 @@ def build(params: dict, rng: random.Random, library: A.AssetLibrary,
             # module_placement=None fallback has no true bay side for this
             # to be the complement OF.
             if entry and entry.get("module_bay_mm") \
-                    and entry.get("case_interior_mm"):
+                    and entry.get("interior_mm"):
                 placement_placement = B.placement_world_placement(
                     item.footprint,
                     tuple(entry["module_bay_mm"]),
-                    tuple(entry["case_interior_mm"][:4]),
+                    tuple(entry["interior_mm"][:4]),
                     item.rot_deg, item.placed_xy,
                     wall_mm=wall_mm,
                 )
@@ -312,7 +312,7 @@ def build(params: dict, rng: random.Random, library: A.AssetLibrary,
                 placement_rect = B.placement_rect_local(
                     item.footprint,
                     tuple(entry["module_bay_mm"]),
-                    tuple(entry["case_interior_mm"][:4]),
+                    tuple(entry["interior_mm"][:4]),
                     wall_mm=wall_mm,
                 )
                 local_poses = B.sample_obstructions(
