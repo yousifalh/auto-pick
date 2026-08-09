@@ -20,6 +20,7 @@ import random
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
+import bmesh
 import bpy
 from mathutils import Matrix, Vector
 
@@ -262,6 +263,133 @@ def _classify_case_liner(by_role):
         by_role.setdefault("case_liner", []).extend(liners)
 
 
+def _connected_face_islands(bm):
+    """Group `bm.faces` into connected components via shared edges."""
+    visited = [False] * len(bm.faces)
+    islands = []
+    for seed in bm.faces:
+        if visited[seed.index]:
+            continue
+        stack, comp = [seed], []
+        visited[seed.index] = True
+        while stack:
+            f = stack.pop()
+            comp.append(f)
+            for e in f.edges:
+                for lf in e.link_faces:
+                    if not visited[lf.index]:
+                        visited[lf.index] = True
+                        stack.append(lf)
+        islands.append(comp)
+    return islands
+
+
+def _oversized_near_top_islands(bm, mw, hi_z, footprint_area,
+                                top_tol=0.002, flatness_tol=0.0006,
+                                area_frac=0.15):
+    """Which of `bm`'s connected face-islands (see `_connected_face_
+    islands`) are (a) FLAT - the island's own z-spread is under
+    `flatness_tol` metres, so this excludes a real wall (which spans most
+    of the case's own height, e.g. floor-to-rim) even though its highest
+    point also reaches near the top, (b) sitting within `top_tol` metres
+    of `hi_z` (world space) at their highest point, and (c) together cover
+    more than `area_frac` of `footprint_area`. See `_strip_phantom_cap`
+    for what this is for. Returns a list of `(faces, area)` pairs.
+
+    Measured (task-3c): the phantom cap is actually TWO coincident-ish
+    flat quads ~1.5mm apart (paired top/bottom faces of a zero-thickness
+    "plate"), not one - `top_tol` has to be wide enough to reach the
+    lower of the two (a plain z-nearness check on JUST the island's own
+    max would also flag a real full-height wall whose top happens to
+    reach the rim; the flatness check is what rules that out instead).
+    """
+    bad = []
+    for comp in _connected_face_islands(bm):
+        zs = [(mw @ v.co).z for f in comp for v in f.verts]
+        z_lo, z_hi = min(zs), max(zs)
+        if (z_hi - z_lo) > flatness_tol:
+            continue                      # spans real height - a wall, not a cap
+        if hi_z - z_hi > top_tol:
+            continue                      # flat, but not near the top - a floor/step
+        area = sum(f.calc_area() for f in comp)
+        if area > area_frac * footprint_area:
+            bad.append((comp, area))
+    return bad
+
+
+def _strip_phantom_cap(case_obj, area_frac=0.15, top_tol=0.002,
+                       flatness_tol=0.0006):
+    """Remove disconnected, flat face island(s) sitting at or near
+    `case_obj`'s own top (world z_max) that span a large fraction of its
+    own XY footprint - a tessellation/CAD artifact sharing the outer
+    shell's material, so `_split_multi_material_case`'s material boundary
+    cannot separate it from the true shell.
+
+    Measured directly (task-3c-report.md), not guessed: on all four real
+    assets, the "case" role piece `_classify_case_liner` selects is not
+    one connected shape - it is ~30 disconnected face-islands sharing one
+    material index (confirmed via bmesh connected-component analysis, and
+    independently confirmed by rendering the isolated, already-correctly-
+    split, already-correctly-classified shell alone: both a straight-down
+    and a 35-degree oblique render come back a flat, featureless image -
+    exactly task-3b's "solid, closed, rounded block from every angle"
+    finding). On every asset, the by-far-largest islands are a pair of
+    disconnected quads ~1.5mm apart, both near the shell's own world
+    z_max, spanning 50-90% of the footprint, with zero shared edges to
+    the walls or floor - not a rim lip (those are real and present too,
+    but tiny: under 3% of footprint on every asset measured here, versus
+    this pair's 50-90%). These faces, not a failed split, are what make a
+    correctly-split, correctly-classified shell render solid: every
+    straight-down camera ray hits one of them before ever reaching the
+    module, the placement-area proxy, or the true cavity floor below.
+
+    `area_frac`/`top_tol`/`flatness_tol` are deliberately generous
+    relative to that measured gap, so a legitimate rim/lip (small area)
+    or a real wall (spans most of the case's own height, so fails the
+    flatness check even though its top also reaches near the rim) is
+    never touched. Raises if a large near-top flat island still remains
+    after stripping - the removal must not silently leave the exact
+    defect it exists to fix. bpy-only geometry edit; per this task's
+    constraints it has no unit test, only this assertion and the render
+    (see task-3c-report.md).
+    """
+    bpy.context.view_layer.update()
+    mw = case_obj.matrix_world.copy()
+    lo, hi = group_bbox([case_obj])
+    footprint_area = (hi.x - lo.x) * (hi.y - lo.y)
+    if footprint_area <= 0:
+        return
+
+    bm = bmesh.new()
+    bm.from_mesh(case_obj.data)
+    bm.faces.ensure_lookup_table()
+    bad = _oversized_near_top_islands(bm, mw, hi.z, footprint_area,
+                                      top_tol, flatness_tol, area_frac)
+    if bad:
+        bmesh.ops.delete(bm, geom=[f for comp, _ in bad for f in comp],
+                         context='FACES')
+        bm.to_mesh(case_obj.data)
+        case_obj.data.update()
+    bm.free()
+    if not bad:
+        return
+
+    bpy.context.view_layer.update()
+    bm2 = bmesh.new()
+    bm2.from_mesh(case_obj.data)
+    bm2.faces.ensure_lookup_table()
+    still_bad = _oversized_near_top_islands(bm2, mw, hi.z, footprint_area,
+                                            top_tol, flatness_tol, area_frac)
+    bm2.free()
+    if still_bad:
+        worst = max(a for _, a in still_bad)
+        raise RuntimeError(
+            f"_strip_phantom_cap: {case_obj.name!r} still has a near-top "
+            f"flat island covering {worst / footprint_area:.1%} of its "
+            f"own footprint after stripping - the removal did not clear "
+            f"the defect it exists to fix.")
+
+
 def object_role(o) -> str:
     """The role `_load_template` tagged `o` with (see `ROLE_PROP`),
     falling back to the name-based `catalog.role_of` for anything the tag
@@ -353,6 +481,16 @@ class AssetLibrary:
         # with its FINAL role so scene.py never has to re-derive one from
         # a (possibly ".001"-suffixed) name; object_role() reads this.
         _classify_case_liner(by_role)
+
+        # Strip any phantom cap merged into the shell via a shared
+        # material - see _strip_phantom_cap. Must run AFTER
+        # _classify_case_liner (needs the final "case" piece, in the
+        # already lay_flat'd + recentred world frame) and BEFORE this
+        # template is cached/cloned, so every instance gets the stripped
+        # mesh, not just the first one built.
+        for o in by_role.get("case", []):
+            _strip_phantom_cap(o)
+
         for role, objs in by_role.items():
             for o in objs:
                 o[ROLE_PROP] = role
@@ -438,6 +576,22 @@ def place_item(item: Item, placement, rng: random.Random):
     same space, and a render of interpenetrating solids is not a render of one
     part lying across another.
 
+    Calls `bpy.context.view_layer.update()` UNCONDITIONALLY after
+    `drop_to_floor`, not only inside the `if lift:` branch (task-3c: the
+    previous code only refreshed the depsgraph when a lift was applied,
+    so for the common `lift == 0` case, `drop_to_floor`'s
+    `o.location.z -= lo.z` write sat un-evaluated - `matrix_world`/
+    `bound_box` kept reporting the PRE-drop position to any caller that
+    read them before some UNRELATED later object happened to trigger an
+    update. `scene.py`'s open_case block is exactly such a caller
+    (`floor_z = lo.z + tray_floor_mm/1000`, read straight after
+    placement): it silently computed `floor_z` as if the case's floor sat
+    at its own TOP (an 11.1mm offset, exactly the shell's own height) for
+    every case that was not itself lifted, seating the module and bay
+    proxy ~11mm above the case's true rim - floating in open air, clear
+    of the case entirely. That is why some renders "worked": the module
+    was never inside the tray to be occluded. See task-3c-report.md.
+
     rng is unused; it is kept for signature stability with the callers and with
     the other placement helpers.
     """
@@ -451,9 +605,26 @@ def place_item(item: Item, placement, rng: random.Random):
         o.matrix_world = M @ o.matrix_world
     bpy.context.view_layer.update()
     drop_to_floor(item.objects)
+    bpy.context.view_layer.update()
 
     lift = float(getattr(placement, "z", 0.0) or 0.0)
     if lift:
         for o in item.objects:
             o.location.z += lift
         bpy.context.view_layer.update()
+
+    # Loud post-condition (task-3c): the group's own z-min must now sit at
+    # exactly `lift` (0 for the common non-overlapping case). Trusting
+    # drop_to_floor's arithmetic without checking is exactly what let the
+    # stale-update bug above go unnoticed for three render cycles - assert
+    # the RESULT, not that the code ran.
+    lo_final, _ = group_bbox(item.objects)
+    if abs(lo_final.z - lift) > 5e-4:
+        raise RuntimeError(
+            f"place_item: post-condition failed for "
+            f"{[o.name for o in item.objects]} - expected the group's "
+            f"z-min to settle at {lift * 1000:.3f}mm after drop_to_floor "
+            f"(+lift), but matrix_world/bound_box still reports "
+            f"{lo_final.z * 1000:.3f}mm. This is the stale-transform "
+            f"signature: a bpy.context.view_layer.update() was skipped "
+            f"somewhere between the transform write and this read.")
