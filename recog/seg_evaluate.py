@@ -396,6 +396,45 @@ def compute_val_instance_counts(full_dataset, val_indices: Sequence[int],
     return dict(zip(CHANNEL_NAMES, counts))
 
 
+def group_indices_by_asset(full_dataset, val_indices: Sequence[int]
+                           ) -> Dict[Optional[str], List[int]]:
+    """`val_indices` partitioned by which catalog asset (SKU) each crop's
+    unit belongs to, via `BaySegDataset.sample_assets` (Task 12).
+
+    Design spec Sec7/Sec10/Sec12: every comparison this measurement makes
+    has to be reported per-SKU first, pooled figure alongside it, never
+    in place of it - this is what makes that grouping possible by
+    calling the EXISTING `evaluate()` once per group, rather than
+    threading a new SKU-aware code path through it.
+    """
+    out: Dict[Optional[str], List[int]] = {}
+    for idx in val_indices:
+        out.setdefault(full_dataset.sample_assets[idx], []).append(idx)
+    return out
+
+
+def format_per_sku_table(per_sku_results: Dict[str, Dict[str, Any]]) -> str:
+    """A compact per-SKU IoU table, one row per asset, for the classes in
+    SELECT_ON plus 'battery' (design spec Sec12's regression floor names
+    both explicitly). Appended to the same report `format_report`
+    produces - not folded into it, to keep the well-tested pooled report
+    untouched by this addition.
+    """
+    cols = SELECT_ON + ("battery",)
+    lines = ["", "Per-SKU IoU (design spec Sec7/Sec10/Sec12):",
+            "  " + "asset".ljust(24) + "n_crops".rjust(9)
+            + "".join(c.rjust(14) for c in cols)]
+    for asset, res in sorted(per_sku_results.items(),
+                             key=lambda kv: (kv[0] is None, kv[0])):
+        ious = res.get("ious", {})
+        row = ("  " + str(asset).ljust(24)
+              + str(res.get("n_val_crops", 0)).rjust(9)
+              + "".join(f"{ious.get(c, float('nan')):.4f}".rjust(14)
+                        for c in cols))
+        lines.append(row)
+    return "\n".join(lines)
+
+
 def check_split_matches_checkpoint(checkpoint_path: str,
                                    recomputed: Dict[str, int]) -> None:
     """Fail loudly if today's recomputed split disagrees with what the
@@ -635,6 +674,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
                          "falling back to configs/synth3d.yaml.")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--out", default="docs/receipts/seg_eval.txt")
+    ap.add_argument("--per-sku", action="store_true",
+                    help="also report per-catalog-asset (SKU) IoU - "
+                         "design spec Sec12. Only meaningful against a "
+                         "dataset whose sidecar carries 'asset' per "
+                         "annotation (Task 12).")
     return ap
 
 
@@ -703,6 +747,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         checkpoint=args.checkpoint, config_path=args.config,
         synth_config_source=synth_source, mm_per_px=mm_per_px,
         device=str(segmenter.device), checkpoint_note=checkpoint_note)
+
+    if args.per_sku:
+        by_asset = group_indices_by_asset(full_dataset, val_indices)
+        per_sku_results = {
+            asset: evaluate(segmenter, full_dataset, idxs, mm_per_px,
+                            num_classes=num_classes)
+            for asset, idxs in by_asset.items() if idxs
+        }
+        report += "\n" + format_per_sku_table(per_sku_results)
 
     print(report)
 

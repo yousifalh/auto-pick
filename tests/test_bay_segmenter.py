@@ -294,3 +294,39 @@ def test_sibling_checkpoint_note_is_none_without_both_checkpoints(tmp_path):
 
     torch.save({"selected_mean_iou": 0.8}, tmp_path / "best.pt")
     assert _sibling_checkpoint_note(str(tmp_path / "best.pt")) is None
+
+
+# ------------------------------------------------------------- per-SKU --
+
+def test_group_indices_by_asset_partitions_by_sku():
+    from recog.seg_evaluate import group_indices_by_asset
+
+    class _FakeDataset:
+        sample_assets = ["A", "B", "A", None]
+
+    out = group_indices_by_asset(_FakeDataset(), [0, 1, 2, 3])
+    assert out == {"A": [0, 2], "B": [1], None: [3]}
+
+
+def test_group_indices_by_asset_only_includes_requested_indices():
+    from recog.seg_evaluate import group_indices_by_asset
+
+    class _FakeDataset:
+        sample_assets = ["A", "B", "A"]
+
+    out = group_indices_by_asset(_FakeDataset(), [0, 1])
+    assert out == {"A": [0], "B": [1]}
+
+
+def test_format_per_sku_table_lists_every_sku_with_its_crop_count():
+    from recog.seg_evaluate import format_per_sku_table
+
+    results = {
+        "AnkerPowerCore10000": {"n_val_crops": 12,
+                                "ious": {"bay": 0.80, "obstruction": 0.60}},
+        "AnkerPowerCore13000": {"n_val_crops": 9,
+                                "ious": {"bay": 0.75, "obstruction": 0.55}},
+    }
+    table = format_per_sku_table(results)
+    assert "AnkerPowerCore10000" in table and "12" in table
+    assert "AnkerPowerCore13000" in table and "9" in table
