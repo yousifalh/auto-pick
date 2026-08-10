@@ -659,7 +659,11 @@ def _assert_procedural_tray_geometry(entry: dict, case, lid, cell) -> None:
          the same footprint.
       5. The BUILT cell's measured diameter/length match
          config.CELL_FORMATS[entry['cell_format']] and it rests on the
-         cavity floor, not floating or buried.
+         cavity floor, not floating or buried, and stays within the
+         ASSEMBLED shell's own envelope (case + lid together, 2 *
+         case_half_height_mm - the 'assembled' variant keeps the cell at
+         this exact built position, sealed by the lid; a cell whose own
+         diameter exceeds that combined height would poke through it).
     """
     ix0, iy0, ix1, iy1 = entry["interior_mm"]
     ox0, oy0, ox1, oy1 = entry["case_outer_mm"]
@@ -759,9 +763,22 @@ def _assert_procedural_tray_geometry(entry: dict, case, lid, cell) -> None:
     assert case_lo.z - 1e-6 <= cell_lo.z, (
         "cell sits below the tray's own base - it would poke through the "
         "floor")
-    assert mm(cell_hi.z) <= half_h_mm + tol, (
-        f"cell top z={mm(cell_hi.z):.2f}mm pokes above the case rim "
-        f"({half_h_mm}mm) - it would not fit inside the built cavity")
+    # The OPEN cavity's own rim (half_h_mm) is not the cell's ceiling: the
+    # 'assembled' variant keeps case + lid TOGETHER (bay.sample_tray
+    # guarantees 2*half_h_mm clears the drawn cell's diameter with a
+    # minimum clearance - see MIN_CELL_HEIGHT_CLEARANCE_MM), and it is
+    # that combined envelope the cell must not poke through, not the bare
+    # case half on its own (a cell resting on the open cavity's floor is
+    # EXPECTED to rise above the open rim - that is what makes the cavity
+    # useful headroom for a real, unsealed cell in open_case rendering,
+    # which discards and independently re-seats this template cell
+    # entirely; see assets.AssetLibrary.instantiate's exploded branch).
+    assembled_top_mm = 2.0 * half_h_mm
+    assert mm(cell_hi.z) <= assembled_top_mm + tol, (
+        f"cell top z={mm(cell_hi.z):.2f}mm pokes above the assembled "
+        f"case+lid envelope ({assembled_top_mm:.2f}mm = 2 * "
+        f"case_half_height_mm) - it would not fit inside the sealed "
+        f"'assembled' shell")
 
 
 def build_procedural_tray(entry: dict) -> Dict[str, list]:

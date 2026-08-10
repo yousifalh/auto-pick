@@ -697,6 +697,13 @@ class TraySample:
 # structural requirement, not a plausibility tuning knob.
 MIN_CAVITY_RIM_CLEARANCE_MM = 1.0
 
+# Minimum clearance (mm) sample_tray guarantees between a cell's own
+# diameter and the ASSEMBLED shell's full height (2 * case_half_height_mm
+# - case + lid together, the envelope world.build_procedural_tray's
+# "assembled" variant actually seals the cell inside). See sample_tray's
+# docstring for why this coupling exists at all.
+MIN_CELL_HEIGHT_CLEARANCE_MM = 1.0
+
 
 def sample_tray(cfg, rng: random.Random) -> TraySample:
     """Draw one procedural tray from `cfg` (config.Config.tray_anchored
@@ -777,6 +784,23 @@ def sample_tray(cfg, rng: random.Random) -> TraySample:
     tray_floor_mm = rng.uniform(*cfg.tray_floor_mm_range)
     case_half_height_mm = max(
         case_half_height_mm, tray_floor_mm + MIN_CAVITY_RIM_CLEARANCE_MM)
+
+    # A SECOND, independent coupling case_half_height_mm_range was never
+    # calibrated against: it is anchored to the real, 18650-only measured
+    # assemblies (11.1mm), predating Group A's 21700/26650 cell formats.
+    # The "assembled" variant seals a cell inside the CASE+LID envelope,
+    # whose total height is 2 * case_half_height_mm - a 26650 cell (26mm
+    # diameter) does not fit inside a shell sized for 22.2mm (2 * 11.1),
+    # and this was found the hard way: world.build_procedural_tray's own
+    # numeric self-check (design spec Task 8) raised on the very first
+    # render, "cell top pokes above the case rim". Nudging
+    # case_half_height_mm UP (never shrinking the drawn cell) keeps every
+    # format physically sealable; for 18650 (the format the anchored
+    # range was calibrated for) this is a no-op in practice - 2*11.1 =
+    # 22.2mm already clears 18.3mm with room to spare.
+    case_half_height_mm = max(
+        case_half_height_mm,
+        (cell_w_mm + MIN_CELL_HEIGHT_CLEARANCE_MM) / 2.0)
 
     return TraySample(
         interior_mm=interior, module_bay_mm=module_bay, case_outer_mm=case_outer,
