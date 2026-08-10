@@ -190,6 +190,37 @@ obstruction:
   tape_frac: [0.05, 0.12]
   label_frac: [0.10, 0.22]
 
+# Procedural cartridge-tray family (spec #2, design spec Sec3.1/Sec5.2).
+# Anchored: "within and slightly beyond" what the four Anker assemblies
+# span (Decision 2). Measured anchors (catalog.json, all four SKUs):
+# wall 3.70-4.25mm, module-bay depth 19.45-30.75mm, case half-height
+# 11.1mm (all four, n=1 - a modest jitter band, not a wide draw),
+# tray_floor_mm 1.95mm (all four).
+tray_anchored:
+  cell_formats: [18650, 21700, 26650]
+  n_cols_range: [3, 5]
+  n_rows_range: [1, 2]
+  pitch_mm_range: [0.5, 2.0]
+  wall_mm_range: [3.3, 4.7]
+  bay_margin_mm_range: [17.0, 34.0]
+  case_half_height_mm_range: [10.5, 11.7]
+  tray_floor_mm_range: [1.6, 2.3]
+  free_bay_edge: false
+
+# Wide: well outside the anchored span - unusual aspect ratios, thicker
+# and thinner walls, denser packing, and a module bay allowed on any
+# edge, including ones no real SKU shows.
+tray_wide:
+  cell_formats: [18650, 21700, 26650]
+  n_cols_range: [2, 8]
+  n_rows_range: [1, 4]
+  pitch_mm_range: [0.3, 6.0]
+  wall_mm_range: [1.5, 9.0]
+  bay_margin_mm_range: [6.0, 60.0]
+  case_half_height_mm_range: [4.0, 28.0]
+  tray_floor_mm_range: [0.8, 4.5]
+  free_bay_edge: true
+
 param_space:
   n_assemblies: [1, 4]
   layout_mode:

@@ -235,12 +235,55 @@ class ObstructionCfg:
 
 
 @dataclass
+class TrayRangeCfg:
+    """One procedural sampling range-set - either the anchored or the
+    wide population (Decision 2). config.Config.tray_anchored and
+    .tray_wide are two SEPARATE instances of this dataclass, never one
+    config with a "how wide" knob, because the separation has to be
+    structural or Decision 2's "kept separable" requirement has nothing
+    to enforce it. See bay.sample_tray for how each field is used.
+
+    Two distinct depth-ish quantities, deliberately not one field (see
+    this plan's header note): `case_half_height_mm_range` is the Z-axis
+    case half-height (measured 11.1mm, all four SKUs); `bay_margin_mm_
+    range` is the XY-plane depth of the module bay strip (measured
+    19.45-30.75mm).
+    """
+    cell_formats: Tuple[str, ...] = ("18650", "21700", "26650")
+    n_cols_range: Tuple[int, int] = (3, 5)
+    n_rows_range: Tuple[int, int] = (1, 2)
+    pitch_mm_range: Tuple[float, float] = (0.5, 2.0)
+    wall_mm_range: Tuple[float, float] = (3.3, 4.7)
+    bay_margin_mm_range: Tuple[float, float] = (17.0, 34.0)
+    case_half_height_mm_range: Tuple[float, float] = (10.5, 11.7)
+    tray_floor_mm_range: Tuple[float, float] = (1.6, 2.3)
+    # Design spec Sec9.1: anchored fixes the bay to a short edge (matching
+    # 4/4 measured SKUs); wide samples freely among all four edges,
+    # including physically implausible ones. False = anchored's rule.
+    free_bay_edge: bool = False
+
+
+def _wide_tray_defaults() -> "TrayRangeCfg":
+    """Decision 2's "well outside" population - unusual aspect ratios,
+    thicker/thinner walls, denser packing, and (free_bay_edge) module
+    positions no real SKU shows."""
+    return TrayRangeCfg(
+        n_cols_range=(2, 8), n_rows_range=(1, 4),
+        pitch_mm_range=(0.3, 6.0), wall_mm_range=(1.5, 9.0),
+        bay_margin_mm_range=(6.0, 60.0),
+        case_half_height_mm_range=(4.0, 28.0),
+        tray_floor_mm_range=(0.8, 4.5), free_bay_edge=True)
+
+
+@dataclass
 class Config:
     render: RenderCfg = field(default_factory=RenderCfg)
     layout: LayoutCfg = field(default_factory=LayoutCfg)
     camera: CameraCfg = field(default_factory=CameraCfg)
     filter: FilterCfg = field(default_factory=FilterCfg)
     obstruction: ObstructionCfg = field(default_factory=ObstructionCfg)
+    tray_anchored: TrayRangeCfg = field(default_factory=TrayRangeCfg)
+    tray_wide: TrayRangeCfg = field(default_factory=_wide_tray_defaults)
     param_space: Dict[str, Any] = field(default_factory=dict)
     backdrops: Dict[str, dict] = field(default_factory=dict)
     lighting: Dict[str, dict] = field(default_factory=dict)
@@ -262,13 +305,17 @@ def config_to_dict(cfg: Config) -> dict:
 
 _SECTIONS = {"render": RenderCfg, "layout": LayoutCfg,
              "camera": CameraCfg, "filter": FilterCfg,
-             "obstruction": ObstructionCfg}
+             "obstruction": ObstructionCfg,
+             "tray_anchored": TrayRangeCfg, "tray_wide": TrayRangeCfg}
 _PASSTHROUGH = ("param_space", "backdrops", "lighting",
                 "materials", "role_materials")
 _TUPLE_FIELDS = {"res", "area", "margin_range", "shift_range", "jig_depth",
                  "n_adhesive", "n_foam", "n_tape", "n_label",
                  "adhesive_frac", "foam_frac", "tape_frac", "label_frac",
-                 "seated_frac"}
+                 "seated_frac", "cell_formats", "n_cols_range",
+                 "n_rows_range", "pitch_mm_range", "wall_mm_range",
+                 "bay_margin_mm_range", "case_half_height_mm_range",
+                 "tray_floor_mm_range"}
 
 
 def default_config_path() -> Path:

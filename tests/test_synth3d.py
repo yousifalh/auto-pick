@@ -1930,3 +1930,63 @@ def test_cell_formats_has_all_three_decision_3_formats():
     assert set(CELL_FORMATS) == {"18650", "21700", "26650"}
     assert CELL_FORMATS["21700"] == pytest.approx((0.021, 0.070))
     assert CELL_FORMATS["26650"] == pytest.approx((0.026, 0.065))
+
+
+# ------------------------------------------------------ procedural tray --
+
+def test_tray_anchored_and_wide_are_separate_instances():
+    from recog.synth3d.config import Config
+    cfg = Config()
+    assert cfg.tray_anchored is not cfg.tray_wide
+    assert cfg.tray_anchored.free_bay_edge is False
+    assert cfg.tray_wide.free_bay_edge is True
+
+
+def test_tray_anchored_wall_range_brackets_the_measured_four_skus():
+    """Measured (design spec Sec1.1, catalog.json): wall 3.70-4.25mm
+    across all four Anker assemblies. Decision 2: anchored stays "within
+    and slightly beyond" that span."""
+    from recog.synth3d.config import Config
+    lo, hi = Config().tray_anchored.wall_mm_range
+    assert lo <= 3.70 and hi >= 4.25
+
+
+def test_tray_anchored_bay_margin_range_brackets_the_measured_four_skus():
+    """Measured module-bay depth: 19.45-30.75mm (design spec Sec1.1's
+    anchor table) - the XY quantity Sec5.2 step 3 builds module_bay_mm
+    from. See this plan's header note on why it is a separate field from
+    case_half_height_mm."""
+    from recog.synth3d.config import Config
+    lo, hi = Config().tray_anchored.bay_margin_mm_range
+    assert lo <= 19.45 and hi >= 30.75
+
+
+def test_tray_anchored_case_half_height_is_a_modest_jitter_not_a_wide_draw():
+    """Design spec Sec1.1: case half-height is 11.1mm on all four SKUs -
+    n=1, not a 4-point spread. The anchored sampler treats this as "near
+    the single observed value", not a wide draw."""
+    from recog.synth3d.config import Config
+    lo, hi = Config().tray_anchored.case_half_height_mm_range
+    assert lo < 11.1 < hi
+    assert (hi - lo) <= 2.0, f"range {hi - lo}mm is not a modest jitter band"
+
+
+def test_tray_wide_ranges_are_strictly_wider_than_anchored():
+    from recog.synth3d.config import Config
+    cfg = Config()
+    for field in ("n_cols_range", "n_rows_range", "pitch_mm_range",
+                  "wall_mm_range", "bay_margin_mm_range",
+                  "case_half_height_mm_range", "tray_floor_mm_range"):
+        a_lo, a_hi = getattr(cfg.tray_anchored, field)
+        w_lo, w_hi = getattr(cfg.tray_wide, field)
+        assert w_lo <= a_lo and w_hi >= a_hi, field
+
+
+def test_load_config_accepts_tray_sections(tmp_path):
+    p = tmp_path / "t.yaml"
+    p.write_text(
+        "tray_anchored: {wall_mm_range: [3.5, 4.5]}\n"
+        "tray_wide: {free_bay_edge: true}\n", encoding="utf-8")
+    cfg = C.load_config(p)
+    assert cfg.tray_anchored.wall_mm_range == (3.5, 4.5)
+    assert cfg.tray_wide.free_bay_edge is True
