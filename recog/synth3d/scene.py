@@ -34,7 +34,7 @@ from . import bay as B
 from . import layout as L
 from . import materials as M
 from . import world as W
-from .config import Config, VARIANTS, Variant
+from .config import CELL_FORMATS, Config, VARIANTS, Variant
 
 
 def reset_scene():
@@ -341,7 +341,8 @@ def build(params: dict, rng: random.Random, library: A.AssetLibrary,
                 # seats fewer cells, or none; seated_cell_poses returns
                 # whatever fits with no error.
                 if rng.random() < cfg.layout.p_seated:
-                    cell_w, cell_h = W.SEAT_CELL_FOOTPRINT_M
+                    cell_format = entry.get("cell_format", "18650")
+                    cell_w, cell_h = CELL_FORMATS[cell_format]
                     cap = max(1, int(
                         (placement_rect[2] - placement_rect[0]) *
                         (placement_rect[3] - placement_rect[1]) /
@@ -358,7 +359,8 @@ def build(params: dict, rng: random.Random, library: A.AssetLibrary,
                         local_seats, item.rot_deg, item.placed_xy)
                     item.seated_objects = W.seat_cells(
                         library, item.asset, world_seats, floor_z, rng,
-                        cfg, backdrop_luma=backdrop_luma)
+                        cfg, cell_format=cell_format,
+                        backdrop_luma=backdrop_luma)
                     meta.setdefault("seated_cells", []).append(
                         {"asset": item.asset, "n": len(item.seated_objects)})
 

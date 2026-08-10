@@ -29,7 +29,7 @@ import bpy
 from mathutils import Matrix, Vector
 
 from . import assets as A
-from .config import CELL_H_MM, CELL_W_MM
+from .config import CELL_FORMATS, CELL_H_MM, CELL_W_MM
 from .lightrig import off_axis_placement, shadow_direction
 from .materials import apply_to_object, for_role, set_input, rng_range
 
@@ -944,50 +944,43 @@ def build_obstructions(poses, floor_z: float, rng: random.Random):
 # silently, because nothing downstream can detect it from the mask alone.
 SEATED_CELL_LIFT = 0.0012          # metres above the cavity floor
 
-# The 18650's lay_flat resting footprint, in metres: (short edge, long
-# edge) = (18.3mm, 65.0mm), derived from config.CELL_W_MM/CELL_H_MM
-# rather than restating those two literals a third time (2026-08-10
-# consolidation - recog.calibrate_tau and recog.seg_ablation import the
-# same mm pair). scene.py's seated-cell capacity estimate and the
-# cell_w/cell_h it hands to bay.seated_cell_poses's packer BOTH need this
-# exact figure, but both run on the bpy-free side, before any cell
-# geometry is ever touched - they cannot measure it themselves.
-# `_assert_seat_cell_footprint` below closes the gap that leaves open: it
-# measures the ACTUAL cloned-and-lay_flat'd template the first time each
-# asset seats a cell and raises if it disagrees with this constant,
-# turning what was (per the reviewer's own headless-Blender check) a
-# coincidental tie in `assets.lay_flat`'s `min()` - both non-Z extents of
-# a standing 18650 are 18.3mm, so which one loses that tie is incidental,
-# not guaranteed by anything - into a checked invariant.
-SEAT_CELL_FOOTPRINT_M = (CELL_W_MM / 1000, CELL_H_MM / 1000)
+# SEAT_CELL_FOOTPRINT_M is retired: it named one hardcoded format. Every
+# call site now looks up CELL_FORMATS[cell_format] directly, keyed by
+# whichever format the item being seated actually is (2026-08-10,
+# spec #2 cell-format generalisation).
 
 _seat_cell_footprint_checked: set = set()
 
 
-def _assert_seat_cell_footprint(asset: str, lo: Vector, hi: Vector) -> None:
-    """Assert a freshly lay_flat'd cell clone's measured XY footprint
-    matches SEAT_CELL_FOOTPRINT_M, once per asset (not once per seated
-    cell - a group_bbox is already computed for placement regardless, so
-    this call is free, but the assets-seen cache still avoids repeating
-    the isclose/sort work for every one of possibly hundreds of seats
-    across a run for no further benefit once the first has passed).
+def _assert_seat_cell_footprint(asset: str, cell_format: str,
+                                lo: Vector, hi: Vector) -> None:
+    """Assert a freshly lay_flat'd (or, for a procedural tray, directly
+    built) cell clone's measured XY footprint matches
+    CELL_FORMATS[cell_format], once per (asset, cell_format).
+
+    Generalised from a single hardcoded 18650 check (design spec Sec6.1):
+    it now asserts against the format the clone was DRAWN FOR, not a
+    single global constant - so a mismatch between what scene.py believes
+    an item's format is and what its actual template measures still
+    fails loudly, for every format, not just 18650.
     """
-    if asset in _seat_cell_footprint_checked:
+    key = (asset, cell_format)
+    if key in _seat_cell_footprint_checked:
         return
-    _seat_cell_footprint_checked.add(asset)
+    _seat_cell_footprint_checked.add(key)
     got = sorted((hi.x - lo.x, hi.y - lo.y))
-    want = sorted(SEAT_CELL_FOOTPRINT_M)
+    want = sorted(CELL_FORMATS[cell_format])
     assert all(math.isclose(g, w, abs_tol=5e-4) for g, w in zip(got, want)), (
         f"{asset}'s seated-cell template measures "
         f"{got[0] * 1000:.2f}x{got[1] * 1000:.2f}mm after lay_flat, not the "
-        f"{want[0] * 1000:.2f}x{want[1] * 1000:.2f}mm SEAT_CELL_FOOTPRINT_M "
-        f"assumes - scene.py's packer call already sized and placed this "
-        f"cell's seat against the assumed figure, so the packing and the "
-        f"rendered geometry have desynced.")
+        f"{want[0] * 1000:.2f}x{want[1] * 1000:.2f}mm {cell_format!r} "
+        f"CELL_FORMATS entry - scene.py's packer call already sized and "
+        f"placed this cell's seat against the assumed figure, so the "
+        f"packing and the rendered geometry have desynced.")
 
 
 def seat_cells(library, asset: str, seats, floor_z: float, rng: random.Random,
-               cfg, backdrop_luma=None):
+               cfg, cell_format: str = "18650", backdrop_luma=None):
     """Clone the asset's own 18650 cell template into the bay, seated.
 
     `seats` are `(x, y, rot_deg)` WORLD centres from
@@ -1053,7 +1046,7 @@ def seat_cells(library, asset: str, seats, floor_z: float, rng: random.Random,
         # lands exactly on the seat - the same drop-to-floor-then-lift
         # composition assets.place_item uses for a whole cartridge.
         lo, hi_obj = A.group_bbox([dup])
-        _assert_seat_cell_footprint(asset, lo, hi_obj)
+        _assert_seat_cell_footprint(asset, cell_format, lo, hi_obj)
         centre = Vector(((lo.x + hi_obj.x) / 2, (lo.y + hi_obj.y) / 2, 0.0))
         dup.location += Vector((x - centre.x, y - centre.y,
                                floor_z + SEATED_CELL_LIFT - lo.z))
