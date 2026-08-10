@@ -214,9 +214,13 @@ def test_check_split_matches_checkpoint_passes_when_counts_agree(tmp_path):
     ckpt_path = tmp_path / "ckpt.pt"
     counts = {"background": 53, "cartridge": 37, "bay": 19,
              "electronics": 19, "obstruction": 11, "battery": 13}
-    torch.save({"val_instance_counts": counts}, ckpt_path)
+    torch.save({"val_instance_counts": counts,
+               "coco_path": "recog/dataset3d_seg/instances_seg.json"},
+              ckpt_path)
 
-    check_split_matches_checkpoint(str(ckpt_path), counts)  # must not raise
+    check_split_matches_checkpoint(
+        str(ckpt_path), "recog/dataset3d_seg/instances_seg.json",
+        counts)  # must not raise
 
 
 def test_check_split_matches_checkpoint_raises_loudly_on_mismatch(tmp_path):
@@ -228,12 +232,16 @@ def test_check_split_matches_checkpoint_raises_loudly_on_mismatch(tmp_path):
     ckpt_path = tmp_path / "ckpt.pt"
     trained_on = {"background": 53, "cartridge": 37, "bay": 19,
                  "electronics": 19, "obstruction": 11, "battery": 13}
-    torch.save({"val_instance_counts": trained_on}, ckpt_path)
+    torch.save({"val_instance_counts": trained_on,
+               "coco_path": "recog/dataset3d_seg/instances_seg.json"},
+              ckpt_path)
 
     recomputed_after_resume = dict(trained_on, bay=24)  # dataset grew
 
     with pytest.raises(SystemExit) as exc:
-        check_split_matches_checkpoint(str(ckpt_path), recomputed_after_resume)
+        check_split_matches_checkpoint(
+            str(ckpt_path), "recog/dataset3d_seg/instances_seg.json",
+            recomputed_after_resume)
 
     msg = str(exc.value)
     assert "19" in msg and "24" in msg, (
@@ -249,7 +257,53 @@ def test_check_split_matches_checkpoint_warns_but_does_not_raise_on_old_checkpoi
     ckpt_path = tmp_path / "ckpt.pt"
     torch.save({"model": {}}, ckpt_path)
 
-    check_split_matches_checkpoint(str(ckpt_path), {"bay": 1})  # must not raise
+    check_split_matches_checkpoint(
+        str(ckpt_path), "recog/dataset3d_seg/instances_seg.json",
+        {"bay": 1})  # must not raise
+
+
+def test_check_split_matches_checkpoint_skips_count_check_across_datasets(tmp_path):
+    """Spec #2 (generalisation): a checkpoint trained on one dataset (e.g.
+    the anchored procedural set) is deliberately evaluated against a
+    DIFFERENT held-out dataset (the CAD test set) - that is the plan's
+    entire Task 19, not a drifted split. The two datasets' val instance
+    counts are expected to differ (different scenes entirely); this must
+    not raise just because the checkpoint's own coco_path differs from
+    the eval config's."""
+    from recog.seg_evaluate import check_split_matches_checkpoint
+
+    ckpt_path = tmp_path / "ckpt.pt"
+    trained_on = {"background": 53, "cartridge": 37, "bay": 19,
+                 "electronics": 19, "obstruction": 11, "battery": 13}
+    torch.save({"val_instance_counts": trained_on,
+               "coco_path": "recog/dataset3d_seg_anchored/instances_seg.json"},
+              ckpt_path)
+
+    wildly_different = {"background": 400, "cartridge": 300, "bay": 0,
+                        "electronics": 0, "obstruction": 90, "battery": 250}
+
+    check_split_matches_checkpoint(
+        str(ckpt_path), "recog/dataset3d_seg_cad_test/instances_seg.json",
+        wildly_different)  # must not raise - different dataset, by design
+
+
+def test_check_split_matches_checkpoint_still_raises_when_coco_path_matches(tmp_path):
+    """The cross-dataset skip must not become a blanket bypass: if the
+    eval's coco_path is the SAME one the checkpoint recorded, a count
+    mismatch is still the drifted-split bug and must still raise."""
+    from recog.seg_evaluate import check_split_matches_checkpoint
+
+    ckpt_path = tmp_path / "ckpt.pt"
+    trained_on = {"background": 53, "cartridge": 37, "bay": 19,
+                 "electronics": 19, "obstruction": 11, "battery": 13}
+    torch.save({"val_instance_counts": trained_on,
+               "coco_path": "recog/dataset3d_seg_anchored/instances_seg.json"},
+              ckpt_path)
+
+    with pytest.raises(SystemExit):
+        check_split_matches_checkpoint(
+            str(ckpt_path), "recog/dataset3d_seg_anchored/instances_seg.json",
+            dict(trained_on, bay=24))
 
 
 # --------------------------------------------------------- latency exit --

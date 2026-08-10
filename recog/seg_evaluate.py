@@ -435,11 +435,19 @@ def format_per_sku_table(per_sku_results: Dict[str, Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def check_split_matches_checkpoint(checkpoint_path: str,
+def check_split_matches_checkpoint(checkpoint_path: str, coco_path: str,
                                    recomputed: Dict[str, int]) -> None:
     """Fail loudly if today's recomputed split disagrees with what the
-    checkpoint itself recorded at training time. Never silently re-split
-    or auto-correct - that would hide exactly the failure this guards."""
+    checkpoint itself recorded at training time - but ONLY when this eval
+    is against the SAME dataset the checkpoint trained on (`coco_path`
+    matches the checkpoint's own recorded one). A checkpoint deliberately
+    evaluated against a DIFFERENT dataset (spec #2: a procedural-trained
+    model scored on the held-out CAD test set) is a cross-dataset
+    generalisation eval, not a drifted split - the val instance counts
+    are expected to differ there (different scenes entirely), and
+    comparing them would block every such eval outright. Never silently
+    re-split or auto-correct within the same-dataset case - that would
+    hide exactly the failure this guards."""
     import torch
 
     state = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
@@ -449,6 +457,14 @@ def check_split_matches_checkpoint(checkpoint_path: str,
                     "checkpoint format) - cannot verify the validation "
                     "split matches what it was trained against",
                     checkpoint_path)
+        return
+    saved_coco_path = state.get("coco_path")
+    if saved_coco_path is not None and saved_coco_path != coco_path:
+        log.info("checkpoint %s was trained on a different dataset (%s) "
+                 "than this eval's --config dataset (%s) - treating this "
+                 "as a deliberate cross-dataset generalisation eval and "
+                 "skipping the same-dataset split-drift check.",
+                 checkpoint_path, saved_coco_path, coco_path)
         return
     if dict(saved) != dict(recomputed):
         raise SystemExit(
@@ -730,7 +746,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.checkpoint:
         val_counts_now = compute_val_instance_counts(
             full_dataset, val_indices, num_classes=num_classes)
-        check_split_matches_checkpoint(args.checkpoint, val_counts_now)
+        check_split_matches_checkpoint(args.checkpoint, ds_cfg["coco_path"],
+                                       val_counts_now)
 
     segmenter = BaySegmenter(checkpoint=args.checkpoint, device=args.device,
                              crop_size=crop_size, half=half,
