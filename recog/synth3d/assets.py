@@ -367,53 +367,104 @@ class AssetLibrary:
         """The raw catalog.json entry for `name`, or None if unknown."""
         return self.assets.get(name)
 
+    def register_procedural_pool(self, pool: Dict[str, dict]) -> None:
+        """Merge `pool` (catalog.build_procedural_pool's output) into
+        `self.assets` - design spec Sec4.2's "merged namespace, one
+        branch point": every entry already carries `"kind": "procedural"`,
+        and `_load_template`'s one new branch (below) is what makes
+        `instantiate`/`catalog_entry`/every bay.py consumer treat it
+        identically to a CAD entry from here on.
+
+        Raises ValueError on any name collision with an existing entry
+        (CAD or a previously registered pool) - a silent overwrite would
+        drop whichever asset lost the collision with no error, which is
+        exactly the kind of silent degradation this plan has to guard
+        against.
+        """
+        collisions = set(pool) & set(self.assets)
+        if collisions:
+            raise ValueError(
+                f"register_procedural_pool: name(s) already registered: "
+                f"{sorted(collisions)}")
+        self.assets.update(pool)
+
     # ---- import once ------------------------------------------------------ #
     def _load_template(self, name: str) -> Dict[str, list]:
         if name in self._templates:
             return self._templates[name]
 
-        path = os.path.join(self.dir, self.assets[name]["file"])
-        before = set(bpy.data.objects)
-        bpy.ops.import_scene.gltf(filepath=path)
-        new = [o for o in bpy.data.objects if o not in before]
-        meshes = [o for o in new if o.type == "MESH"]
+        entry = self.assets[name]
+        cell_format = entry.get("cell_format", "18650")
 
-        # Un-merge the case's outer shell from its inner liner BEFORE
-        # anything else touches these objects - see
-        # _split_multi_material_case's docstring. Must run first: the
-        # parent-detach and lay_flat/recentre steps below have to see
-        # both resulting pieces, not the one merged object.
-        meshes = _split_multi_material_case(meshes)
+        if entry.get("kind") == "procedural":
+            # A procedural tray is GENERATED, not imported - it has no
+            # external CAD up-axis convention to invert, no glTF
+            # multi-material tessellation to re-split, no case/liner name
+            # collision to disambiguate (design spec Sec2, Sec3.4). The
+            # import + lay_flat + flip_if_inverted prefix below exists
+            # ONLY to correct those import-specific surprises, so it is
+            # skipped entirely; everything from the re-centre step
+            # onward is shared with the CAD path, unmodified.
+            from . import world as W   # local import: world.py imports
+                                        # THIS module at its own top level
+                                        # (`from . import assets as A`), so
+                                        # a module-level import here would
+                                        # be circular.
+            meshes = [o for lst in W.build_procedural_tray(entry).values()
+                     for o in lst]
+        else:
+            path = os.path.join(self.dir, entry["file"])
+            before = set(bpy.data.objects)
+            bpy.ops.import_scene.gltf(filepath=path)
+            new = [o for o in bpy.data.objects if o not in before]
+            meshes = [o for o in new if o.type == "MESH"]
 
-        # detach from any imported empties so transforms are independent
-        for o in meshes:
-            if o.parent:
-                world = o.matrix_world.copy()
-                o.parent = None
-                o.matrix_world = world
-        for o in new:
-            if o.type != "MESH":
-                bpy.data.objects.remove(o, do_unlink=True)
+            meshes = _split_multi_material_case(meshes)
 
-        bpy.context.view_layer.update()
-        lay_flat(meshes)
-        flip_if_inverted(meshes)
+            for o in meshes:
+                if o.parent:
+                    world_mat = o.matrix_world.copy()
+                    o.parent = None
+                    o.matrix_world = world_mat
+            for o in new:
+                if o.type != "MESH":
+                    bpy.data.objects.remove(o, do_unlink=True)
 
-        # re-centre on the origin so instances place predictably
+            bpy.context.view_layer.update()
+            lay_flat(meshes)
+            flip_if_inverted(meshes)
+
+        # --- shared tail: re-centre, role bookkeeping, loud post-
+        # conditions - IDENTICAL for either branch above.
         lo, hi = group_bbox(meshes)
         centre = (lo + hi) / 2
         for o in meshes:
             o.location -= Vector((centre.x, centre.y, lo.z))
-        # Unconditional update (task-3c): without this, matrix_world/
-        # bound_box on these objects can keep reporting the PRE-shift
-        # position to whatever reads them next, depending on incidental
-        # updates elsewhere - the same missing-update signature as
-        # place_item's drop_to_floor bug (see that function's docstring).
-        # Measured directly: adding this call changes the group's own
-        # measured z-range for this exact template. Independently correct
-        # of flip_if_inverted above (a determinism fix, not an
-        # orientation fix) - both are needed, neither replaces the other.
         bpy.context.view_layer.update()
+
+        if entry.get("kind") == "procedural":
+            # Loud, not a log line: a cell parked outside the case/lid
+            # group (world.build_procedural_tray's own risk, see its
+            # docstring) would silently skew the recentre offset above
+            # and mis-place case/case_lid relative to the interior_mm/
+            # module_bay_mm rects bay.py already computed for THIS exact
+            # entry - corrupting every label with no error anywhere else.
+            case_objs = [o for o in meshes if role_of(o.name) == "case"]
+            if case_objs:
+                clo, chi = group_bbox(case_objs)
+                ex0, ey0, ex1, ey1 = entry["case_outer_mm"]
+                ew, eh = (ex1 - ex0) / 1000.0, (ey1 - ey0) / 1000.0
+                gw, gh = chi.x - clo.x, chi.y - clo.y
+                if abs(gw - ew) > 1e-4 or abs(gh - eh) > 1e-4:
+                    raise RuntimeError(
+                        f"{name}: built case measures "
+                        f"{gw * 1000:.2f}x{gh * 1000:.2f}mm after "
+                        f"re-centring, not the {ew * 1000:.2f}x"
+                        f"{eh * 1000:.2f}mm case_outer_mm the entry asked "
+                        f"for - build_procedural_tray and "
+                        f"catalog.build_tray_entry have desynced (a "
+                        f"mis-placed cell template is the likely cause; "
+                        f"see build_procedural_tray's own docstring)")
 
         coll = _template_collection()
         by_role: Dict[str, list] = {}
@@ -424,21 +475,8 @@ class AssetLibrary:
             o.hide_render = True
             by_role.setdefault(role_of(o.name), []).append(o)
 
-        # Geometric refinement: role_of() alone still can't tell the two
-        # split-off case pieces apart (same name prefix), so decide by XY
-        # footprint area - see _classify_case_liner. Then tag every object
-        # with its FINAL role so scene.py never has to re-derive one from
-        # a (possibly ".001"-suffixed) name; object_role() reads this.
         _classify_case_liner(by_role)
 
-        # Loud post-condition (task-3c): flip_if_inverted's whole job is
-        # to make this true, and orientation bugs are exactly the kind
-        # that survive silently (three prior rounds did not catch this
-        # one). If the assembly HAS a case and a lid, the lid must sit
-        # at/above the shell's own top - not "roughly", exactly, since
-        # both are pieces of the SAME rigid CAD assembly and share one
-        # mating plane with no gap. A no-op (like flip_if_inverted) when
-        # either role is absent - e.g. the cells_only variant's template.
         case_objs = by_role.get("case") or []
         lid_objs = by_role.get("case_lid") or []
         if case_objs and lid_objs:
@@ -449,12 +487,12 @@ class AssetLibrary:
                     f"{name}: the lid (case_lid, z=[{lid_lo.z * 1000:.3f},"
                     f"{lid_hi.z * 1000:.3f}]mm) does not sit at/above the "
                     f"shell's own top (case, z=[{case_lo.z * 1000:.3f},"
-                    f"{case_hi.z * 1000:.3f}]mm) after flip_if_inverted - "
-                    f"the assembly is still upside down (or the flip "
-                    f"over-corrected). This is exactly the silent failure "
-                    f"mode task-3c exists to close off.")
+                    f"{case_hi.z * 1000:.3f}]mm) - the assembly is upside "
+                    f"down (or a procedural build put the lid below the "
+                    f"shell). This is exactly the silent failure mode "
+                    f"task-3c exists to close off, for BOTH CAD and "
+                    f"procedural assets.")
 
-        cell_format = self.assets[name].get("cell_format", "18650")
         for role, objs in by_role.items():
             for o in objs:
                 o[ROLE_PROP] = role
