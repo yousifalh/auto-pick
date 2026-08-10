@@ -659,6 +659,107 @@ def seated_cell_poses(placement_rect: Rect, cell_w: float, cell_h: float,
     return out[:n]
 
 
+def bay_edge(interior_mm: Rect, bay_mm: Rect, tol: float = 1e-6) -> str:
+    """Public wrapper around `_bay_edge`, for cross-module callers
+    (catalog.build_tray_entry) that need to validate a chosen bay edge
+    without reaching into a leading-underscore name."""
+    return _bay_edge(interior_mm, bay_mm, tol)
+
+
+@dataclass(frozen=True)
+class TraySample:
+    """One procedurally-sampled cartridge tray, fully resolved to plain
+    numbers - the pure-RNG half of a procedural asset (design spec
+    Sec3.2). Millimetres throughout, matching catalog.json's own
+    convention.
+
+    `interior_mm` is the CAVITY's own boundary (what scene.py reads).
+    `case_outer_mm` is the PHYSICAL shell's outer footprint - interior_mm
+    expanded outward by wall_mm on all four sides, including the bay
+    side - needed only by world.build_procedural_tray to give the wall
+    real thickness; scene.py never reads it (see this plan's header note
+    #2 for why this is a separate field rather than aliasing interior_mm
+    the way an over-literal reading of design spec Sec5.2 step 4 might
+    suggest).
+    """
+    interior_mm: Rect
+    module_bay_mm: Rect
+    case_outer_mm: Rect
+    wall_mm: float
+    case_half_height_mm: float
+    tray_floor_mm: float
+    cell_format: str
+    bay_edge: str
+
+
+def sample_tray(cfg, rng: random.Random) -> TraySample:
+    """Draw one procedural tray from `cfg` (config.Config.tray_anchored
+    or .tray_wide - the caller picks which). Pure RNG and arithmetic,
+    same shape as sample_obstructions: no Blender call anywhere in this
+    function.
+
+    Design spec Sec5.2's five steps, in order:
+      1. cell format + an n_cols x n_rows grid at a sampled pitch ->
+         cell_union, centred on (0, 0).
+      2/3. wall_mm on the three non-bay sides, bay_margin_mm on the
+         fourth (the edge chosen by cfg.free_bay_edge - fixed to the
+         tray's LONGER axis for anchored, matching design spec Sec9.1's
+         "short edge" reading of all four measured SKUs; free among all
+         four edges for wide) -> interior_mm, with module_bay_mm falling
+         out as the full-span strip between cell_union and interior_mm
+         on that one edge, by construction (never inferred, never a tie -
+         see bay_edge's own use in the caller as a loud cross-check).
+      4/5. tray_floor_mm and case_half_height_mm sampled directly from
+         cfg's own ranges.
+
+    See this plan's header note #1 for why case_half_height_mm (Z) and
+    the bay_margin used above (XY) are two distinct sampled quantities
+    rather than the design spec's single "bay depth" name.
+    """
+    from .config import CELL_FORMATS
+
+    cell_format = rng.choice(cfg.cell_formats)
+    cell_w_mm, cell_h_mm = (v * 1000.0 for v in CELL_FORMATS[cell_format])
+    n_cols = rng.randint(*cfg.n_cols_range)
+    n_rows = rng.randint(*cfg.n_rows_range)
+    pitch_mm = rng.uniform(*cfg.pitch_mm_range)
+
+    union_w = n_cols * cell_w_mm + (n_cols + 1) * pitch_mm
+    union_h = n_rows * cell_h_mm + (n_rows + 1) * pitch_mm
+    cx0, cy0, cx1, cy1 = -union_w / 2, -union_h / 2, union_w / 2, union_h / 2
+
+    wall_mm = rng.uniform(*cfg.wall_mm_range)
+    bay_margin_mm = rng.uniform(*cfg.bay_margin_mm_range)
+
+    long_axis_is_y = union_h >= union_w
+    if cfg.free_bay_edge:
+        edge = rng.choice(("-x", "+x", "-y", "+y"))
+    else:
+        edge = rng.choice(("-y", "+y") if long_axis_is_y else ("-x", "+x"))
+
+    if edge == "-x":
+        interior = (cx0 - bay_margin_mm, cy0 - wall_mm, cx1 + wall_mm, cy1 + wall_mm)
+        module_bay = (interior[0], interior[1], cx0, interior[3])
+    elif edge == "+x":
+        interior = (cx0 - wall_mm, cy0 - wall_mm, cx1 + bay_margin_mm, cy1 + wall_mm)
+        module_bay = (cx1, interior[1], interior[2], interior[3])
+    elif edge == "-y":
+        interior = (cx0 - wall_mm, cy0 - bay_margin_mm, cx1 + wall_mm, cy1 + wall_mm)
+        module_bay = (interior[0], interior[1], interior[2], cy0)
+    else:  # "+y"
+        interior = (cx0 - wall_mm, cy0 - wall_mm, cx1 + wall_mm, cy1 + bay_margin_mm)
+        module_bay = (interior[0], cy1, interior[2], interior[3])
+
+    ix0, iy0, ix1, iy1 = interior
+    case_outer = (ix0 - wall_mm, iy0 - wall_mm, ix1 + wall_mm, iy1 + wall_mm)
+
+    return TraySample(
+        interior_mm=interior, module_bay_mm=module_bay, case_outer_mm=case_outer,
+        wall_mm=wall_mm, case_half_height_mm=rng.uniform(*cfg.case_half_height_mm_range),
+        tray_floor_mm=rng.uniform(*cfg.tray_floor_mm_range),
+        cell_format=cell_format, bay_edge=edge)
+
+
 def seated_cell_world_poses(poses: List[Tuple[float, float, float]],
                             rot_deg: float, translate: Tuple[float, float]
                             ) -> List[Tuple[float, float, float]]:

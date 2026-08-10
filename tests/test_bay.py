@@ -841,3 +841,108 @@ def test_tray_floor_matches_where_the_cells_rest(name, expected_floor):
         cat = json.load(fh)
     entry = next(a for a in cat["assets"] if a["name"] == name)
     assert entry["tray_floor_mm"] == pytest.approx(expected_floor, abs=0.3)
+
+
+# ------------------------------------------------ procedural tray sampler --
+import random as _random
+
+from recog.synth3d.config import CELL_FORMATS, Config
+
+
+def test_bay_edge_public_wrapper_matches_the_private_validator():
+    from recog.synth3d.bay import _bay_edge, bay_edge
+    interior = (0.0, 0.0, 60.0, 90.0)
+    bay = (0.0, 66.0, 60.0, 90.0)
+    assert bay_edge(interior, bay) == _bay_edge(interior, bay) == "+y"
+
+
+def test_sample_tray_is_deterministic_given_the_same_rng_state():
+    from recog.synth3d.bay import sample_tray
+    cfg = Config().tray_anchored
+    assert sample_tray(cfg, _random.Random(7)) == sample_tray(cfg, _random.Random(7))
+
+
+def test_sample_tray_cell_format_is_always_a_configured_one():
+    from recog.synth3d.bay import sample_tray
+    cfg = Config().tray_anchored
+    for seed in range(30):
+        s = sample_tray(cfg, _random.Random(seed))
+        assert s.cell_format in CELL_FORMATS
+
+
+def test_sample_tray_module_bay_is_a_full_span_strip_on_the_chosen_edge():
+    """module_bay_from_bounds's own invariant must hold by construction -
+    bay.bay_edge (the existing, tested validator) is reused directly
+    rather than re-implementing the check, so the two can never drift
+    apart (design spec Sec3.3: 'satisfied by construction, not asserted
+    after the fact')."""
+    from recog.synth3d.bay import bay_edge, sample_tray
+    cfg = Config().tray_anchored
+    for seed in range(50):
+        s = sample_tray(cfg, _random.Random(seed))
+        assert bay_edge(s.interior_mm, s.module_bay_mm) == s.bay_edge
+
+
+def test_sample_tray_anchored_restricts_the_bay_to_the_long_axiss_ends():
+    """Design spec Sec9.1: anchored fixes the module bay to a short edge -
+    i.e. the bay axis is the tray's LONGER footprint axis, matching all
+    four measured SKUs (e.g. PowerCore10000: 54.9mm short x 84.45mm long,
+    bay flush against a long-axis end)."""
+    from recog.synth3d.bay import sample_tray
+    cfg = Config().tray_anchored
+    for seed in range(50):
+        s = sample_tray(cfg, _random.Random(seed))
+        ix0, iy0, ix1, iy1 = s.interior_mm
+        long_axis_is_y = (iy1 - iy0) >= (ix1 - ix0)
+        assert s.bay_edge in (("-y", "+y") if long_axis_is_y else ("-x", "+x"))
+
+
+def test_sample_tray_wide_can_put_the_bay_on_the_short_axis():
+    """The anchored restriction must be a real behavioural difference,
+    not decoration - wide has to actually exercise an edge anchored
+    would never draw, over enough seeds."""
+    from recog.synth3d.bay import sample_tray
+    cfg = Config().tray_wide
+    saw_short_axis_bay = False
+    for seed in range(300):
+        s = sample_tray(cfg, _random.Random(seed))
+        ix0, iy0, ix1, iy1 = s.interior_mm
+        long_axis_is_y = (iy1 - iy0) >= (ix1 - ix0)
+        short_axis_edges = ("-x", "+x") if long_axis_is_y else ("-y", "+y")
+        if s.bay_edge in short_axis_edges:
+            saw_short_axis_bay = True
+            break
+    assert saw_short_axis_bay, "wide never drew a short-axis bay in 300 seeds"
+
+
+def test_sample_tray_case_outer_encloses_the_interior_with_real_wall():
+    """case_outer_mm must be interior_mm expanded OUTWARD by wall_mm on
+    ALL FOUR sides (this plan's header note #2) - not equal to
+    interior_mm, or world.build_procedural_tray would have no wall
+    thickness to build."""
+    from recog.synth3d.bay import sample_tray
+    cfg = Config().tray_anchored
+    s = sample_tray(cfg, _random.Random(0))
+    ix0, iy0, ix1, iy1 = s.interior_mm
+    ox0, oy0, ox1, oy1 = s.case_outer_mm
+    assert ox0 == pytest.approx(ix0 - s.wall_mm)
+    assert oy0 == pytest.approx(iy0 - s.wall_mm)
+    assert ox1 == pytest.approx(ix1 + s.wall_mm)
+    assert oy1 == pytest.approx(iy1 + s.wall_mm)
+
+
+def test_sample_tray_anchored_footprint_roughly_brackets_the_measured_skus():
+    """Not exact per-draw (independent axes multiply out wider than any
+    single SKU) but the population should land in the measured 62.9x90.9
+    - 81.7x180mm neighbourhood, not somewhere wildly different."""
+    from recog.synth3d.bay import sample_tray
+    cfg = Config().tray_anchored
+    widths, heights = [], []
+    for seed in range(200):
+        s = sample_tray(cfg, _random.Random(seed))
+        ox0, oy0, ox1, oy1 = s.case_outer_mm
+        widths.append(ox1 - ox0)
+        heights.append(oy1 - oy0)
+    widths.sort(); heights.sort()
+    assert 40.0 <= widths[len(widths) // 2] <= 130.0
+    assert 60.0 <= heights[len(heights) // 2] <= 220.0
