@@ -34,7 +34,9 @@ cad/*
 recog/dataset/
 recog/dataset3d/
 recog/dataset3d_seg/
+recog/dataset3d_seg_*/
 recog/dev3d/
+recog/dev3d_*/
 recog/sweeps/
 *.blend
 *.blend1
