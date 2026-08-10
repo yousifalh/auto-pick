@@ -26,7 +26,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import List
+from typing import Dict, List
 
 from .config import CLASS_RULES, ROLE_FALLBACK
 
@@ -308,3 +308,88 @@ def build_catalog(src_dir: str, out_dir: str, tol_linear: float = 0.05,
 def load_catalog(assets_dir: str) -> dict:
     with open(os.path.join(assets_dir, "catalog.json")) as fh:
         return json.load(fh)
+
+
+# =========================================================================== #
+#  PROCEDURAL TRAYS
+#
+#  Forward construction, not measurement: bay.sample_tray already decided
+#  every number a procedural tray needs, so build_tray_entry below shapes
+#  those numbers into a catalog-entry dict directly, rather than measuring
+#  a mesh the way inspect_glb does for CAD. See docs/superpowers/plans/
+#  2026-08-10-generalisation.md Task 7.
+# =========================================================================== #
+
+def build_tray_entry(sample) -> dict:
+    """Forward-construct a catalog-entry-shaped dict from a
+    `bay.TraySample` - the mirror image of `inspect_glb`: chooses
+    `interior_mm`/`module_bay_mm`/`tray_floor_mm` directly instead of
+    measuring them from a mesh (design spec Sec3.3). Never written to
+    `catalog.json` - a caller (AssetLibrary.register_procedural_pool,
+    Task 9) registers the returned dict straight into
+    `AssetLibrary.assets`.
+
+    `bay.bay_edge` is called here as a LOUD post-condition, not trusted
+    silently: a malformed TraySample raises ValueError at THIS point
+    (registration time), never inside scene.py's per-scene build loop,
+    where a missing/malformed field would instead fall through the
+    existing `entry.get(...)` guards into the pre-tray-interior-fix
+    fallback (hi.z-anchored labels) with no error at all - correct
+    behaviour for a CAD entry that genuinely has no measurement, wrong
+    for a procedural entry that is fully computed and has no such
+    excuse.
+    """
+    from .bay import bay_edge
+
+    entry = {
+        "kind": "procedural",
+        "interior_mm": [round(v, 2) for v in sample.interior_mm],
+        "module_bay_mm": [round(v, 2) for v in sample.module_bay_mm],
+        "tray_floor_mm": round(sample.tray_floor_mm, 2),
+        "case_outer_mm": [round(v, 2) for v in sample.case_outer_mm],
+        "case_half_height_mm": round(sample.case_half_height_mm, 2),
+        "case_wall_mm": round(sample.wall_mm, 2),
+        "cell_format": sample.cell_format,
+    }
+    bay_edge(tuple(entry["interior_mm"]), tuple(entry["module_bay_mm"]))
+    return entry
+
+
+def build_procedural_pool(n: int, sample_fn, cfg, seed: int,
+                          name_prefix: str = "proc") -> Dict[str, dict]:
+    """`n` independently-sampled procedural tray entries, keyed by a
+    unique name (`f"{name_prefix}_{i:04d}"`). `sample_fn` is
+    `bay.sample_tray`; passed in rather than imported directly so this
+    function has no import-time dependency on `bay.py` beyond what
+    `build_tray_entry` already needs.
+
+    Same per-index RNG recipe as `scene.scene_generator`
+    (`(seed * 1_000_003) ^ (i + 1)`), so a pool built with the same
+    `(n, cfg, seed)` is byte-for-byte reproducible.
+    """
+    import random as _random
+
+    pool: Dict[str, dict] = {}
+    for i in range(n):
+        rng = _random.Random((seed * 1_000_003) ^ (i + 1))
+        entry = build_tray_entry(sample_fn(cfg, rng))
+        pool[f"{name_prefix}_{i:04d}"] = entry
+    return pool
+
+
+def exclude_assets(assets: Dict[str, dict], names) -> Dict[str, dict]:
+    """A copy of `assets` with every name in `names` removed. Raises
+    KeyError naming the missing key if any `names` entry is not present -
+    a typo'd `--exclude-asset` must fail loudly, not silently no-op and
+    leave the "excluded" SKU in the training set (design spec Sec10's
+    leave-one-SKU-out control depends on this actually excluding what it
+    says it excludes).
+    """
+    out = dict(assets)
+    for name in names:
+        if name not in out:
+            raise KeyError(
+                f"exclude_assets: {name!r} is not a known asset "
+                f"({sorted(assets)})")
+        del out[name]
+    return out

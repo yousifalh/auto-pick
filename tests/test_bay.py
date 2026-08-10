@@ -946,3 +946,90 @@ def test_sample_tray_anchored_footprint_roughly_brackets_the_measured_skus():
     widths.sort(); heights.sort()
     assert 40.0 <= widths[len(widths) // 2] <= 130.0
     assert 60.0 <= heights[len(heights) // 2] <= 220.0
+
+
+# --------------------------------------------- procedural catalog entries --
+
+def test_build_tray_entry_carries_the_three_fields_scene_reads():
+    from recog.synth3d.bay import sample_tray
+    from recog.synth3d.catalog import build_tray_entry
+    s = sample_tray(Config().tray_anchored, _random.Random(0))
+    entry = build_tray_entry(s)
+    assert entry["kind"] == "procedural"
+    for key in ("interior_mm", "module_bay_mm", "tray_floor_mm"):
+        assert key in entry
+    assert entry["interior_mm"] == [round(v, 2) for v in s.interior_mm]
+    assert entry["cell_format"] == s.cell_format
+
+
+def test_build_tray_entry_raises_loudly_on_a_malformed_sample():
+    """A TraySample whose module_bay isn't a genuine full-span strip must
+    fail HERE, at registration time - not silently degrade a scene's
+    labels the way scene.py's `entry.get(...)` guard would if a bad
+    procedural entry ever reached it (that guard exists for the CAD's
+    legitimate no-measurement case, not for a fully-computed procedural
+    entry, which has no such excuse)."""
+    from recog.synth3d.bay import TraySample
+    from recog.synth3d.catalog import build_tray_entry
+    bad = TraySample(
+        interior_mm=(0.0, 0.0, 60.0, 90.0),
+        module_bay_mm=(10.0, 10.0, 50.0, 80.0),   # not flush against any edge
+        case_outer_mm=(-4.0, -4.0, 64.0, 94.0), wall_mm=4.0,
+        case_half_height_mm=11.1, tray_floor_mm=1.95, cell_format="18650",
+        bay_edge="+y")
+    with pytest.raises(ValueError):
+        build_tray_entry(bad)
+
+
+def test_build_procedural_pool_makes_n_uniquely_named_entries():
+    from recog.synth3d.bay import sample_tray
+    from recog.synth3d.catalog import build_procedural_pool
+    pool = build_procedural_pool(10, sample_tray, Config().tray_anchored, seed=0)
+    assert len(pool) == 10
+    assert all(e["kind"] == "procedural" for e in pool.values())
+
+
+def test_build_procedural_pool_is_reproducible_for_the_same_seed():
+    from recog.synth3d.bay import sample_tray
+    from recog.synth3d.catalog import build_procedural_pool
+    a = build_procedural_pool(5, sample_tray, Config().tray_anchored, seed=3)
+    b = build_procedural_pool(5, sample_tray, Config().tray_anchored, seed=3)
+    assert a == b
+
+
+def test_build_procedural_pool_names_do_not_collide_with_cad_names():
+    from recog.synth3d.bay import sample_tray
+    from recog.synth3d.catalog import build_procedural_pool
+    pool = build_procedural_pool(3, sample_tray, Config().tray_anchored,
+                                 seed=0, name_prefix="anchored")
+    assert all(name.startswith("anchored_") for name in pool)
+
+
+def test_exclude_assets_drops_only_the_named_keys_without_mutating_input():
+    from recog.synth3d.catalog import exclude_assets
+    assets = {"A": {}, "B": {}, "C": {}}
+    out = exclude_assets(assets, ["B"])
+    assert set(out) == {"A", "C"}
+    assert set(assets) == {"A", "B", "C"}
+
+
+def test_exclude_assets_raises_on_an_unknown_name():
+    from recog.synth3d.catalog import exclude_assets
+    with pytest.raises(KeyError):
+        exclude_assets({"A": {}}, ["nope"])
+
+
+# ---------------------------------------- naming contract Task 8 relies on --
+
+def test_procedural_object_names_classify_correctly_via_role_of():
+    """world.build_procedural_tray (bpy-only, no direct pytest coverage)
+    names its objects to satisfy CLASS_RULES' EXISTING regexes, so
+    _load_template's shared role-tagging tail needs no procedural-aware
+    branch. A silent misclassification here would tag the lid as `case`
+    too (both fall to ROLE_FALLBACK if the name doesn't match "_top"),
+    rendering every open procedural cartridge CLOSED - the exact
+    pre-tray-interior-fix defect, reincarnated."""
+    from recog.synth3d.catalog import role_of
+    assert role_of("ProcCase_btm") == "case"
+    assert role_of("ProcCase_top") == "case_lid"
+    assert role_of("ProcCell_0") == "cell"
