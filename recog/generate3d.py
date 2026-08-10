@@ -305,8 +305,21 @@ def main():
         # --resume run leaves annotations with no pixels: the dataset lists
         # images/, so len(dataset) would be 0 while manifest.json claimed a
         # full image count. Under --no-render there is no PNG to demand.
+        #
+        # "exist" is not "valid": a render killed mid-write (an OOM inside
+        # OpenImageDenoise, measured to happen right here) leaves a real,
+        # existing, truncated PNG behind - a ~24KB stub where a full render
+        # should be - with no xml/meta for that same scene (those are
+        # written after the beauty render below). A bare `--resume` on that
+        # directory used to accept the stub as done and move on, so
+        # `images/` ends up with one more file than `annotations/`, and the
+        # dataset silently carries a scene with no real picture behind its
+        # (nonexistent) label. annotate.is_valid_png checks for a
+        # structurally complete file - specifically the terminal IEND chunk
+        # a partial write cannot produce - so that scene falls through to
+        # the same re-render path a totally missing PNG already takes.
         if (a.resume and os.path.exists(meta_path) and os.path.exists(xml)
-                and (a.no_render or os.path.exists(png))):
+                and (a.no_render or annotate.is_valid_png(png, (W, H)))):
             with open(meta_path) as f:
                 meta = json.load(f)
         else:

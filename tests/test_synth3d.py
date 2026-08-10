@@ -1347,6 +1347,63 @@ def test_voc_writes_integers_not_floats(tmp_path):
     assert "." not in text.split("<bndbox>")[1].split("</bndbox>")[0]
 
 
+# --------------------------------------------------------- PNG validity ----
+# generate3d's `--resume` trusts `is_valid_png` to tell a genuinely
+# finished render apart from the ~24KB stub a real OOM-mid-render crash
+# left behind (measured - see is_valid_png's own docstring). These pin
+# that contract directly, without going through Blender.
+
+def _real_png_bytes(w=8, h=6) -> bytes:
+    from io import BytesIO
+    from PIL import Image
+    buf = BytesIO()
+    Image.new("RGBA", (w, h), (10, 20, 30, 255)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_is_valid_png_accepts_a_complete_file(tmp_path):
+    p = tmp_path / "ok.png"
+    p.write_bytes(_real_png_bytes(8, 6))
+    assert A.is_valid_png(str(p))
+    assert A.is_valid_png(str(p), (8, 6))
+
+
+def test_is_valid_png_rejects_a_truncated_write(tmp_path):
+    """The crash this exists for: `write_still` killed partway through
+    leaves a file that starts exactly like a real one and simply stops -
+    no IEND, because the encoder writes that chunk last."""
+    data = _real_png_bytes(8, 6)
+    assert len(data) > 40, "test PNG too small to prove truncation"
+    p = tmp_path / "truncated.png"
+    p.write_bytes(data[: len(data) - 20])
+    assert not A.is_valid_png(str(p))
+
+
+def test_is_valid_png_rejects_a_zero_byte_file(tmp_path):
+    p = tmp_path / "empty.png"
+    p.write_bytes(b"")
+    assert not A.is_valid_png(str(p))
+
+
+def test_is_valid_png_rejects_wrong_dimensions(tmp_path):
+    """A structurally complete PNG at the wrong resolution is still not
+    the render this scene asked for - e.g. a stale file left by a run at
+    a different --res."""
+    p = tmp_path / "wrong_size.png"
+    p.write_bytes(_real_png_bytes(8, 6))
+    assert not A.is_valid_png(str(p), (99, 99))
+
+
+def test_is_valid_png_rejects_a_missing_file(tmp_path):
+    assert not A.is_valid_png(str(tmp_path / "does_not_exist.png"))
+
+
+def test_is_valid_png_rejects_non_png_bytes(tmp_path):
+    p = tmp_path / "not_a_png.png"
+    p.write_bytes(b"this is not a png file at all, just plain text" * 4)
+    assert not A.is_valid_png(str(p))
+
+
 # ------------------------------------------------- jig positional bias ----
 
 def test_jig_placements_are_spread_across_the_plate_not_pinned_to_the_top():

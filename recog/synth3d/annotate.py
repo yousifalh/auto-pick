@@ -332,6 +332,56 @@ def write_voc_xml(path: str, filename: str, width: int, height: int,
     ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
 
 
+# A PNG is a fixed 8-byte signature, then a stream of length-prefixed chunks
+# (each: 4-byte length, 4-byte type, `length` bytes of data, 4-byte CRC), and
+# MUST end with a zero-length "IEND" chunk - encoders write it only after
+# every pixel row has gone out, so it is the one byte pattern a write that
+# stopped partway through can essentially never reproduce by chance.
+_PNG_SIG = b"\x89PNG\r\n\x1a\n"
+_PNG_MIN_LEN = len(_PNG_SIG) + 25   # signature + IHDR chunk (8+13+4) + IEND (12)
+
+
+def is_valid_png(path: str, expect_wh: Tuple[int, int] = None) -> bool:
+    """
+    True iff `path` is a complete, well-formed PNG - not merely a file that
+    exists.
+
+    generate3d's `--resume` used to treat "the file exists" as "this scene
+    is done", which cannot tell a normal render from one Blender's own
+    `write_still` was killed partway through (an OOM mid-render is exactly
+    that: measured on a real crash, the interrupted scene's image was a
+    truncated ~24KB PNG - the header and a few rows, then nothing - sitting
+    right where a full one should be). A resume run that accepts that file
+    silently trains on a scene with no real image behind its annotations
+    and one more entry in `images/` than in `annotations/`; this is the
+    check that keeps that scene in the "needs re-render" set instead.
+
+    Checks, in order: the file is at least large enough to hold a
+    signature + IHDR + IEND, the signature matches, the first chunk is
+    IHDR and (if `expect_wh` is given) its width/height match, and the
+    LAST 12 bytes are exactly a zero-length IEND chunk. Does not decode
+    any pixel data - the IEND-presence check is what specifically catches
+    a mid-write crash, since nothing else about a truncated PNG's first
+    bytes looks any different from a complete one's.
+    """
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError:
+        return False
+
+    if len(data) < _PNG_MIN_LEN or data[:8] != _PNG_SIG:
+        return False
+    if data[12:16] != b"IHDR":
+        return False
+    if expect_wh is not None:
+        w = int.from_bytes(data[16:20], "big")
+        h = int.from_bytes(data[20:24], "big")
+        if (w, h) != tuple(expect_wh):
+            return False
+    return data[-12:-8] == b"\x00\x00\x00\x00" and data[-8:-4] == b"IEND"
+
+
 def rle_encode(mask: np.ndarray) -> Dict[str, object]:
     """Uncompressed COCO RLE for a binary mask.
 
