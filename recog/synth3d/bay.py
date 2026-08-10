@@ -789,18 +789,22 @@ def sample_tray(cfg, rng: random.Random) -> TraySample:
     # calibrated against: it is anchored to the real, 18650-only measured
     # assemblies (11.1mm), predating Group A's 21700/26650 cell formats.
     # The "assembled" variant seals a cell inside the CASE+LID envelope,
-    # whose total height is 2 * case_half_height_mm - a 26650 cell (26mm
-    # diameter) does not fit inside a shell sized for 22.2mm (2 * 11.1),
-    # and this was found the hard way: world.build_procedural_tray's own
-    # numeric self-check (design spec Task 8) raised on the very first
-    # render, "cell top pokes above the case rim". Nudging
-    # case_half_height_mm UP (never shrinking the drawn cell) keeps every
-    # format physically sealable; for 18650 (the format the anchored
-    # range was calibrated for) this is a no-op in practice - 2*11.1 =
-    # 22.2mm already clears 18.3mm with room to spare.
+    # whose total height is 2 * case_half_height_mm - and the cell rests
+    # not at z=0 but at z=tray_floor_mm (the cavity floor), so its own
+    # top is tray_floor_mm + diameter, not diameter alone. A 26650 cell
+    # (26mm diameter) on a ~2mm floor does not fit inside a shell sized
+    # 22.2mm tall (2 * 11.1), and this was found the hard way, twice:
+    # world.build_procedural_tray's own numeric self-check (Task 8)
+    # raised on the very first render, and the FIRST version of this fix
+    # (diameter alone, forgetting the floor offset) still raised on the
+    # second procedural tray built. Nudging case_half_height_mm UP (never
+    # shrinking the drawn floor or cell) keeps every format physically
+    # sealable; for 18650 (the format the anchored range was calibrated
+    # for) this is a no-op in practice - 2*11.1=22.2mm already clears a
+    # ~2mm floor plus an 18.3mm cell (~20.3mm) with room to spare.
     case_half_height_mm = max(
         case_half_height_mm,
-        (cell_w_mm + MIN_CELL_HEIGHT_CLEARANCE_MM) / 2.0)
+        (tray_floor_mm + cell_w_mm + MIN_CELL_HEIGHT_CLEARANCE_MM) / 2.0)
 
     return TraySample(
         interior_mm=interior, module_bay_mm=module_bay, case_outer_mm=case_outer,

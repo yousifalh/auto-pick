@@ -1061,14 +1061,21 @@ def test_sample_tray_case_half_height_always_fits_the_drawn_cells_diameter():
     first render: case_half_height_mm_range is anchored to the real,
     18650-only measured assemblies (11.1mm) and predates Group A's
     21700/26650 formats, so an unconstrained draw could pick a 26mm-
-    diameter 26650 cell for a shell sized 2*10.5=21mm tall. sample_tray
-    must guarantee every format is physically sealable by construction."""
+    diameter 26650 cell for a shell sized 2*10.5=21mm tall. The cell
+    rests at z=tray_floor_mm, not z=0, so its own top is
+    tray_floor_mm + diameter - a first version of this fix that forgot
+    the floor offset still raised on the SECOND procedural tray built.
+    sample_tray must guarantee every format is physically sealable by
+    construction."""
     from recog.synth3d.bay import sample_tray
     from recog.synth3d.config import CELL_FORMATS
     for cfg in (Config().tray_anchored, Config().tray_wide):
         for seed in range(2000):
             s = sample_tray(cfg, _random.Random(seed))
             diam_mm = CELL_FORMATS[s.cell_format][0] * 1000.0
-            assert 2.0 * s.case_half_height_mm > diam_mm, (
-                f"seed={seed} cell_format={s.cell_format} diam={diam_mm} "
+            cell_top_mm = s.tray_floor_mm + diam_mm
+            assert 2.0 * s.case_half_height_mm > cell_top_mm, (
+                f"seed={seed} cell_format={s.cell_format} "
+                f"floor={s.tray_floor_mm} diam={diam_mm} "
+                f"cell_top={cell_top_mm} "
                 f"2*half_height={2.0 * s.case_half_height_mm}")
