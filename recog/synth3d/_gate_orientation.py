@@ -98,14 +98,17 @@ def check_lay_flat():
         for role, o in parts:
             if role != "cell":
                 continue
+            fmt = assets.object_cell_format(o)
+            want_w_mm, want_h_mm = (v * MM for v in config.CELL_FORMATS[fmt])
             e, _, _ = extent([o])
-            check(abs(e.z * MM - config.CELL_W_MM) < 0.5,
-                  f"{name}/cell height {round(e.z * MM, 1)}mm ~= "
-                  f"{config.CELL_W_MM}mm ({config.CELL_H_MM}mm would mean "
-                  f"it is standing on end)")
-            check(abs(max(e.x, e.y) * MM - config.CELL_H_MM) < 0.5,
-                  f"{name}/cell long axis {round(max(e.x, e.y) * MM, 1)}mm "
-                  f"~= {config.CELL_H_MM}mm and lies in the XY plane")
+            check(abs(e.z * MM - want_w_mm) < 0.5,
+                  f"{name}/cell ({fmt}) height {round(e.z * MM, 1)}mm ~= "
+                  f"{want_w_mm:.1f}mm ({want_h_mm:.1f}mm would mean it is "
+                  f"standing on end)")
+            check(abs(max(e.x, e.y) * MM - want_h_mm) < 0.5,
+                  f"{name}/cell ({fmt}) long axis "
+                  f"{round(max(e.x, e.y) * MM, 1)}mm ~= {want_h_mm:.1f}mm "
+                  f"and lies in the XY plane")
 
 
 # --------------------------------------------------------------------------- #
