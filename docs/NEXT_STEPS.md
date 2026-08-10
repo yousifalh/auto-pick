@@ -368,8 +368,24 @@ question — which is why it leads instead.
 `docs/superpowers/specs/2026-08-08-tray-interior-design.md` §8: 21700 and
 26650 cell formats (the `battery` class definition already names 21700; no
 CAD exists for it yet) plus a procedural cartridge-tray family — sampled
-footprint, wall thickness, bay depth, cell count and pitch — with the four
-Anker assemblies kept in the mix as real-CAD anchors.
+footprint, wall thickness, bay depth, cell count and pitch.
+
+**This paragraph originally said the four Anker assemblies stay "in the
+mix as real-CAD anchors" for training. That is superseded, not merely
+imprecise.** `docs/superpowers/specs/2026-08-10-generalisation-decisions.md`
+Decision 1 (dated 2026-08-10, settled after this paragraph was first
+written) instead splits training and test entirely: the model trains
+**only** on procedurally generated trays, and all **four** Anker CAD
+assemblies are held out as a pure test set — "the model never sees real
+measured geometry during training." A reader who remembers the earlier
+"anchors" plan should read this as a deliberate change, not a
+contradiction to reconcile: the CAD assemblies still matter — they are
+now the entire test set, and a separate CAD-trained control model exists
+specifically to give that test set a ceiling to compare against (see
+`docs/superpowers/specs/2026-08-10-generalisation-design.md` §10) — but
+they are no longer part of what any procedural model trains on. See that
+design spec in full for the resulting 2×2 (anchored/wide procedural
+training × held-out CAD test) and the control.
 
 **This spec now carries a second purpose beyond variety.** Training on one
 synthetic distribution (today: the four hand-modelled Anker assemblies) and

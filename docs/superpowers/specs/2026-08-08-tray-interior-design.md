@@ -157,8 +157,21 @@ implementation cycle.
 **2 — Generalisation.** 21700 and 26650 cell formats (the `battery` class
 definition already names 21700 and no CAD exists for it), plus a procedural
 cartridge-tray family: sampled footprint, wall thickness, bay depth, cell count
-and pitch. The four Anker assemblies stay in the mix as real-CAD anchors. Needs
-a tray concept, so it follows this spec.
+and pitch. Needs a tray concept, so it follows this spec.
+
+**Superseded, not merely imprecise: this used to say the four Anker
+assemblies "stay in the mix as real-CAD anchors."**
+`docs/superpowers/specs/2026-08-10-generalisation-decisions.md` Decision 1
+(2026-08-10, settled after this sentence was written) replaces that with a
+hard split: the model trains **only** on procedurally generated trays, and
+all **four** Anker CAD assemblies are held out entirely as the test set —
+never seen during training. If you remember the "anchors" plan, this is
+that plan changing, not a second, conflicting description of the same one.
+The CAD assemblies are not dropped from the project — they become the
+whole test set, plus the basis of a separate CAD-trained control model
+used as a ceiling reference — see
+`docs/superpowers/specs/2026-08-10-generalisation-design.md` §10 for the
+full design.
 
 **3 — Realism.** Perspective camera with tilt and handheld variation, phone-like
 aspect ratio (the real photos are 3024×4032 portrait against 1280×720
