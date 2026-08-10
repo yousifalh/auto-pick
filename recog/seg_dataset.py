@@ -289,6 +289,7 @@ class BaySegDataset:
         _CARTRIDGE_RELATED = {"cartridge", "placement_area",
                               "electronics_module", "obstruction"}
         self.samples: List[Tuple[dict, List[dict], Tuple[int, int, int, int]]] = []
+        self.sample_assets: List[Optional[str]] = []
         for img_id, anns in by_image.items():
             by_unit: Dict[object, List[dict]] = {}
             for a in anns:
@@ -300,6 +301,7 @@ class BaySegDataset:
                 box = (min(b[0] for b in xs), min(b[1] for b in xs),
                        max(b[2] for b in xs), max(b[3] for b in xs))
                 self.samples.append((images[img_id], anns, box))
+                self.sample_assets.append(unit[0].get("asset"))
 
     def __len__(self) -> int:
         return len(self.samples)

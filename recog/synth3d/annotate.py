@@ -551,7 +551,7 @@ def write_coco_json(path: str, images: Sequence[dict],
              "category_id": a["category_id"],
              "bbox": a["bbox_xywh"], "area": a["area"],
              "segmentation": a["segmentation"], "iscrowd": a.get("iscrowd", 0),
-             "unit_id": a.get("unit_id")}
+             "unit_id": a.get("unit_id"), "asset": a.get("asset")}
             for a in annotations
         ],
     }

@@ -246,6 +246,23 @@ def test_write_coco_json_round_trips_unit_id(tmp_path):
     assert doc["annotations"][0]["unit_id"] == "item3"
 
 
+def test_write_coco_json_round_trips_asset(tmp_path):
+    ids = np.zeros((20, 20), dtype=np.int32)
+    ids[2:18, 2:18] = 1
+    meta = {1: {"class": "cartridge", "asset": "AnkerPowerCore10000",
+                "variant": "v", "unit_id": "item3"}}
+    anns, _ = masks_from_index(ids, meta, SEG_IDS, _Cfg())
+    out = tmp_path / "instances_seg.json"
+    write_coco_json(
+        str(out),
+        images=[{"id": 0, "file_name": "x.png", "width": 20, "height": 20}],
+        annotations=[dict(a, image_id=0, id=1) for a in anns],
+        seg_class_ids=SEG_IDS,
+    )
+    doc = json.loads(out.read_text())
+    assert doc["annotations"][0]["asset"] == "AnkerPowerCore10000"
+
+
 def test_annotations_sharing_a_unit_id_are_distinguishable_from_a_loose_one():
     """The contract Task 9 exists for: a cartridge, its module and its bay
     share a unit_id; a loose cell elsewhere in the same image does not."""

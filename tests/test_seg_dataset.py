@@ -1,6 +1,7 @@
 """Per-ROI crop dataset built from the COCO-RLE sidecar."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -188,3 +189,56 @@ def test_rng_for_worker_none_matches_plain_default_rng():
     a = _rng_for_worker(5, None).uniform(size=3)
     b = np.random.default_rng(5).uniform(size=3)
     np.testing.assert_array_equal(a, b)
+
+
+# ------------------------------------------------------- per-SKU tracking --
+
+def test_dataset_tracks_which_asset_each_crops_unit_belongs_to(tmp_path):
+    """design spec Sec7/Sec10/Sec12 need per-SKU, per-class numbers on
+    the CAD test set - this is what makes a crop's own SKU queryable
+    without re-deriving it from the raw annotations at report time."""
+    from recog.seg_dataset import BaySegDataset
+
+    H = W = 40
+    cart = np.zeros((H, W), np.uint8)
+    cart[5:35, 5:35] = 1
+    coco = {
+        "categories": [{"id": 2, "name": "cartridge"}],
+        "images": [{"id": 0, "file_name": "x.png", "width": W, "height": H}],
+        "annotations": [{
+            "id": 1, "image_id": 0, "category_id": 2,
+            "bbox": [5, 5, 30, 30], "area": 900,
+            "segmentation": rle_encode(cart), "iscrowd": 0,
+            "unit_id": "item0", "asset": "AnkerPowerCore10000",
+        }],
+    }
+    coco_path = tmp_path / "instances_seg.json"
+    coco_path.write_text(json.dumps(coco))
+
+    ds = BaySegDataset(str(coco_path), str(tmp_path))
+    assert ds.sample_assets == ["AnkerPowerCore10000"]
+
+
+def test_dataset_asset_is_none_when_absent(tmp_path):
+    """A hand-built fixture that never sets `asset` (every other test in
+    this file) must not raise - .get() the same way unit_id already
+    does."""
+    from recog.seg_dataset import BaySegDataset
+
+    H = W = 40
+    cart = np.zeros((H, W), np.uint8)
+    cart[5:35, 5:35] = 1
+    coco = {
+        "categories": [{"id": 2, "name": "cartridge"}],
+        "images": [{"id": 0, "file_name": "x.png", "width": W, "height": H}],
+        "annotations": [{
+            "id": 1, "image_id": 0, "category_id": 2,
+            "bbox": [5, 5, 30, 30], "area": 900,
+            "segmentation": rle_encode(cart), "iscrowd": 0,
+        }],
+    }
+    coco_path = tmp_path / "instances_seg.json"
+    coco_path.write_text(json.dumps(coco))
+
+    ds = BaySegDataset(str(coco_path), str(tmp_path))
+    assert ds.sample_assets == [None]
