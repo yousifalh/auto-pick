@@ -677,10 +677,20 @@ def _assert_procedural_tray_geometry(entry: dict, case, lid, cell) -> None:
         f"own base (0) and its own rim (case_half_height_mm={half_h_mm}) "
         f"- the cavity cutter would have zero or negative height")
 
+    # catalog.build_tray_entry rounds interior_mm/case_outer_mm/
+    # case_wall_mm INDEPENDENTLY to 2 decimal places, so their exact
+    # algebraic identity (interior = case_outer +/- wall) can be off by
+    # up to 3 * 0.005mm of pure rounding noise even for a perfectly
+    # correct entry - too tight a tolerance here fires on every single
+    # tray, which is not what a defect-catching assertion is for. A real
+    # "zero wall thickness" defect is off by the FULL wall_mm (multiple
+    # mm), so 0.02mm keeps enormous margin against a genuine mismatch
+    # while tolerating the rounding this entry was deliberately built with.
+    entry_round_tol = 0.02
     for side, (outer, inner) in (
         ("x0", (ox0, ix0)), ("y0", (oy0, iy0)),
     ):
-        assert math.isclose(inner - outer, wall_mm, abs_tol=1e-6), (
+        assert math.isclose(inner - outer, wall_mm, abs_tol=entry_round_tol), (
             f"interior_mm's {side} ({inner}) is not case_outer_mm's {side} "
             f"({outer}) + case_wall_mm ({wall_mm}) - this is the exact "
             f"'zero wall thickness' defect class this plan's header note "
@@ -689,7 +699,7 @@ def _assert_procedural_tray_geometry(entry: dict, case, lid, cell) -> None:
     for side, (outer, inner) in (
         ("x1", (ox1, ix1)), ("y1", (oy1, iy1)),
     ):
-        assert math.isclose(outer - inner, wall_mm, abs_tol=1e-6), (
+        assert math.isclose(outer - inner, wall_mm, abs_tol=entry_round_tol), (
             f"interior_mm's {side} ({inner}) is not case_outer_mm's {side} "
             f"({outer}) - case_wall_mm ({wall_mm}) - this is the exact "
             f"'zero wall thickness' defect class this plan's header note "
