@@ -197,7 +197,7 @@ obstruction:
 # 11.1mm (all four, n=1 - a modest jitter band, not a wide draw),
 # tray_floor_mm 1.95mm (all four).
 tray_anchored:
-  cell_formats: [18650, 21700, 26650]
+  cell_formats: ["18650", "21700", "26650"]
   n_cols_range: [3, 5]
   n_rows_range: [1, 2]
   pitch_mm_range: [0.5, 2.0]
@@ -211,7 +211,7 @@ tray_anchored:
 # and thinner walls, denser packing, and a module bay allowed on any
 # edge, including ones no real SKU shows.
 tray_wide:
-  cell_formats: [18650, 21700, 26650]
+  cell_formats: ["18650", "21700", "26650"]
   n_cols_range: [2, 8]
   n_rows_range: [1, 4]
   pitch_mm_range: [0.3, 6.0]

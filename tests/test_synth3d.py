@@ -1990,3 +1990,21 @@ def test_load_config_accepts_tray_sections(tmp_path):
     cfg = C.load_config(p)
     assert cfg.tray_anchored.wall_mm_range == (3.5, 4.5)
     assert cfg.tray_wide.free_bay_edge is True
+
+
+def test_synth3d_yaml_cell_formats_load_as_strings_not_yaml_ints():
+    """A `cell_formats: [18650, 21700, 26650]` YAML list is unquoted -
+    without quotes, PyYAML parses those as ints, not the string keys
+    `config.CELL_FORMATS`/`bay.sample_tray` index by. Found during Task
+    11's first procedural render: `sample_tray` raised `KeyError: 18650`
+    (the int) because the shipped configs/synth3d.yaml had exactly this
+    defect. Loaded from the REAL project config, not a synthetic fixture,
+    so this pins the actual file, not just the parsing rule."""
+    from recog.synth3d.config import CELL_FORMATS, load_config
+    cfg = load_config()
+    for section in (cfg.tray_anchored, cfg.tray_wide):
+        for fmt in section.cell_formats:
+            assert isinstance(fmt, str), (
+                f"{fmt!r} ({type(fmt).__name__}) is not a string - YAML "
+                f"parsed an unquoted numeric-looking list entry as an int")
+            assert fmt in CELL_FORMATS
