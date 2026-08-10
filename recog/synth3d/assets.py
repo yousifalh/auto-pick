@@ -41,6 +41,21 @@ TEMPLATE_COLLECTION = "_synth3d_templates"
 # prefix - only the geometry the tag was computed from knows which is which.
 ROLE_PROP = "synth3d_role"
 
+# Same pattern as ROLE_PROP: a custom ID property survives `clone()`'s
+# `src.copy()`, so every instance of a cell template carries the format it
+# was built as. Only "cell"-role objects are ever tagged; object_cell_format
+# below defaults to "18650" for anything that isn't, which is every CAD
+# cell today (CAD never varies format) - so this task changes no CAD
+# behaviour by itself.
+CELL_FORMAT_PROP = "synth3d_cell_format"
+
+
+def object_cell_format(o) -> str:
+    """The cell format `_load_template` tagged `o` with, defaulting to
+    "18650" - every object never tagged is a CAD template's own cell,
+    which is always 18650."""
+    return o.get(CELL_FORMAT_PROP) or "18650"
+
 
 @dataclass
 class Item:
@@ -439,9 +454,12 @@ class AssetLibrary:
                     f"over-corrected). This is exactly the silent failure "
                     f"mode task-3c exists to close off.")
 
+        cell_format = self.assets[name].get("cell_format", "18650")
         for role, objs in by_role.items():
             for o in objs:
                 o[ROLE_PROP] = role
+                if role == "cell":
+                    o[CELL_FORMAT_PROP] = cell_format
 
         bpy.context.view_layer.update()
         self._templates[name] = by_role
