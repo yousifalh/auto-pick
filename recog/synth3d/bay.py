@@ -692,6 +692,12 @@ class TraySample:
     bay_edge: str
 
 
+# Minimum clearance (mm) sample_tray guarantees between tray_floor_mm and
+# case_half_height_mm - see that function's docstring for why this is a
+# structural requirement, not a plausibility tuning knob.
+MIN_CAVITY_RIM_CLEARANCE_MM = 1.0
+
+
 def sample_tray(cfg, rng: random.Random) -> TraySample:
     """Draw one procedural tray from `cfg` (config.Config.tray_anchored
     or .tray_wide - the caller picks which). Pure RNG and arithmetic,
@@ -753,10 +759,29 @@ def sample_tray(cfg, rng: random.Random) -> TraySample:
     ix0, iy0, ix1, iy1 = interior
     case_outer = (ix0 - wall_mm, iy0 - wall_mm, ix1 + wall_mm, iy1 + wall_mm)
 
+    # case_half_height_mm and tray_floor_mm are independently drawn from
+    # cfg's own ranges (design spec Sec5.2 steps 4/5) - but world.
+    # build_procedural_tray's cavity cutter has height (case_half_height_mm
+    # - tray_floor_mm), and TrayRangeCfg.tray_wide's own ranges overlap
+    # (tray_floor_mm_range up to 4.5mm, case_half_height_mm_range down to
+    # 4.0mm): an unconstrained pair of draws can put the floor at or above
+    # the rim roughly 1 draw in 400 (measured), giving that cutter zero or
+    # negative height - a degenerate boolean cut (the same failure class as
+    # "a hole punched through the wrong mesh face"), not merely an unusual
+    # tray. This is a structural validity requirement for ANY tray, so it
+    # is enforced here by construction rather than left to chance; nudging
+    # case_half_height_mm UP (never shrinking tray_floor_mm) keeps the more
+    # physically-anchored quantity (the floor, anchored near the measured
+    # 1.95mm) exactly as drawn.
+    case_half_height_mm = rng.uniform(*cfg.case_half_height_mm_range)
+    tray_floor_mm = rng.uniform(*cfg.tray_floor_mm_range)
+    case_half_height_mm = max(
+        case_half_height_mm, tray_floor_mm + MIN_CAVITY_RIM_CLEARANCE_MM)
+
     return TraySample(
         interior_mm=interior, module_bay_mm=module_bay, case_outer_mm=case_outer,
-        wall_mm=wall_mm, case_half_height_mm=rng.uniform(*cfg.case_half_height_mm_range),
-        tray_floor_mm=rng.uniform(*cfg.tray_floor_mm_range),
+        wall_mm=wall_mm, case_half_height_mm=case_half_height_mm,
+        tray_floor_mm=tray_floor_mm,
         cell_format=cell_format, bay_edge=edge)
 
 

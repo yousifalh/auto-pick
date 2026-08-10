@@ -24,11 +24,13 @@ from __future__ import annotations
 import math
 import os
 import random
+from typing import Dict
 
 import bpy
 from mathutils import Matrix, Vector
 
 from . import assets as A
+from .bay import bay_edge
 from .config import CELL_FORMATS, CELL_H_MM, CELL_W_MM
 from .lightrig import off_axis_placement, shadow_direction
 from .materials import apply_to_object, for_role, set_input, rng_range
@@ -607,6 +609,257 @@ def build_jig(pockets, rng: random.Random):
 
     plate.data.materials.append(mat)
     return plate, drawn
+
+
+# Blender's own float/boolean-cut tessellation noise floor for a scene at
+# this project's scale (parts tens to hundreds of millimetres) - the same
+# order of magnitude _assert_seat_cell_footprint already uses (5e-4 m =
+# 0.5mm). Geometry built directly (no boolean op at all) is checked to a
+# tighter 0.1mm; the boolean-cut case gets the full 0.5mm because Blender's
+# modifier_apply on a DIFFERENCE can leave sub-mm tessellation slop on the
+# cut faces - the UNCUT outer faces this function actually measures are not
+# themselves subject to that, but the tolerance is kept uniform rather than
+# argued case-by-case.
+_PROC_TRAY_TOL_MM = 0.5
+
+
+def _assert_procedural_tray_geometry(entry: dict, case, lid, cell) -> None:
+    """Numerically verify the geometry `build_procedural_tray` just built
+    against the `TraySample`/`build_tray_entry` numbers it was built from.
+
+    This is deliberately NOT a re-check of the bpy-free entry alone -
+    `bay.sample_tray`/`catalog.build_tray_entry` already assert that class
+    of thing at sample/registration time, bpy-free. This is the other
+    half, and the one only bpy can answer: did world.py's OWN bpy calls
+    actually build what the entry said, or did an offset/naming/axis
+    mistake in THIS function silently build something else? That is
+    exactly the failure class that has already cost this project a render
+    cycle three times over - an inverted assembly, a hole cut through the
+    wrong mesh face, a module floating in mid-air - and every one of them
+    rendered plausibly and passed a green test suite. A loud
+    AssertionError naming the exact mismatch, on every build, is the
+    deliverable this function exists for.
+
+    Checks, in order:
+      1. Pure-number cross-check that `entry` itself is still internally
+         consistent (defence against a desync between catalog.
+         build_tray_entry's output and what reaches this function - the
+         same "renamed catalog key silently stops building geometry"
+         shape this project has already hit once).
+      2. The BUILT case's measured world-space AABB: outer footprint ==
+         case_outer_mm, base at z=0 (the tray's own base), rim at
+         z=case_half_height_mm.
+      3. The cavity floor sits strictly above the base and strictly below
+         the rim, by the sampled depth (case_half_height_mm -
+         tray_floor_mm) - measured via the CELL, which is built resting
+         exactly on that floor; there is no separate floor object to
+         measure directly, since the cavity is a boolean-cut hollow, not
+         a mesh of its own.
+      4. The BUILT lid rests exactly on the case's own measured rim, at
+         the same footprint.
+      5. The BUILT cell's measured diameter/length match
+         config.CELL_FORMATS[entry['cell_format']] and it rests on the
+         cavity floor, not floating or buried.
+    """
+    ix0, iy0, ix1, iy1 = entry["interior_mm"]
+    ox0, oy0, ox1, oy1 = entry["case_outer_mm"]
+    wall_mm = entry["case_wall_mm"]
+    half_h_mm = entry["case_half_height_mm"]
+    floor_mm = entry["tray_floor_mm"]
+
+    # ---- 1. entry self-consistency (pure numbers, no bpy) -------------- #
+    assert 0.0 < floor_mm < half_h_mm, (
+        f"tray_floor_mm ({floor_mm}) is not strictly between the case's "
+        f"own base (0) and its own rim (case_half_height_mm={half_h_mm}) "
+        f"- the cavity cutter would have zero or negative height")
+
+    for side, (outer, inner) in (
+        ("x0", (ox0, ix0)), ("y0", (oy0, iy0)),
+    ):
+        assert math.isclose(inner - outer, wall_mm, abs_tol=1e-6), (
+            f"interior_mm's {side} ({inner}) is not case_outer_mm's {side} "
+            f"({outer}) + case_wall_mm ({wall_mm}) - this is the exact "
+            f"'zero wall thickness' defect class this plan's header note "
+            f"flags: interior_mm must be strictly inside case_outer_mm by "
+            f"the sampled wall on every side")
+    for side, (outer, inner) in (
+        ("x1", (ox1, ix1)), ("y1", (oy1, iy1)),
+    ):
+        assert math.isclose(outer - inner, wall_mm, abs_tol=1e-6), (
+            f"interior_mm's {side} ({inner}) is not case_outer_mm's {side} "
+            f"({outer}) - case_wall_mm ({wall_mm}) - this is the exact "
+            f"'zero wall thickness' defect class this plan's header note "
+            f"flags: interior_mm must be strictly inside case_outer_mm by "
+            f"the sampled wall on every side")
+
+    bx0, by0, bx1, by1 = entry["module_bay_mm"]
+    assert ix0 <= bx0 <= bx1 <= ix1 and iy0 <= by0 <= by1 <= iy1, (
+        f"module_bay_mm {entry['module_bay_mm']} is not contained in "
+        f"interior_mm {entry['interior_mm']}")
+    # bay_edge() raises ValueError unless module_bay_mm is a full-span
+    # strip flush against EXACTLY one edge of interior_mm - reaching the
+    # next line already proves "shares exactly one interior edge".
+    bay_edge(tuple(entry["interior_mm"]), tuple(entry["module_bay_mm"]))
+
+    # ---- 2/3/4/5. bpy-measured checks on the built geometry ------------ #
+    tol = _PROC_TRAY_TOL_MM
+    case_lo, case_hi = A.group_bbox([case])
+    lid_lo, lid_hi = A.group_bbox([lid])
+    cell_lo, cell_hi = A.group_bbox([cell])
+
+    def mm(v: float) -> float:
+        return v * 1000.0
+
+    assert math.isclose(mm(case_lo.x), ox0, abs_tol=tol) \
+        and math.isclose(mm(case_lo.y), oy0, abs_tol=tol) \
+        and math.isclose(mm(case_hi.x), ox1, abs_tol=tol) \
+        and math.isclose(mm(case_hi.y), oy1, abs_tol=tol), (
+        f"built case footprint ({mm(case_lo.x):.2f},{mm(case_lo.y):.2f})-"
+        f"({mm(case_hi.x):.2f},{mm(case_hi.y):.2f})mm != case_outer_mm "
+        f"{entry['case_outer_mm']}")
+    assert math.isclose(case_lo.z, 0.0, abs_tol=1e-4), (
+        f"built case base z={case_lo.z * 1000:.3f}mm != 0 (the tray's own "
+        f"base)")
+    assert math.isclose(mm(case_hi.z), half_h_mm, abs_tol=tol), (
+        f"built case rim z={mm(case_hi.z):.2f}mm != case_half_height_mm "
+        f"{half_h_mm}")
+
+    assert math.isclose(lid_lo.z, case_hi.z, abs_tol=1e-4), (
+        f"lid base z={lid_lo.z * 1000:.3f}mm does not sit exactly on the "
+        f"case's own measured rim z={case_hi.z * 1000:.3f}mm")
+    assert math.isclose(mm(lid_lo.x), ox0, abs_tol=tol) \
+        and math.isclose(mm(lid_lo.y), oy0, abs_tol=tol) \
+        and math.isclose(mm(lid_hi.x), ox1, abs_tol=tol) \
+        and math.isclose(mm(lid_hi.y), oy1, abs_tol=tol), (
+        f"lid footprint ({mm(lid_lo.x):.2f},{mm(lid_lo.y):.2f})-"
+        f"({mm(lid_hi.x):.2f},{mm(lid_hi.y):.2f})mm != case_outer_mm "
+        f"{entry['case_outer_mm']}")
+
+    diam_mm, len_mm = (v * 1000.0 for v in CELL_FORMATS[entry["cell_format"]])
+    got_cross = sorted((mm(cell_hi.x - cell_lo.x), mm(cell_hi.z - cell_lo.z)))
+    assert all(math.isclose(g, diam_mm, abs_tol=tol) for g in got_cross), (
+        f"cell cross-section {got_cross}mm != {entry['cell_format']!r} "
+        f"diameter {diam_mm:.2f}mm - is the cylinder really resting on "
+        f"its side?")
+    assert math.isclose(mm(cell_hi.y - cell_lo.y), len_mm, abs_tol=tol), (
+        f"cell length {mm(cell_hi.y - cell_lo.y):.2f}mm != "
+        f"{entry['cell_format']!r} length {len_mm:.2f}mm")
+
+    assert math.isclose(mm(cell_lo.z), floor_mm, abs_tol=tol), (
+        f"cell rests at z={mm(cell_lo.z):.2f}mm, not the cavity floor "
+        f"tray_floor_mm={floor_mm}mm - a cell parked off the floor would "
+        f"silently skew _load_template's shared re-centre step (see "
+        f"build_procedural_tray's own docstring)")
+    measured_depth = mm(case_hi.z) - mm(cell_lo.z)
+    expected_depth = half_h_mm - floor_mm
+    assert math.isclose(measured_depth, expected_depth, abs_tol=tol), (
+        f"measured rim-to-floor depth {measured_depth:.2f}mm != the "
+        f"sampled bay depth (case_half_height_mm - tray_floor_mm) = "
+        f"{expected_depth:.2f}mm")
+    assert case_lo.z - 1e-6 <= cell_lo.z, (
+        "cell sits below the tray's own base - it would poke through the "
+        "floor")
+    assert mm(cell_hi.z) <= half_h_mm + tol, (
+        f"cell top z={mm(cell_hi.z):.2f}mm pokes above the case rim "
+        f"({half_h_mm}mm) - it would not fit inside the built cavity")
+
+
+def build_procedural_tray(entry: dict) -> Dict[str, list]:
+    """Bare boolean-cut geometry for one procedural tray: `case` (a
+    boolean-differenced shell), `case_lid` (a solid slab, same
+    footprint), and `cell` (one cylinder at the sampled format's
+    radius/length) - structurally identical to build_jig: every number
+    comes from `entry` (bay.sample_tray + catalog.build_tray_entry). No
+    geometric judgement happens here (design spec Sec3.4).
+
+    No lay_flat, no flip_if_inverted: those exist ONLY to correct an
+    imported CAD file's own up-axis/orientation ambiguity (design spec
+    Sec2). A primitive built directly in Blender has neither to correct -
+    `_load_template`'s shared re-centre step (unchanged, run on whatever
+    this function returns) is what establishes the (0,0)-centred local
+    frame bay.py's module docstring requires, exactly as it already does
+    for CAD.
+
+    Object names (`ProcCase_btm`/`ProcCase_top`/`ProcCell_0`) are chosen
+    to satisfy catalog.CLASS_RULES' existing regexes - see
+    tests/test_bay.py's `test_procedural_object_names_classify_correctly_
+    via_role_of` (Task 7) for the pinned contract. Get these names wrong
+    and `_load_template`'s shared tail silently tags the lid as `case`
+    too, re-closing every open procedural cartridge.
+
+    Before returning, `_assert_procedural_tray_geometry` numerically
+    verifies the geometry just built against `entry`'s own numbers - see
+    that function's docstring for exactly what it checks and why. This
+    runs on EVERY procedural tray this function ever builds, not just in
+    a test: a render that looks right is not evidence, on this project's
+    own prior track record (see this plan's Task 8 note).
+
+    Returns a `by_role` dict shaped exactly like `_load_template`'s
+    existing CAD return value.
+    """
+    x0, y0, x1, y1 = entry["case_outer_mm"]
+    w_m, h_m = (x1 - x0) / 1000.0, (y1 - y0) / 1000.0
+    cx_m, cy_m = (x0 + x1) / 2000.0, (y0 + y1) / 2000.0
+    half_h = entry["case_half_height_mm"] / 1000.0
+    wall = entry["case_wall_mm"] / 1000.0
+    floor = entry["tray_floor_mm"] / 1000.0
+
+    # --- case: solid block, then a cavity boolean-differenced out of it -
+    # exactly build_jig's own cube-plus-cutter shape.
+    bpy.ops.mesh.primitive_cube_add(size=1, location=(cx_m, cy_m, half_h / 2))
+    case = bpy.context.active_object
+    case.name = "ProcCase_btm"
+    case.scale = (w_m, h_m, half_h)
+    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+
+    cav_w, cav_h = w_m - 2 * wall, h_m - 2 * wall
+    cav_z_h = (half_h - floor) + 0.001     # +1mm so the cutter clears the open top
+    bpy.ops.mesh.primitive_cube_add(
+        size=1, location=(cx_m, cy_m, floor + cav_z_h / 2))
+    cutter = bpy.context.active_object
+    cutter.name = "_proc_cavity_cutter"
+    cutter.scale = (cav_w, cav_h, cav_z_h)
+    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+
+    mod = case.modifiers.new(name="cavity", type="BOOLEAN")
+    mod.operation = "DIFFERENCE"
+    mod.object = cutter
+    bpy.context.view_layer.objects.active = case
+    bpy.ops.object.modifier_apply(modifier="cavity")
+    bpy.data.objects.remove(cutter, do_unlink=True)
+
+    # --- case_lid: a solid slab, no boolean op needed - resting exactly
+    # on the shell's own top rim (design spec Sec4.4's two-piece split).
+    bpy.ops.mesh.primitive_cube_add(
+        size=1, location=(cx_m, cy_m, half_h + half_h / 2))
+    lid = bpy.context.active_object
+    lid.name = "ProcCase_top"
+    lid.scale = (w_m, h_m, half_h)
+    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+
+    # --- cell: one cylinder template at the sampled format's own
+    # radius/length, resting ON THE CAVITY FLOOR - not parked outside the
+    # case/lid footprint. _load_template's shared re-centre step measures
+    # group_bbox(meshes) over every object this function returns,
+    # INCLUDING this one; a cell parked outside the case/lid's own
+    # footprint or height would silently skew that measurement and
+    # mis-centre case and case_lid too, with no error anywhere short of
+    # Task 9's dedicated assertion.
+    diam_m, len_m = CELL_FORMATS[entry["cell_format"]]
+    bpy.ops.mesh.primitive_cylinder_add(
+        radius=diam_m / 2, depth=len_m,
+        location=(cx_m, cy_m, floor + diam_m / 2))
+    cell = bpy.context.active_object
+    cell.name = "ProcCell_0"
+    # primitive_cylinder_add's own axis is Z (standing on end); rotate 90
+    # degrees about X so it rests on its SIDE, long axis horizontal - the
+    # same resting pose lay_flat gives every imported CAD cell.
+    cell.rotation_euler = (math.radians(90), 0.0, 0.0)
+    bpy.ops.object.transform_apply(location=False, rotation=True, scale=False)
+
+    bpy.context.view_layer.update()
+    _assert_procedural_tray_geometry(entry, case, lid, cell)
+    return {"case": [case], "case_lid": [lid], "cell": [cell]}
 
 
 def build_pcb(bounds_xy, floor_z: float, rng: random.Random,

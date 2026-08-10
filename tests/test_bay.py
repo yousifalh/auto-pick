@@ -1033,3 +1033,22 @@ def test_procedural_object_names_classify_correctly_via_role_of():
     assert role_of("ProcCase_btm") == "case"
     assert role_of("ProcCase_top") == "case_lid"
     assert role_of("ProcCell_0") == "cell"
+
+
+def test_sample_tray_case_half_height_always_clears_the_floor():
+    """world.build_procedural_tray's cavity cutter has height
+    (case_half_height_mm - tray_floor_mm); TrayRangeCfg.tray_wide's own
+    ranges overlap (tray_floor_mm_range up to 4.5mm, case_half_height_mm_
+    range down to 4.0mm) so an UNCONSTRAINED independent draw of both can
+    put the floor AT OR ABOVE the rim, giving that cutter zero or negative
+    height - a degenerate boolean cut, not merely an unusual tray. This is
+    a structural validity requirement for ANY tray (anchored or wide), not
+    a plausibility judgement, so sample_tray must guarantee it by
+    construction rather than leave it to chance."""
+    from recog.synth3d.bay import sample_tray
+    for cfg in (Config().tray_anchored, Config().tray_wide):
+        for seed in range(5000):
+            s = sample_tray(cfg, _random.Random(seed))
+            assert s.case_half_height_mm > s.tray_floor_mm, (
+                f"seed={seed} half_height={s.case_half_height_mm} "
+                f"floor={s.tray_floor_mm}")
