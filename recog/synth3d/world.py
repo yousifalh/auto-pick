@@ -29,6 +29,7 @@ import bpy
 from mathutils import Matrix, Vector
 
 from . import assets as A
+from .config import CELL_H_MM, CELL_W_MM
 from .lightrig import off_axis_placement, shadow_direction
 from .materials import apply_to_object, for_role, set_input, rng_range
 
@@ -944,20 +945,21 @@ def build_obstructions(poses, floor_z: float, rng: random.Random):
 SEATED_CELL_LIFT = 0.0012          # metres above the cavity floor
 
 # The 18650's lay_flat resting footprint, in metres: (short edge, long
-# edge) = (18.3mm, 65.0mm). scene.py's seated-cell capacity estimate and
-# the cell_w/cell_h it hands to bay.seated_cell_poses's packer BOTH need
-# this exact figure, but both run on the bpy-free side, before any cell
-# geometry is ever touched - they cannot measure it themselves. Previously
-# each hardcoded the same two literals separately (scene.py's build(),
-# before this constant existed); import this instead so there is exactly
-# one number to change. `_assert_seat_cell_footprint` below closes the gap
-# that leaves open: it measures the ACTUAL cloned-and-lay_flat'd template
-# the first time each asset seats a cell and raises if it disagrees with
-# this constant, turning what was (per the reviewer's own headless-Blender
-# check) a coincidental tie in `assets.lay_flat`'s `min()` - both non-Z
-# extents of a standing 18650 are 18.3mm, so which one loses that tie is
-# incidental, not guaranteed by anything - into a checked invariant.
-SEAT_CELL_FOOTPRINT_M = (0.0183, 0.065)
+# edge) = (18.3mm, 65.0mm), derived from config.CELL_W_MM/CELL_H_MM
+# rather than restating those two literals a third time (2026-08-10
+# consolidation - recog.calibrate_tau and recog.seg_ablation import the
+# same mm pair). scene.py's seated-cell capacity estimate and the
+# cell_w/cell_h it hands to bay.seated_cell_poses's packer BOTH need this
+# exact figure, but both run on the bpy-free side, before any cell
+# geometry is ever touched - they cannot measure it themselves.
+# `_assert_seat_cell_footprint` below closes the gap that leaves open: it
+# measures the ACTUAL cloned-and-lay_flat'd template the first time each
+# asset seats a cell and raises if it disagrees with this constant,
+# turning what was (per the reviewer's own headless-Blender check) a
+# coincidental tie in `assets.lay_flat`'s `min()` - both non-Z extents of
+# a standing 18650 are 18.3mm, so which one loses that tie is incidental,
+# not guaranteed by anything - into a checked invariant.
+SEAT_CELL_FOOTPRINT_M = (CELL_W_MM / 1000, CELL_H_MM / 1000)
 
 _seat_cell_footprint_checked: set = set()
 

@@ -57,9 +57,14 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 from common.types import BBox
-
-CELL_W_MM = 18.3
-CELL_H_MM = 65.0
+# The 18650's own CAD-measured footprint - see recog.synth3d.config's own
+# comment for the figure's provenance. Imported rather than restated, the
+# same reasoning as recog.calibrate_tau's copy (which independently
+# duplicated this exact pair until this consolidation) and unlike
+# _DEFAULT_WALL_INSET_MM below: recog.synth3d.config has no cv2/torch/bpy
+# import of its own, so pulling it in here does not compromise this
+# module's lazy-import discipline (2026-08-10 consolidation).
+from recog.synth3d.config import CELL_H_MM, CELL_W_MM
 
 # spec Sec1.1's measured heuristic baseline on recog/realtest, using the
 # ground-truth cartridge boxes so detector error plays no part. This is

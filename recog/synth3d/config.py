@@ -121,6 +121,27 @@ VARIANTS: List[Variant] = [
 
 
 # =========================================================================== #
+#  CELL DIMENSIONS
+#
+#  The 18650's own CAD-measured footprint - catalog.json: every Cell_*
+#  subpart across all four Anker assemblies reports extents_mm
+#  [18.3, 18.3, 65.0]. Millimetres, the one exception to this module's
+#  otherwise-metres convention (see the module docstring): the consumers
+#  outside this package that need it (recog/calibrate_tau.py,
+#  recog/seg_ablation.py) both work in mm. world.py's
+#  SEAT_CELL_FOOTPRINT_M and _gate_orientation.py's orientation checks
+#  derive from this same pair rather than restating it a third and fourth
+#  time. One number, so it cannot silently drift the way the two
+#  independent mm copies in recog/ once could have (2026-08-10
+#  consolidation - see docs/superpowers/specs/2026-08-10-generalisation-
+#  groundwork.md Sec4.3 for the full pre-consolidation site list).
+# =========================================================================== #
+
+CELL_W_MM: float = 18.3
+CELL_H_MM: float = 65.0
+
+
+# =========================================================================== #
 #  SCENE CONFIG
 # =========================================================================== #
 

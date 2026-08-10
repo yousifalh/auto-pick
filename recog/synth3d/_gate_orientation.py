@@ -99,12 +99,13 @@ def check_lay_flat():
             if role != "cell":
                 continue
             e, _, _ = extent([o])
-            check(abs(e.z * MM - 18.3) < 0.5,
-                  f"{name}/cell height {round(e.z * MM, 1)}mm ~= 18.3mm "
-                  f"(65.0mm would mean it is standing on end)")
-            check(abs(max(e.x, e.y) * MM - 65.0) < 0.5,
+            check(abs(e.z * MM - config.CELL_W_MM) < 0.5,
+                  f"{name}/cell height {round(e.z * MM, 1)}mm ~= "
+                  f"{config.CELL_W_MM}mm ({config.CELL_H_MM}mm would mean "
+                  f"it is standing on end)")
+            check(abs(max(e.x, e.y) * MM - config.CELL_H_MM) < 0.5,
                   f"{name}/cell long axis {round(max(e.x, e.y) * MM, 1)}mm "
-                  f"~= 65.0mm and lies in the XY plane")
+                  f"~= {config.CELL_H_MM}mm and lies in the XY plane")
 
 
 # --------------------------------------------------------------------------- #

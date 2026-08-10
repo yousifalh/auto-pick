@@ -48,14 +48,15 @@ from common.logging import get_logger
 
 log = get_logger("recog.calibrate_tau")
 
-# The 18650's own CAD-measured footprint (recog/synth3d/assets.py,
-# recog/synth3d/_gate_orientation.py: [18.3, 18.3, 65.0] mm), not
-# planning.yaml's 18.5 mm nominal spec figure. admits_a_cell is a
-# WORST-CASE test - a slightly smaller structuring element is easier to
-# fit, so testing against the measured (smaller) footprint only ever
-# flags MORE optimistic-error regions as unsafe, never fewer.
-CELL_W_MM = 18.3
-CELL_H_MM = 65.0
+# The 18650's own CAD-measured footprint, not planning.yaml's 18.5 mm
+# nominal spec figure. admits_a_cell is a WORST-CASE test - a slightly
+# smaller structuring element is easier to fit, so testing against the
+# measured (smaller) footprint only ever flags MORE optimistic-error
+# regions as unsafe, never fewer. Imported rather than restated - same
+# reasoning as _DEFAULT_WALL_INSET_MM just below - so this can never
+# again independently drift from recog/seg_ablation.py's own copy the
+# way it once did (2026-08-10 consolidation).
+from recog.synth3d.config import CELL_H_MM, CELL_W_MM  # noqa: E402
 
 # plan/placement_area.py's SegmentationPlacementAreaExtractor default -
 # imported rather than restated so the wall inset this calibration scores
