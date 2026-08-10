@@ -140,6 +140,19 @@ VARIANTS: List[Variant] = [
 CELL_W_MM: float = 18.3
 CELL_H_MM: float = 65.0
 
+# Decision 3 (2026-08-10-generalisation-decisions.md): three cell formats
+# in the training mix. "18650" is CELL_W_MM/CELL_H_MM itself, converted to
+# metres rather than restated a third time - the same "one authoritative
+# dimension" discipline that consolidation established. 21700/21x70mm and
+# 26650/26x65mm have no CAD (groundwork.md Sec4.2: a parametric cylinder
+# needs no CAD); they exist here as radii/lengths a Blender primitive_
+# cylinder_add can be built from directly.
+CELL_FORMATS: Dict[str, Tuple[float, float]] = {
+    "18650": (CELL_W_MM / 1000.0, CELL_H_MM / 1000.0),
+    "21700": (0.021, 0.070),
+    "26650": (0.026, 0.065),
+}
+
 
 # =========================================================================== #
 #  SCENE CONFIG

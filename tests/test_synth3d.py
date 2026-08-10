@@ -1913,3 +1913,20 @@ def test_open_case_labels_the_tray_as_cartridge():
     oc = {v.name: v for v in VARIANTS}["open_case"]
     assert oc.label_roles.get("case") == "cartridge"
     assert oc.label_roles.get("cell") == "battery"
+
+
+# ------------------------------------------------------- cell formats ----
+
+def test_cell_formats_18650_matches_the_authoritative_constant():
+    """CELL_W_MM/CELL_H_MM is the one authoritative 18650 figure (commit
+    ac54743) - CELL_FORMATS must derive from it, not restate a third copy."""
+    from recog.synth3d.config import CELL_FORMATS, CELL_H_MM, CELL_W_MM
+    assert CELL_FORMATS["18650"] == pytest.approx(
+        (CELL_W_MM / 1000.0, CELL_H_MM / 1000.0))
+
+
+def test_cell_formats_has_all_three_decision_3_formats():
+    from recog.synth3d.config import CELL_FORMATS
+    assert set(CELL_FORMATS) == {"18650", "21700", "26650"}
+    assert CELL_FORMATS["21700"] == pytest.approx((0.021, 0.070))
+    assert CELL_FORMATS["26650"] == pytest.approx((0.026, 0.065))
