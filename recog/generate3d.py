@@ -64,6 +64,20 @@ def parse_args(cfg):
     p.add_argument("--no-render", action="store_true")
     p.add_argument("--save-blend", default=None)
     p.add_argument("--config", default=None)
+    p.add_argument("--tray-set", choices=["cad", "anchored", "wide"],
+                   default="cad",
+                   help="cad (default): today's four Anker assemblies, "
+                        "unchanged. anchored/wide: replace the library "
+                        "with an in-memory procedural pool (Decision 1: "
+                        "CAD is never mixed into a procedural render).")
+    p.add_argument("--n-procedural", type=int, default=None,
+                   help="size of the procedural pool for --tray-set "
+                        "anchored/wide; defaults to --n.")
+    p.add_argument("--exclude-asset", action="append", default=[],
+                   help="drop a cataloged asset by name before "
+                        "generation; repeatable. Used for the "
+                        "leave-one-SKU-out CAD-control folds (design "
+                        "spec Sec10).")
     return p.parse_args(argv)
 
 
@@ -219,6 +233,30 @@ def main():
         os.path.dirname(os.path.abspath(__file__)), "synth3d", "assets")
     library = AssetLibrary(assets_dir)
     print(f"assets: {library.names()}")
+
+    if a.tray_set != "cad":
+        from recog.synth3d.bay import sample_tray
+        from recog.synth3d.catalog import build_procedural_pool
+
+        # Decision 1: the model never sees real measured geometry during
+        # training - .clear() before registering the pool, not merely
+        # ADDING it, so a procedural render can never accidentally
+        # sample a CAD name too.
+        library.assets.clear()
+        range_cfg = cfg.tray_anchored if a.tray_set == "anchored" else cfg.tray_wide
+        pool = build_procedural_pool(
+            a.n_procedural or a.n, sample_tray, range_cfg, seed=a.seed,
+            name_prefix=a.tray_set)
+        library.register_procedural_pool(pool)
+        print(f"[tray-set={a.tray_set}] registered {len(pool)} procedural "
+              f"assets, CAD assets cleared")
+
+    if a.exclude_asset:
+        from recog.synth3d.catalog import exclude_assets
+        library.assets = exclude_assets(library.assets, a.exclude_asset)
+        print(f"[exclude-asset] dropped {a.exclude_asset}; "
+              f"{len(library.assets)} asset(s) remain: "
+              f"{sorted(library.assets)}")
 
     if a.sweep:
         run_sweep(a, cfg, library, root)
