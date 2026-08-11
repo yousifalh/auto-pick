@@ -91,6 +91,15 @@ class Cartridge:
     placeable_rectangle: Optional[BBox] = None
     # Rasterised occupancy over the placeable rectangle.
     occupancy: Optional["OccupancyGrid"] = None
+    # Millimetres per pixel of the FRAME that produced
+    # `placeable_rectangle` and `occupancy`. Both are pixel quantities,
+    # so both are meaningless without it - and because cartridges are
+    # persistent across frames while the scale is not, the twin must
+    # remember which scale its components were measured at rather than
+    # letting the planner re-apply whatever the current frame happens to
+    # be. Set by plan.planner._ensure_placement_areas at the same moment
+    # as the rectangle; None exactly while the rectangle is None.
+    mm_per_px: Optional[float] = None
     packing_family: PackingFamily = PackingFamily.GRID
 
     def mark_cell(self, row: int, col: int, state: CellState) -> None:

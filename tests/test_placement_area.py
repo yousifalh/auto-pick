@@ -60,15 +60,21 @@ def test_forbidden_cells_created_for_pcb():
 
 def test_extract_rejects_empty_bbox():
     img = _synthetic_cartridge_image()
-    ext = PlacementAreaExtractor()
-    with pytest.raises(ValueError):
+    # Explicit scale: UnknownScale IS a ValueError and is raised first,
+    # so without this the assertion would pass while testing nothing
+    # about the bbox.
+    ext = PlacementAreaExtractor(mm_per_px=0.38)
+    with pytest.raises(ValueError, match="bbox"):
         ext.extract(img, BBox(10, 10, 10, 10))
 
 
 def test_extract_raises_on_no_green():
     # Entirely black image
     img = np.zeros((80, 80, 3), dtype=np.uint8)
-    ext = PlacementAreaExtractor()
+    # An explicit fallback scale, so this test fails on the green mask -
+    # the thing it is about - rather than on UnknownScale. The
+    # constructor no longer defaults mm_per_px to anything.
+    ext = PlacementAreaExtractor(mm_per_px=0.38)
     with pytest.raises(RuntimeError):
         ext.extract(img, BBox(10, 10, 70, 70))
 
@@ -295,3 +301,129 @@ def test_a_full_cartridge_does_not_raise_placement_disagreement():
                    BBox(20, 30, 80, 110), label_map=label)
     assert not isinstance(excinfo.value, PlacementDisagreement)
     assert not isinstance(excinfo.value, BadDetectorBox)
+
+
+# ----------------------------------------------- per-frame mm_per_px ----
+#
+# The extractor turns mm_per_px into TWO things - the cartridge wall's
+# erosion radius in pixels, and the occupancy grid's pixels-per-cell - so
+# a frame measured at the wrong scale is wrong twice, in the same
+# direction. It held a constructor constant (default 0.625, "this
+# dataset's actual framing") while recog/synth3d/world.py randomised the
+# framing per scene, and no frame in that dataset is at that framing.
+# docs/superpowers/specs/2026-08-11-scale-calibration.md.
+
+
+def _bay_label():
+    import numpy as np
+
+    from plan.arbitration import CH_BAY, CH_CARTRIDGE
+
+    label = np.zeros((200, 140), np.int8)
+    label[5:195, 5:135] = CH_CARTRIDGE
+    label[15:185, 15:125] = CH_BAY
+    return label
+
+
+def test_extract_uses_the_frames_scale_over_the_fallback():
+    """The per-call scale wins. If it did not, the constructor constant
+    would still be deciding how big a millimetre is."""
+    import numpy as np
+
+    from common.types import BBox
+    from plan.placement_area import SegmentationPlacementAreaExtractor
+
+    label = _bay_label()
+    img = np.zeros((400, 400, 3), np.uint8)
+    box = BBox(20, 30, 160, 230)
+
+    ex = SegmentationPlacementAreaExtractor(
+        mm_per_cell=1.5, mm_per_px=0.625, wall_inset_mm=4.25)
+    fallback = ex.extract(img, box, label_map=label)
+    per_frame = ex.extract(img, box, label_map=label, mm_per_px=1.0)
+
+    assert fallback.mm_per_px == 0.625
+    assert per_frame.mm_per_px == 1.0
+    # A coarser frame means fewer pixels per occupancy cell, so the SAME
+    # mask rasterises to a different grid.
+    assert per_frame.occupancy.rows != fallback.occupancy.rows
+
+
+def test_the_wall_inset_follows_the_frame_not_a_stored_number():
+    """4.25 mm of wall is 7 px at 0.625 mm/px and 4 px at 1.0. Eroding 7
+    px on a 1.0 mm/px frame removes 6.98 mm of a 4.25 mm wall - which is
+    how the 0.625 constant ate the AnkerPowerCore10000's entire 0.00 mm
+    of longitudinal margin twice over."""
+    from plan.placement_area import SegmentationPlacementAreaExtractor
+
+    ex = SegmentationPlacementAreaExtractor(
+        mm_per_cell=1.5, mm_per_px=0.625, wall_inset_mm=4.25)
+
+    assert ex.wall_inset_px_at(0.625) == 7
+    assert ex.wall_inset_px_at(1.0) == 4
+    assert ex.wall_inset_px_at(0.4915) == 9
+
+
+def test_placement_area_reports_the_scale_it_was_measured_at():
+    """The rectangle is in pixels. Handing it back without the scale that
+    produced it is what let a rectangle from one framing be packed
+    against another framing's millimetres."""
+    import numpy as np
+
+    from common.types import BBox
+    from plan.placement_area import SegmentationPlacementAreaExtractor
+
+    ex = SegmentationPlacementAreaExtractor(
+        mm_per_cell=1.5, mm_per_px=None, wall_inset_mm=4.25)
+    pa = ex.extract(np.zeros((400, 400, 3), np.uint8), BBox(20, 30, 160, 230),
+                    label_map=_bay_label(), mm_per_px=0.8632)
+    assert pa.mm_per_px == 0.8632
+
+
+def test_no_scale_anywhere_raises_rather_than_defaulting():
+    """The constructor default used to be 0.625 - a number that described
+    no frame in the corpus it was named for. It is now None, so a caller
+    who never says how big a pixel is finds out."""
+    import numpy as np
+    import pytest
+
+    from common.types import BBox
+    from plan.placement_area import (SegmentationPlacementAreaExtractor,
+                                     UnknownScale)
+
+    ex = SegmentationPlacementAreaExtractor(mm_per_cell=1.5)
+    assert ex.mm_per_px is None
+    with pytest.raises(UnknownScale, match="mm_per_px"):
+        ex.extract(np.zeros((400, 400, 3), np.uint8), BBox(20, 30, 160, 230),
+                   label_map=_bay_label())
+
+
+def test_a_nonsensical_scale_is_refused():
+    import numpy as np
+    import pytest
+
+    from common.types import BBox
+    from plan.placement_area import (SegmentationPlacementAreaExtractor,
+                                     UnknownScale)
+
+    ex = SegmentationPlacementAreaExtractor(mm_per_cell=1.5)
+    with pytest.raises(UnknownScale):
+        ex.extract(np.zeros((400, 400, 3), np.uint8), BBox(20, 30, 160, 230),
+                   label_map=_bay_label(), mm_per_px=0.0)
+
+
+def test_both_extractors_accept_the_scale_on_the_same_contract():
+    """plan.planner passes the resolved scale to whichever extractor it
+    holds. A signature that refused the kwarg on one of them would need a
+    second `_accepts_label_map`-style capability check, and the first one
+    exists because that pattern already failed once."""
+    import inspect
+
+    from plan.placement_area import (HeuristicPlacementAreaExtractor,
+                                     SegmentationPlacementAreaExtractor)
+
+    for cls in (HeuristicPlacementAreaExtractor,
+                SegmentationPlacementAreaExtractor):
+        params = inspect.signature(cls.extract).parameters
+        assert "mm_per_px" in params, cls.__name__
+        assert params["mm_per_px"].default is None, cls.__name__

@@ -34,6 +34,19 @@ import numpy as np
 from common.config import load_yaml
 from common.logging import get_logger
 
+# `resolve_mm_per_px` and `load_synth_config` MOVED to recog.calibration
+# and are re-exported here, not re-implemented: recog.calibrate_tau and
+# recog.seg_ablation import them from this module and quote the result in
+# shipped receipts. They now sit beside `frame_mm_per_px`, the PER-FRAME
+# ground sample distance the planner uses, so the difference between the
+# generator's nominal framing and an individual frame's true scale is
+# stated once, in one place, instead of being rediscovered.
+from recog.calibration import (  # noqa: F401  (re-exported)
+    frame_mm_per_px,
+    load_synth_config,
+    resolve_mm_per_px,
+)
+
 # Derived from the dataset's contract rather than restated. Two
 # hand-written copies of the same order drift, and the drift is silent:
 # the metrics would simply be reported under the wrong class names.
@@ -192,55 +205,6 @@ def latency_within_budget(latency: List[dict], budget_batch: int = 8) -> bool:
     on, not only a log line main() decided to emit."""
     return all(r["within_50ms_budget"] for r in latency
               if r["cartridges"] == budget_batch)
-
-
-# --------------------------------------------------------------- config --
-
-def resolve_mm_per_px(synth_cfg: Dict[str, Any]) -> float:
-    """``layout.area[0] * 1000 / render.res[0]`` - the generator's
-    framing. Read from config rather than hardcoded, or it silently goes
-    wrong the first time anyone changes the framing."""
-    layout = synth_cfg.get("layout") or {}
-    render = synth_cfg.get("render") or {}
-    if "area" not in layout or "res" not in render:
-        raise SystemExit(
-            "error: synth config is missing layout.area / render.res; "
-            "cannot compute mm_per_px. Pass --synth-config explicitly.")
-    area_w_m = float(layout["area"][0])
-    res_w_px = float(render["res"][0])
-    return area_w_m * 1000.0 / res_w_px
-
-
-def load_synth_config(coco_path: str, override: Optional[str]
-                      ) -> Tuple[Dict[str, Any], str]:
-    """The render/layout config the dataset's images were actually
-    generated under.
-
-    Prefers the manifest.json sidecar next to ``coco_path`` - it is a
-    frozen copy of the config at generation time, so it stays correct
-    even if configs/synth3d.yaml is edited afterwards. Falls back to
-    configs/synth3d.yaml (the authored default) only if no manifest is
-    found, and to an explicit --synth-config if one is given.
-    """
-    if override:
-        return load_yaml(override), str(override)
-
-    manifest_path = Path(coco_path).parent / "manifest.json"
-    if manifest_path.is_file():
-        with manifest_path.open("r", encoding="utf-8") as fh:
-            manifest = json.load(fh)
-        cfg = manifest.get("config")
-        if cfg:
-            return cfg, str(manifest_path)
-
-    default = Path("configs/synth3d.yaml")
-    if default.is_file():
-        return load_yaml(default), str(default)
-
-    raise SystemExit(
-        "error: could not find a render/layout config to compute "
-        f"mm_per_px from ({manifest_path} missing 'config', and "
-        f"{default} not found). Pass --synth-config explicitly.")
 
 
 # --------------------------------------------------------------- report --
@@ -830,6 +794,7 @@ __all__ = [
     "latency_table",
     "latency_within_budget",
     "resolve_mm_per_px",
+    "frame_mm_per_px",
     "load_synth_config",
     "evaluate",
     "compute_val_instance_counts",

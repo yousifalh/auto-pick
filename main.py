@@ -39,7 +39,7 @@ from __future__ import annotations
 import argparse
 import time
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Set
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 import numpy as np
 
@@ -63,8 +63,27 @@ log = get_logger("autopick.main")
 
 # ------------------------------------------------------- image sources ---
 
-def _synthetic_source(directory: str) -> Iterable[np.ndarray]:
-    """Cycle through every ``*.png`` in ``directory``, returning RGB frames."""
+Frame = Tuple[np.ndarray, Optional[float]]
+
+
+def _synthetic_source(directory: str) -> Iterable[Frame]:
+    """Cycle through every ``*.png`` in ``directory``.
+
+    Yields ``(rgb, mm_per_px)``. The second element is the frame's OWN
+    ground sample distance, read from the render sidecar
+    ``<dataset>/meta/<stem>.json`` that ``recog.generate3d`` writes, or
+    ``None`` for a corpus that has no sidecar (``recog/synth_dataset.py``
+    draws its rectangles with cv2 and records no camera).
+
+    The image source is where the calibration belongs. A frame source
+    stands in for a camera, and a camera is the thing that knows how big
+    a pixel is - not the planner's config file, which cannot know that
+    ``recog/synth3d/world.py`` randomises the framing per scene and was
+    consequently wrong on 24 of 30 cartridges
+    (docs/superpowers/specs/2026-08-11-scale-calibration.md).
+    """
+    from recog.calibration import frame_mm_per_px_for_image
+
     files = sorted(Path(directory).glob("*.png"))
     if not files:
         raise RuntimeError(
@@ -73,13 +92,21 @@ def _synthetic_source(directory: str) -> Iterable[np.ndarray]:
         )
     idx = 0
     while True:
-        bgr = cv2.imread(str(files[idx % len(files)]))
-        yield cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        path = files[idx % len(files)]
+        bgr = cv2.imread(str(path))
+        yield (cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB),
+               frame_mm_per_px_for_image(path))
         idx += 1
 
 
-def _camera_source(device: int = 0) -> Iterable[np.ndarray]:  # pragma: no cover
-    """Read frames from a USB camera."""
+def _camera_source(device: int = 0) -> Iterable[Frame]:  # pragma: no cover
+    """Read frames from a USB camera.
+
+    ``None`` for the scale: a webcam frame carries no calibration, so the
+    configured fallback (``planning.camera.mm_per_px_x`` / ``mode
+    .mm_per_px``) is what applies — and if none was configured the
+    planner raises rather than inventing one.
+    """
     cap = cv2.VideoCapture(device)
     if not cap.isOpened():
         raise RuntimeError(f"Could not open camera device {device}")
@@ -88,7 +115,7 @@ def _camera_source(device: int = 0) -> Iterable[np.ndarray]:  # pragma: no cover
             ok, bgr = cap.read()
             if not ok:
                 continue
-            yield cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+            yield cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), None
     finally:
         cap.release()
 
@@ -112,7 +139,7 @@ def _resolve_image_dir(
 
 def _image_source(
     mode_cfg: Dict[str, Any], image_dir: str,
-) -> Iterable[np.ndarray]:
+) -> Iterable[Frame]:
     src = mode_cfg.get("source", "synthetic")
     if src == "synthetic":
         return _synthetic_source(image_dir)
@@ -151,11 +178,16 @@ def _build_planner(
     ``mode.segmentation`` block rather than letting them be configured
     apart.
 
-    ``mm_per_px`` overrides ``planning.camera.mm_per_px_x`` for BOTH the
-    extractor and the planner's pixel->workspace mapping. The two must
-    not drift: the extractor uses it to convert the cartridge's wall
-    thickness into an erosion radius, and the planner uses it to place
-    the resulting rectangle in the workspace.
+    ``mm_per_px`` overrides ``planning.camera.mm_per_px_x`` as the
+    FALLBACK calibration for BOTH the extractor and the planner's
+    pixel->workspace mapping. It is what applies to a frame that carries
+    no scale of its own; a frame that does carry one
+    (``Snapshot.mm_per_px``, filled from the render sidecar by
+    ``_run_one_cycle``) overrides it per frame, and ``Planner.cycle``
+    resolves the two in one place so the extractor and the planner cannot
+    drift apart. Passing ``None`` here AND having no
+    ``planning.camera.mm_per_px_x`` means uncalibrated frames raise
+    ``UnknownScale`` instead of being measured against a guess.
     """
     planner_cfg = PlannerConfig.from_dict(plan_cfg)
     if mm_per_px is not None:
@@ -320,6 +352,12 @@ def run(config_path: str, receipt_path: Optional[str] = None) -> Dict[str, int]:
         "cartridge_masks": 0,
         "placement_areas": 0,
         "queue_poses": 0,
+        # Frames that carried their own ground sample distance. Zero
+        # against a non-zero cycle count means every frame was planned
+        # against the configured FALLBACK - which is correct for a fixed
+        # camera and was the silent defect on this scale-randomised
+        # corpus, so it is counted rather than assumed either way.
+        "frames_with_scale": 0,
     }
 
     # --- cycle -----------------------------------------------------------
@@ -348,6 +386,7 @@ def run(config_path: str, receipt_path: Optional[str] = None) -> Dict[str, int]:
 
     stats["placement_disagreements"] = planner.placement_disagreement_count
     stats["bad_detector_boxes"] = planner.bad_detector_box_count
+    stats["rescaled_area_drops"] = planner.rescaled_area_drop_count
 
     # A segmentation run that planned nothing is a FAILED run, not a
     # quiet one. The two ways this happens are both configuration
@@ -392,12 +431,21 @@ def _run_one_cycle(
     stops the run when ``stop_on_empty`` (the default, and what
     ``configs/demo.yaml`` gets); otherwise it advances to the next frame.
     """
-    img_rgb = next(img_iter)
+    img_rgb, frame_mm_per_px = next(img_iter)
 
     # 1. Perception.
     t0 = time.perf_counter()
     snap = detector(img_rgb)
     dt_perc = (time.perf_counter() - t0) * 1000
+
+    # The frame's own calibration, attached here rather than inside the
+    # detector: the detector is handed an array and has no idea where it
+    # came from, while this loop chose the source. None is a legitimate
+    # value meaning "this frame carries no calibration" - Planner.cycle
+    # then applies the configured fallback, or raises if there is none.
+    snap.mm_per_px = frame_mm_per_px
+    if frame_mm_per_px is not None:
+        stats["frames_with_scale"] += 1
 
     n_cartridges = sum(
         1 for d in snap.detections if d.label is ClassLabel.CARTRIDGE)
@@ -504,7 +552,10 @@ def _write_receipt(
         f"  segmenter     : {type(getattr(detector, 'segmenter', None)).__name__}",
         f"  seg checkpoint: {seg_cfg.get('checkpoint', '-')}",
         f"  extractor     : {type(planner.extractor).__name__}",
-        f"  mm_per_px     : {planner.cfg.mm_per_px}",
+        f"  mm_per_px     : per-frame from the render sidecar "
+        f"(camera.ortho_scale); fallback {planner.cfg.mm_per_px}",
+        f"  frames w/ own scale: {stats['frames_with_scale']} of "
+        f"{stats['cycles'] + stats['empty_queue']}",
         "",
         "Perception -> planning. `cartridges` counts cartridge detections",
         "summed over cycles (the same physical cartridge in two frames",
@@ -518,6 +569,7 @@ def _write_receipt(
         f"  placement areas        : {planned}",
         f"  placement disagreements: {stats['placement_disagreements']}",
         f"  bad detector boxes     : {stats['bad_detector_boxes']}",
+        f"  areas dropped (rescale): {stats['rescaled_area_drops']}",
         "",
         "Execution (mock KUKA unless mode.robot is `real`). A pose needs a",
         "placement area AND a free battery in the SAME frame, and the loop",

@@ -418,7 +418,19 @@ def test_run_puts_the_segmenter_in_the_loop_and_receipts_it(
     text = receipt.read_text(encoding="utf-8")
     assert "SegmentationPlacementAreaExtractor" in text
     assert f"placement areas        : {stats['placement_areas']}" in text
-    assert "mm_per_px     : 0.625" in text
+    # The receipt states WHERE the scale came from, not just its value.
+    # `mode.mm_per_px: 0.625` is now a fallback for frames that carry no
+    # calibration, and this fixture's frames (bare PNGs in a tmp dir with
+    # no render sidecar) are exactly that case - so the fallback is what
+    # applied, and the receipt has to be able to say so. A receipt that
+    # printed one bare number could not distinguish this run from one
+    # planned at the frames' own scales, which is the confusion that
+    # made the constant survive as long as it did.
+    assert "fallback 0.625" in text
+    assert f"frames w/ own scale: {stats['frames_with_scale']} of " in text
+    assert stats["frames_with_scale"] == 0, (
+        "these fixture frames carry no render sidecar, so no frame "
+        "should have reported a scale of its own")
 
 
 def test_run_raises_when_a_configured_segmenter_plans_nothing(
@@ -456,3 +468,81 @@ def test_torch_free_demo_does_not_build_a_segmenter(
     assert stats["cycles"] >= 1
     assert stats["cartridge_masks"] == 0
     assert stats["placement_areas"] >= 1
+
+
+# ------------------------------------------------ per-frame calibration ----
+
+def test_synthetic_source_yields_each_frames_own_scale(tmp_path):
+    """The image source is where the calibration enters, because a frame
+    source stands in for a camera and a camera is the thing that knows how
+    big a pixel is. `recog.generate3d` writes the render sidecar beside
+    the images; `_synthetic_source` reads it per frame."""
+    import json
+
+    import cv2
+    import numpy as np
+
+    from main import _synthetic_source
+
+    imgs = tmp_path / "images"
+    meta = tmp_path / "meta"
+    imgs.mkdir()
+    meta.mkdir()
+    for stem, ortho in (("scene_00000", 0.6291), ("scene_00001", 1.3377)):
+        cv2.imwrite(str(imgs / f"{stem}.png"), np.zeros((72, 128, 3), np.uint8))
+        (meta / f"{stem}.json").write_text(
+            json.dumps({"camera": {"ortho_scale": ortho},
+                        "width": 1280, "height": 720}), encoding="utf-8")
+
+    src = _synthetic_source(str(imgs))
+    _, first = next(src)
+    _, second = next(src)
+
+    assert first == pytest.approx(0.6291 * 1000 / 1280)
+    assert second == pytest.approx(1.3377 * 1000 / 1280)
+    # Two frames of one dataset, two scales. A single configured constant
+    # cannot be right for both, which is the whole defect.
+    assert first != second
+
+
+def test_synthetic_source_yields_none_for_frames_with_no_sidecar(tmp_path):
+    """`recog/synth_dataset.py` draws its rectangles with cv2 and records
+    no camera. None means unknown, and the configured fallback - not a
+    guess - is what covers it."""
+    import cv2
+    import numpy as np
+
+    from main import _synthetic_source
+
+    cv2.imwrite(str(tmp_path / "a.png"), np.zeros((40, 40, 3), np.uint8))
+    _, scale = next(_synthetic_source(str(tmp_path)))
+    assert scale is None
+
+
+def test_the_snapshot_carries_the_frame_scale_into_planning(
+        demo_seg_config: Path, monkeypatch, tmp_path):
+    """End to end: the scale on the frame reaches Snapshot.mm_per_px, and
+    the planner records it on the cartridge it measured. The extractor and
+    the planner must be looking at the SAME number - they used to hold
+    separate copies that main._build_planner kept in step by hand."""
+    holder: list = []
+    _patch_detector(monkeypatch, holder, _agreeing_label_map())
+
+    from plan.planner import Planner
+
+    seen: list = []
+    real_cycle = Planner.cycle
+
+    def spy(self, snapshot, image_rgb):
+        seen.append(snapshot.mm_per_px)
+        return real_cycle(self, snapshot, image_rgb)
+
+    monkeypatch.setattr(Planner, "cycle", spy)
+    main_run(str(demo_seg_config))
+
+    assert seen, "the planner never ran"
+    # This fixture's frames carry no sidecar, so the frames report None
+    # and the configured fallback applies - and that has to be visible as
+    # None rather than pre-filled with the fallback, or the receipt could
+    # not tell the two runs apart.
+    assert all(s is None for s in seen)

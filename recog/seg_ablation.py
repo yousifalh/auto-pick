@@ -243,7 +243,8 @@ def _load_real_cartridges(real_dir: Path
 
 
 def _heuristic_fraction(image: np.ndarray,
-                        box: Tuple[float, float, float, float]
+                        box: Tuple[float, float, float, float],
+                        mm_per_px_estimate: float
                         ) -> Tuple[float, str, bool]:
     """``(placeable_fraction, note, warned)`` for one cartridge ROI.
 
@@ -253,13 +254,24 @@ def _heuristic_fraction(image: np.ndarray,
     fires (and is caught, not printed) once per cartridge - twenty times
     over the full set. That is noise here, but whether it fired is
     recorded, not silently dropped.
+
+    ``mm_per_px_estimate`` is the SAME per-cartridge estimate the
+    segmenter arm gets, rather than a constructor default. It cannot move
+    this metric - the fraction is ``inside_mask.sum() / inside_mask.size``
+    and ``inside_mask`` is built entirely from pixel quantities
+    (``safety_margin_px``, the green contour, the dark-region PCB), while
+    ``mm_per_px`` reaches only the occupancy grid, which is not read here.
+    It is passed because the extractor no longer invents a scale when
+    nobody supplies one, and because two arms of one comparison silently
+    calibrated differently is how this file's neighbours went wrong.
     """
     from plan.placement_area import HeuristicPlacementAreaExtractor
 
     bbox = BBox(*box)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always", RuntimeWarning)
-        extractor = HeuristicPlacementAreaExtractor()
+        extractor = HeuristicPlacementAreaExtractor(
+            mm_per_px=mm_per_px_estimate)
         try:
             pa = extractor.extract(image, bbox)
         except (ValueError, RuntimeError) as exc:
@@ -337,12 +349,14 @@ def heuristic_vs_segmenter(real_dir: str | Path, segmenter,
     for i, (file_name, box) in enumerate(cartridges, start=1):
         image = load_image_rgb(img_dir / file_name)
 
-        h_frac, h_note, warned = _heuristic_fraction(image, box)
+        bbox_w_px = max(1.0, box[2] - box[0])
+        mm_per_px_estimate = _CATALOG_MEAN_WIDTH_MM / bbox_w_px
+
+        h_frac, h_note, warned = _heuristic_fraction(
+            image, box, mm_per_px_estimate)
         if warned:
             n_warned += 1
 
-        bbox_w_px = max(1.0, box[2] - box[0])
-        mm_per_px_estimate = _CATALOG_MEAN_WIDTH_MM / bbox_w_px
         s_frac, s_note = _segmenter_fraction(
             segmenter, image, box, mm_per_px_estimate, wall_inset_mm)
 
@@ -600,7 +614,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.checkpoint:
         val_counts_now = compute_val_instance_counts(
             full_dataset, val_indices, num_classes=num_classes)
-        check_split_matches_checkpoint(args.checkpoint, val_counts_now)
+        # `coco_path` is not optional and never was here: the guard only
+        # fires when this eval is against the SAME dataset the checkpoint
+        # trained on, and it needs the path to know. The argument was
+        # added in 138105d (cross-dataset scoring) and this caller was
+        # not updated, so `python -m recog.seg_ablation` has raised
+        # TypeError before reaching a single measurement ever since -
+        # which is why docs/receipts/seg_ablation.txt could not be
+        # regenerated. Matches recog.seg_evaluate.main's own call.
+        check_split_matches_checkpoint(args.checkpoint, ds_cfg["coco_path"],
+                                       val_counts_now)
 
     delta_result = evaluate_delta_cells(
         segmenter, full_dataset, val_indices, mm_per_px, args.wall_inset_mm)

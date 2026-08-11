@@ -169,7 +169,11 @@ def test_bad_detector_box_and_disagreement_are_counted_separately():
             raise PlacementDisagreement("disagree")
 
     ws = WorkspaceBounds(-100, 100, -100, 100)
-    planner = Planner(PlannerConfig(), _FlakyExtractor(), ws)
+    # An explicit fallback scale: PlannerConfig no longer defaults
+    # mm_per_px, so a cycle with an uncalibrated snapshot and no
+    # configured fallback raises UnknownScale before it reaches the
+    # extractor at all.
+    planner = Planner(PlannerConfig(mm_per_px=0.38), _FlakyExtractor(), ws)
 
     snap = Snapshot(detections=[
         Detection(BBox(0, 0, 50, 50), ClassLabel.CARTRIDGE, 0.9)])
@@ -201,7 +205,7 @@ def test_label_map_is_passed_by_detection_index_not_snapshot_order():
 
     ws = WorkspaceBounds(-100, 100, -100, 100)
     spy = _SpyExtractor()
-    planner = Planner(PlannerConfig(), spy, ws)
+    planner = Planner(PlannerConfig(mm_per_px=0.38), spy, ws)
 
     the_mask = np.full((5, 5), 7, np.int8)
     snap = Snapshot(detections=[
@@ -275,3 +279,158 @@ def test_segmentation_extract_arithmetic_stays_under_the_o3_budget():
 
     assert per_call_ms < 8.0, (
         f"{per_call_ms:.1f} ms per cartridge breaks the O3 budget")
+
+
+# ------------------------------------------------- per-frame mm_per_px ----
+#
+# `mm_per_px` was a config constant while the renderer varied the framing
+# per frame. Over recog/dataset3d_seg the true ground sample distance runs
+# 0.490-1.045 mm/px against the configured 0.625: the planner under-read
+# 24 of 30 cartridges by 27 % at the median (losing 9 cells) and over-read
+# the other 6, reserving a footprint SMALLER than the cell it was about to
+# place. Three of 17 placements landed on ground-truth non-floor material,
+# worst 21.2 %. See docs/superpowers/specs/2026-08-11-scale-calibration.md.
+#
+# These tests exist so the constant cannot come back.
+
+
+def _scaled_planner(config_fallback):
+    """A planner whose ONLY possible scale is the one the frame supplies.
+
+    `config_fallback=None` is load-bearing: if any code path reached for
+    a configured constant instead of the snapshot's own calibration, it
+    would find nothing and raise, so these tests cannot pass by accident
+    on a planner that ignores the frame.
+    """
+    cfg = PlannerConfig(battery_width_mm=18.5, battery_length_mm=65.0,
+                        mm_per_px=config_fallback)
+    ext = PlacementAreaExtractor(safety_margin_px=3, mm_per_cell=1.5)
+    return Planner(cfg, ext, WorkspaceBounds(-350, 350, -350, 350))
+
+
+def test_planner_measures_each_frame_at_that_frames_own_scale():
+    """THE regression test for the calibration defect.
+
+    The same pixels, planned twice at two different frame calibrations,
+    must give two different answers in millimetres. A planner that read a
+    constant would give the same answer both times - which is exactly what
+    it did, on a corpus where no two frames share a scale.
+    """
+    img = _synth_image()
+    # Enough loose batteries that the CARTRIDGE is what limits the queue.
+    # The queue is capped by available batteries (PPR 5.3), so too few
+    # would make both frames report the same number for a reason that has
+    # nothing to do with scale.
+    coarse = _snapshot_with_cart_and_batteries([(80, 80)] * 60)
+    coarse.mm_per_px = 0.50
+    fine = _snapshot_with_cart_and_batteries([(80, 80)] * 60)
+    fine.mm_per_px = 0.25
+
+    q_coarse = _scaled_planner(None).cycle(coarse, img)
+    q_fine = _scaled_planner(None).cycle(fine, img)
+
+    assert q_coarse, "the coarse frame should plan something"
+    # Halving mm_per_px halves how many millimetres those same pixels
+    # span, so the SAME cartridge holds fewer 18.5 x 65 mm cells.
+    assert len(q_fine) < len(q_coarse), (
+        f"{len(q_fine)} at 0.25 mm/px vs {len(q_coarse)} at 0.50 - the "
+        "planner is not using the frame's scale")
+    # And the workspace millimetres differ, not merely the count.
+    assert q_fine[0].place.x_mm != q_coarse[0].place.x_mm
+
+
+def test_the_frames_scale_beats_a_configured_fallback():
+    """A fallback exists for frames that carry no calibration. It must not
+    override one that does - that ordering is the whole fix."""
+    img = _synth_image()
+    snap = _snapshot_with_cart_and_batteries([(80, 80)] * 12)
+    snap.mm_per_px = 0.25
+
+    from_frame = _scaled_planner(0.50).cycle(snap, img)
+    from_fallback = _scaled_planner(0.25).cycle(
+        _snapshot_with_cart_and_batteries([(80, 80)] * 12), img)
+
+    assert len(from_frame) == len(from_fallback)
+    assert from_frame[0].place.x_mm == pytest.approx(
+        from_fallback[0].place.x_mm)
+
+
+def test_an_uncalibrated_frame_with_no_fallback_raises():
+    """Silent degradation is this project's characteristic failure. An
+    unknown scale is a configuration error and reads as one, rather than
+    quietly producing millimetres nobody can trace."""
+    from plan.placement_area import UnknownScale
+
+    snap = _snapshot_with_cart_and_batteries([(80, 80)])
+    assert snap.mm_per_px is None
+    with pytest.raises(UnknownScale, match="mm_per_px"):
+        _scaled_planner(None).cycle(snap, _synth_image())
+
+
+def test_a_configured_fallback_covers_a_frame_that_carries_no_scale():
+    """The real-camera case: one lens, one working distance, one GSD,
+    measured once and configured. It must still work."""
+    snap = _snapshot_with_cart_and_batteries([(80, 80)] * 4)
+    planner = _scaled_planner(0.38)
+    assert planner.cycle(snap, _synth_image())
+    ctg = next(iter(planner.env.cartridges.values()))
+    assert ctg.mm_per_px == 0.38
+
+
+def test_the_cartridge_records_the_scale_its_rectangle_was_measured_at():
+    """`placeable_rectangle` is in pixels and the twin outlives the frame,
+    so the scale has to travel with it."""
+    snap = _snapshot_with_cart_and_batteries([(80, 80)] * 4)
+    snap.mm_per_px = 0.42
+    planner = _scaled_planner(None)
+    planner.cycle(snap, _synth_image())
+
+    ctg = next(iter(planner.env.cartridges.values()))
+    assert ctg.placeable_rectangle is not None
+    assert ctg.mm_per_px == 0.42
+
+
+def test_a_cached_area_is_dropped_when_the_frames_scale_changes():
+    """Cartridges persist across frames by IoU and carry their occupancy
+    with them. If the scale moves, those pixels no longer mean the
+    millimetres they were measured to mean - packing them against the new
+    number would re-introduce the same defect by a different route."""
+    img = _synth_image()
+    planner = _scaled_planner(None)
+
+    first = _snapshot_with_cart_and_batteries([(80, 80)] * 12)
+    first.mm_per_px = 0.50
+    planner.cycle(first, img)
+    ctg_id = next(iter(planner.env.cartridges))
+    assert planner.env.cartridges[ctg_id].mm_per_px == 0.50
+    assert planner.rescaled_area_drop_count == 0
+
+    # Same cartridge box -> IoU-matched to the same twin entity, but the
+    # camera has been re-calibrated under it.
+    second = _snapshot_with_cart_and_batteries([(80, 80)] * 12)
+    second.mm_per_px = 0.25
+    planner.cycle(second, img)
+
+    assert planner.rescaled_area_drop_count == 1
+    assert planner.env.cartridges[ctg_id].mm_per_px == 0.25
+
+
+def test_an_unchanged_scale_does_not_drop_anything():
+    """The fixed-mount case must not thrash: same scale, same area,
+    re-extraction never happens and the counter stays 0."""
+    img = _synth_image()
+    planner = _scaled_planner(None)
+    for _ in range(3):
+        snap = _snapshot_with_cart_and_batteries([(80, 80)] * 12)
+        snap.mm_per_px = 0.38
+        planner.cycle(snap, img)
+    assert planner.rescaled_area_drop_count == 0
+
+
+def test_planner_config_does_not_invent_a_fallback_scale():
+    """An absent `camera.mm_per_px_x` means the camera was not
+    calibrated, not that it is 0.38. The old default silently supplied
+    `planning.yaml`'s placeholder to callers who never chose it."""
+    assert PlannerConfig.from_dict({"camera": {}}).mm_per_px is None
+    assert PlannerConfig.from_dict(
+        {"camera": {"mm_per_px_x": 0.5}}).mm_per_px == 0.5

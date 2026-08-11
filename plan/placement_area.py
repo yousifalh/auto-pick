@@ -64,6 +64,15 @@ class PlacementArea:
     pcb_mask: np.ndarray      # uint8 0/1 mask of excluded PCB region
     occupancy: OccupancyGrid  # rasterised placement grid
     mm_per_cell: float
+    # The scale this area was MEASURED at, millimetres per pixel.
+    # `rectangle` is in pixels and `occupancy` was rasterised against it,
+    # so neither means anything without this number. Returned rather than
+    # left to the caller to remember, because the caller (a persistent
+    # digital twin) may hold the rectangle across frames whose scales
+    # differ - and pairing one frame's rectangle with another frame's
+    # scale is exactly the class of error this field exists to make
+    # impossible to commit silently.
+    mm_per_px: float
     # Segmentation path only; the heuristic path leaves these empty.
     # pcb_mask above is retained and populated with electronics_mask, so
     # plan/planner.py's existing assignment keeps working unchanged.
@@ -71,6 +80,50 @@ class PlacementArea:
     electronics_mask: Optional[np.ndarray] = None
     obstruction_mask: Optional[np.ndarray] = None
     consistency_iou: float = 1.0
+
+
+# ------------------------------------------------------------- scale ----
+
+class UnknownScale(ValueError):
+    """No millimetres-per-pixel is available for this frame.
+
+    Neither the frame's own calibration (``Snapshot.mm_per_px``) nor a
+    deliberately configured fallback (``planning.camera.mm_per_px_x``,
+    or ``mode.mm_per_px``) said how big a pixel is, so every
+    millimetre in the answer would be invented.
+
+    Raised rather than defaulted. This project's characteristic failure
+    is silent degradation: a tau gate documented as retired kept
+    rejecting every cartridge for weeks, and a hardcoded 0.625 mm/px cost
+    9 cells and put 3 placements onto ground-truth non-floor material -
+    both silent, both discovered only by someone re-deriving the number
+    from scratch. An unknown scale is a configuration error and reads as
+    one.
+    """
+
+
+def _resolve_scale(per_frame: Optional[float], fallback: Optional[float],
+                   who: str) -> float:
+    """The scale to measure at: the frame's own, else the fallback.
+
+    The only place that precedence is decided, so the extractor and the
+    planner cannot disagree about which number won.
+    """
+    scale = per_frame if per_frame is not None else fallback
+    if scale is None:
+        raise UnknownScale(
+            f"{who} has no mm_per_px: this frame carries no calibration "
+            f"and none was configured as a fallback. Set "
+            f"planning.camera.mm_per_px_x (or mode.mm_per_px) for a "
+            f"fixed-mount camera, or supply Snapshot.mm_per_px per "
+            f"frame. Refusing to guess - every distance downstream is "
+            f"in millimetres derived from this number.")
+    scale = float(scale)
+    if scale <= 0.0:
+        raise UnknownScale(
+            f"{who} got mm_per_px={scale!r}: a pixel cannot span zero or "
+            f"negative millimetres.")
+    return scale
 
 
 # --------------------------------------------------- shared rasteriser ----
@@ -123,7 +176,7 @@ class HeuristicPlacementAreaExtractor:
         morph_close_ksize: int = 5,
         morph_open_ksize: int = 3,
         mm_per_cell: float = 1.5,
-        mm_per_px: float = 0.38,
+        mm_per_px: Optional[float] = None,
     ) -> None:
         warnings.warn(
             "HeuristicPlacementAreaExtractor assumes a LIGHT tray with a "
@@ -141,7 +194,10 @@ class HeuristicPlacementAreaExtractor:
         self.k_close = int(morph_close_ksize)
         self.k_open = int(morph_open_ksize)
         self.mm_per_cell = float(mm_per_cell)
-        self.mm_per_px = float(mm_per_px)
+        # FALLBACK scale, used only for frames that carry none of their
+        # own. None means there is no fallback and an uncalibrated frame
+        # raises. See UnknownScale.
+        self.mm_per_px = None if mm_per_px is None else float(mm_per_px)
 
     # ---- public entrypoint ---------------------------------------------
 
@@ -150,7 +206,20 @@ class HeuristicPlacementAreaExtractor:
         image_rgb: np.ndarray,
         cartridge_bbox: BBox,
         pcb_template_mask: Optional[np.ndarray] = None,
+        mm_per_px: Optional[float] = None,
     ) -> PlacementArea:
+        """``mm_per_px`` is THIS frame's scale and wins over the fallback.
+
+        Declared even though this extractor's own corpus
+        (``recog/synth_dataset.py``'s flat green rectangles) carries no
+        per-frame calibration: ``plan.planner`` passes the resolved scale
+        to whichever extractor it holds, and a signature that silently
+        refused the kwarg would put the two extractors on different
+        contracts again - the condition ``_accepts_label_map`` exists to
+        work around, which nobody wants a second instance of.
+        """
+        scale = _resolve_scale(mm_per_px, self.mm_per_px,
+                               type(self).__name__)
         height, width = image_rgb.shape[:2]
         x1, y1, x2, y2 = (
             max(0, int(cartridge_bbox.xmin)),
@@ -177,7 +246,8 @@ class HeuristicPlacementAreaExtractor:
             inside, cv2.bitwise_not(pcb.astype(np.uint8)),
         )
 
-        occupancy = self._rasterise(inside, inset_rect)
+        occupancy = _rasterise_mask(
+            inside, inset_rect, self.mm_per_cell, scale)
 
         ix1, iy1, ix2, iy2 = inset_rect
         return PlacementArea(
@@ -186,6 +256,7 @@ class HeuristicPlacementAreaExtractor:
             pcb_mask=pcb,
             occupancy=occupancy,
             mm_per_cell=self.mm_per_cell,
+            mm_per_px=scale,
         )
 
     # ---- pipeline stages -----------------------------------------------
@@ -274,16 +345,6 @@ class HeuristicPlacementAreaExtractor:
                 1, thickness=-1,
             )
         return pcb
-
-    # ---- rasterisation --------------------------------------------------
-
-    def _rasterise(
-        self,
-        inside_mask: np.ndarray,
-        rect: Tuple[int, int, int, int],
-    ) -> OccupancyGrid:
-        return _rasterise_mask(
-            inside_mask, rect, self.mm_per_cell, self.mm_per_px)
 
 
 # Backward-compatible alias: main.py:124 and plan/planner.py import this
@@ -384,29 +445,53 @@ class SegmentationPlacementAreaExtractor:
     ignored, so a caller still passing it fails loudly.
     """
 
-    def __init__(self, mm_per_cell: float = 1.5, mm_per_px: float = 0.625,
+    def __init__(self, mm_per_cell: float = 1.5,
+                 mm_per_px: Optional[float] = None,
                  wall_inset_mm: float = _DEFAULT_WALL_INSET_MM) -> None:
         self.mm_per_cell = float(mm_per_cell)
-        self.mm_per_px = float(mm_per_px)
+        # FALLBACK scale only. It used to default to 0.625 - "this
+        # dataset's actual framing" - and that default was the defect:
+        # no frame in the corpus it named is rendered at that framing,
+        # because recog/synth3d/world.py randomises margin and zoom per
+        # scene. The default is now None, so a caller that forgets to
+        # say how big a pixel is gets UnknownScale instead of a plausible
+        # wrong answer.
+        self.mm_per_px = None if mm_per_px is None else float(mm_per_px)
         self.wall_inset_mm = float(wall_inset_mm)
 
-    @property
-    def wall_inset_px(self) -> int:
-        """Wall thickness in pixels at the CURRENT framing.
+    def wall_inset_px_at(self, mm_per_px: float) -> int:
+        """Wall thickness in pixels at ``mm_per_px``.
 
         Not the old hardcoded safety_margin_px = 5: a fixed pixel inset
-        is wrong at two different camera framings. mm_per_px must be the
-        calibrated scale for the deployed mount, not a config default.
+        is wrong at two different camera framings. It was a `wall_inset_px`
+        PROPERTY reading a constructor constant until 2026-08-11, which
+        was the same mistake one level down - at the corpus's true scales
+        this eroded 6.98 mm of a 4.25 mm wall on the coarsest frames and
+        3.34 mm on the finest. Takes the frame's scale as an argument so
+        there is no stored answer to go stale.
         """
-        return max(0, int(round(self.wall_inset_mm / self.mm_per_px)))
+        scale = _resolve_scale(mm_per_px, self.mm_per_px,
+                               type(self).__name__)
+        return max(0, int(round(self.wall_inset_mm / scale)))
 
     def extract(self, image_rgb: np.ndarray, cartridge_bbox: BBox,
                 pcb_template_mask: Optional[np.ndarray] = None,
-                label_map: Optional[np.ndarray] = None) -> PlacementArea:
+                label_map: Optional[np.ndarray] = None,
+                mm_per_px: Optional[float] = None) -> PlacementArea:
+        """``mm_per_px`` is THIS frame's scale and wins over the fallback.
+
+        It sets both the wall erosion radius and the occupancy grid's
+        pixels-per-cell, so a frame measured at the wrong scale is wrong
+        twice over and in the same direction.
+        """
         from plan.arbitration import (CH_BACKGROUND, CH_ELECTRONICS,
                                       CH_OBSTRUCTION, arbitrate,
                                       centre_component, derived_placement,
                                       direct_placement)
+
+        scale = _resolve_scale(mm_per_px, self.mm_per_px,
+                               type(self).__name__)
+        inset_px = self.wall_inset_px_at(scale)
 
         if label_map is None:
             raise ValueError(
@@ -432,7 +517,7 @@ class SegmentationPlacementAreaExtractor:
                 "warning log for coordinates). A PERCEPTION failure, "
                 "not an empty cartridge.")
 
-        safe, iou = arbitrate(label_map, self.wall_inset_px)
+        safe, iou = arbitrate(label_map, inset_px)
 
         ys, xs = np.nonzero(safe)
         if xs.size == 0:
@@ -450,7 +535,7 @@ class SegmentationPlacementAreaExtractor:
             # to the disagreement counter would drown the interlock it
             # is supposed to be.
             direct = direct_placement(label_map)
-            derived = derived_placement(label_map, self.wall_inset_px)
+            derived = derived_placement(label_map, inset_px)
             if not direct.any() and not derived.any():
                 raise RuntimeError(
                     "no placeable area in this cartridge: both "
@@ -470,7 +555,7 @@ class SegmentationPlacementAreaExtractor:
         obstruction = (label_map == CH_OBSTRUCTION).astype(np.uint8)
 
         occupancy = _rasterise_mask(
-            inside, (x0, y0, x1, y1), self.mm_per_cell, self.mm_per_px)
+            inside, (x0, y0, x1, y1), self.mm_per_cell, scale)
 
         ox, oy = int(cartridge_bbox.xmin), int(cartridge_bbox.ymin)
         return PlacementArea(
@@ -479,6 +564,7 @@ class SegmentationPlacementAreaExtractor:
             pcb_mask=electronics,          # backward compatibility
             occupancy=occupancy,
             mm_per_cell=self.mm_per_cell,
+            mm_per_px=scale,
             bay_mask=direct_placement(label_map).astype(np.uint8),
             electronics_mask=electronics,
             obstruction_mask=obstruction,
@@ -493,12 +579,20 @@ def attach_placement_area(
     extractor: PlacementAreaExtractor,
     image_rgb: np.ndarray,
     pcb_template_mask: Optional[np.ndarray] = None,
+    mm_per_px: Optional[float] = None,
 ) -> Cartridge:
-    """Extract the placement area for ``cartridge`` and attach it."""
-    pa = extractor.extract(image_rgb, cartridge.bbox, pcb_template_mask)
+    """Extract the placement area for ``cartridge`` and attach it.
+
+    ``mm_per_px`` is carried onto the cartridge alongside the rectangle
+    it measured, not discarded: the rectangle is in pixels and means
+    nothing without it.
+    """
+    pa = extractor.extract(image_rgb, cartridge.bbox, pcb_template_mask,
+                           mm_per_px=mm_per_px)
     cartridge.placeable_rectangle = pa.rectangle
     cartridge.occupancy = pa.occupancy
     cartridge.pcb_mask = pa.pcb_mask
+    cartridge.mm_per_px = pa.mm_per_px
     return cartridge
 
 
@@ -509,5 +603,6 @@ __all__ = [
     "SegmentationPlacementAreaExtractor",
     "PlacementDisagreement",
     "BadDetectorBox",
+    "UnknownScale",
     "attach_placement_area",
 ]

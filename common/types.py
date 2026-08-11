@@ -134,6 +134,28 @@ class Snapshot:
     # Optional and defaulted: every existing producer and consumer stays
     # valid, and the heuristic extractor ignores it entirely.
     cartridge_masks: dict[int, Any] = field(default_factory=dict)
+    # This frame's ground sample distance, millimetres per pixel, or None
+    # when the frame carries no calibration.
+    #
+    # Scale is a property of the FRAME, not of the configuration. It
+    # crosses the Recognition -> Planning boundary here because this type
+    # IS that boundary and because the planner and its placement-area
+    # extractor must use the SAME number: the extractor turns it into the
+    # cartridge wall's erosion radius, the planner turns the resulting
+    # rectangle into workspace millimetres, and the two disagreeing puts
+    # a cell somewhere neither of them checked.
+    #
+    # It was a config constant until 2026-08-11. On a scale-randomised
+    # corpus that constant under-read 24 of 30 cartridges by 27 % at the
+    # median and OVER-read the rest, so the planner reserved a footprint
+    # smaller than the cell it was about to place - 3 of 17 placements
+    # landed on ground-truth non-floor material, worst 21.2 %
+    # (docs/superpowers/specs/2026-08-11-scale-calibration.md).
+    #
+    # None means UNKNOWN, not "use the default". plan.planner.Planner
+    # falls back to an explicitly configured calibration if there is one
+    # and raises UnknownScale if there is not.
+    mm_per_px: float | None = None
 
     def of(self, label: ClassLabel) -> list[Detection]:
         return [d for d in self.detections if d.label is label]
@@ -143,6 +165,13 @@ class Snapshot:
             "detections": [d.to_dict() for d in self.detections],
             "image_shape": list(self.image_shape),
             "timestamp_ns": int(self.timestamp_ns),
+            # Emitted even when None. A log line that omits the frame's
+            # calibration cannot distinguish "measured at 0.86 mm/px"
+            # from "measured at whatever the config said", and telling
+            # those apart after the fact is the entire point of the
+            # field.
+            "mm_per_px": (None if self.mm_per_px is None
+                          else float(self.mm_per_px)),
             # Shape only. to_dict feeds logging and regression fixtures;
             # embedding a full label map per cartridge would make every
             # log line enormous and every fixture unreadable.

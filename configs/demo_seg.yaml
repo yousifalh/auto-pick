@@ -41,24 +41,29 @@ mode:
   # live.
   img_dir: recog/dataset3d_seg/images
 
-  # Overrides configs/planning.yaml's camera.mm_per_px_x, which is a
-  # placeholder ("Replace with real intrinsics when available") for a
-  # camera that does not exist yet. 0.625 is this dataset's actual
-  # framing: layout.area[0] * 1000 / render.res[0] from
-  # recog/dataset3d_seg/manifest.json, the frozen copy of the generator
-  # config these images were rendered under
-  # (recog.seg_evaluate.resolve_mm_per_px computes it). The same figure
-  # docs/receipts/seg_ablation.txt reports.
+  # FALLBACK ONLY. Every frame in recog/dataset3d_seg carries its own
+  # ground sample distance in recog/dataset3d_seg/meta/<frame>.json as
+  # camera.ortho_scale, and main._synthetic_source reads it per frame
+  # (recog.calibration.frame_mm_per_px_for_image). That per-frame number
+  # is what the planner and the extractor actually use; this value
+  # applies only to a frame that carries no sidecar at all.
   #
-  # It applies to the planner AND the extractor together - the extractor
-  # turns it into the cartridge wall's erosion radius in pixels, the
-  # planner turns placement rectangles into workspace millimetres, and
-  # the two disagreeing would put cells in the wrong place. Measured
-  # effect of getting it wrong here: at the placeholder 0.38 the erosion
-  # is 11 px instead of 7. That used to matter enormously, because the
-  # extra erosion dropped every arbitration IoU below tau and the gate
-  # then discarded all 8 plannable cartridges; with the gate retired
-  # (FDR v3 13.2.1) both scales yield the same 8.
+  # It used to be the ONLY scale, and it was wrong. 0.625 is
+  # layout.area[0] * 1000 / render.res[0] - the framing at margin 1.0,
+  # zoom 1.0 - and recog/synth3d/world.py:setup_camera draws margin from
+  # [1.02, 1.10] and zoom from param_space.zoom = [0.75, 1.6], so NO
+  # frame in this dataset is rendered at it. The true GSD runs
+  # 0.490-1.045 mm/px, median 0.858. Planning all 30 cartridges at 0.625
+  # under-read 24 of them by 27 % at the median (9 cells lost) and
+  # over-read the other 6, which is the unsafe direction: the planner
+  # reserved a footprint smaller than the cell it was placing, and 3 of
+  # 17 placements landed on ground-truth non-floor material, worst
+  # 21.2 %. See docs/superpowers/specs/2026-08-11-scale-calibration.md
+  # and 2026-08-11-placement-feasibility.md section 1.1.
+  #
+  # Kept as a fallback rather than deleted because a real fixed-mount
+  # camera IS a single calibrated scale and would supply exactly this.
+  # Delete the key to make an uncalibrated frame raise instead.
   mm_per_px: 0.625
 
   # PRESENCE of this block is what selects the segmentation path:

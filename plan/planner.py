@@ -31,6 +31,8 @@ from plan.placement_area import (
     BadDetectorBox,
     PlacementAreaExtractor,
     PlacementDisagreement,
+    UnknownScale,
+    _resolve_scale,
 )
 from plan.scene import (
     Battery,
@@ -49,7 +51,18 @@ class PlannerConfig:
 
     battery_width_mm: float = 18.5
     battery_length_mm: float = 65.0
-    mm_per_px: float = 0.38
+    # FALLBACK calibration, millimetres per pixel, for frames that carry
+    # none of their own - which is what a real fixed-mount camera is:
+    # one lens, one working distance, one GSD, measured once. It is NOT
+    # the scale to use when the frame states its own; see
+    # `Planner.frame_scale`.
+    #
+    # None means no fallback was configured, and an uncalibrated frame
+    # then raises UnknownScale rather than silently adopting a number
+    # nobody chose. The old default was 0.38 - `planning.yaml`'s
+    # placeholder, marked "Replace with real intrinsics when available" -
+    # which meant a caller who never set it got millimetres anyway.
+    mm_per_px: Optional[float] = None
     origin_offset_x_mm: float = 0.0
     origin_offset_y_mm: float = 0.0
     pick_approach_height_mm: float = 60.0
@@ -61,10 +74,14 @@ class PlannerConfig:
         battery = cfg.get("battery", {}) or {}
         camera = cfg.get("camera", {}) or {}
         motion = cfg.get("motion", {}) or {}
+        raw_scale = camera.get("mm_per_px_x")
         return cls(
             battery_width_mm=float(battery.get("diameter_mm", 18.5)),
             battery_length_mm=float(battery.get("length_mm", 65.0)),
-            mm_per_px=float(camera.get("mm_per_px_x", 0.38)),
+            # Absent key -> no fallback, not a default. A config that
+            # says nothing about the camera scale has not calibrated the
+            # camera.
+            mm_per_px=None if raw_scale is None else float(raw_scale),
             origin_offset_x_mm=float(camera.get("origin_offset_x_mm", 0.0)),
             origin_offset_y_mm=float(camera.get("origin_offset_y_mm", 0.0)),
             pick_approach_height_mm=float(
@@ -131,8 +148,29 @@ class Planner:
         # suddenly all full.
         self.placement_disagreement_count = 0
         self.bad_detector_box_count = 0
+        # Placement areas discarded because the frame's scale changed
+        # under them. Expected to stay 0 on a fixed-mount camera; a
+        # non-zero count on real hardware means the calibration is
+        # moving, which is worth seeing rather than absorbing.
+        self.rescaled_area_drop_count = 0
 
     # ---- main cycle -----------------------------------------------------
+
+    def frame_scale(self, snapshot: Snapshot) -> float:
+        """Millimetres per pixel for ``snapshot``'s frame.
+
+        The frame's own calibration wins; the configured fallback stands
+        in for frames that carry none; an unknown scale raises
+        :class:`UnknownScale` rather than defaulting.
+
+        Resolved ONCE per cycle and handed to everything that needs it,
+        rather than looked up independently by the extractor and the
+        planner. Those two used to hold separate copies of the same
+        constant and ``main._build_planner`` had to keep them in step by
+        hand; one resolution point makes them agree by construction.
+        """
+        return _resolve_scale(snapshot.mm_per_px, self.cfg.mm_per_px,
+                              type(self).__name__)
 
     def cycle(
         self,
@@ -140,10 +178,12 @@ class Planner:
         image_rgb: Optional[np.ndarray],
     ) -> List[PickPlacePose]:
         """Run one planning cycle and return a freshly built queue."""
+        scale = self.frame_scale(snapshot)
         self.env.update_from_snapshot(snapshot)
+        self._drop_areas_measured_at_another_scale(scale)
 
         if image_rgb is not None:
-            self._ensure_placement_areas(image_rgb, snapshot)
+            self._ensure_placement_areas(image_rgb, snapshot, scale)
 
         queue: List[PickPlacePose] = []
         available: List[Battery] = list(self.env.available_batteries())
@@ -159,16 +199,49 @@ class Planner:
                 if not available:
                     return queue
 
-                queue.append(self._build_pose(ctg, p, available))
+                queue.append(self._build_pose(ctg, p, available, scale))
 
         return queue
+
+    def _drop_areas_measured_at_another_scale(self, scale: float) -> None:
+        """Forget any placement area measured at a different scale.
+
+        Cartridges are persistent across frames (``plan.scene``'s module
+        docstring) and their ``placeable_rectangle`` / ``occupancy`` are
+        in PIXELS. If the frame's scale changes, those pixels no longer
+        mean the millimetres they were measured to mean, and packing them
+        against the new scale would silently mis-size every cell - the
+        same class of error as the constant this replaced, arriving by a
+        different route.
+
+        On a real fixed-mount camera the scale never changes and this
+        never fires. It fires on a scale-randomised corpus, where a
+        persisting match across two unrelated renders was already
+        carrying one scene's rectangle into another.
+        """
+        for ctg in self.env.cartridges.values():
+            if ctg.placeable_rectangle is None:
+                continue
+            if ctg.mm_per_px is not None and ctg.mm_per_px == scale:
+                continue
+            self.rescaled_area_drop_count += 1
+            ctg.placeable_rectangle = None
+            ctg.occupancy = None
+            ctg.pcb_mask = None
+            ctg.mm_per_px = None
 
     # ---- placement-area extraction --------------------------------------
 
     def _ensure_placement_areas(
         self, image_rgb: np.ndarray, snapshot: Optional[Snapshot] = None,
+        mm_per_px: Optional[float] = None,
     ) -> None:
         """Fill in the placement rectangle / occupancy for new cartridges.
+
+        ``mm_per_px`` is the scale ``cycle`` resolved for this frame and
+        is passed to every extractor call. It is also recorded on the
+        cartridge, because the rectangle it produces is in pixels and the
+        twin outlives the frame.
 
         When ``snapshot`` carries a label map for a cartridge
         (``Snapshot.cartridge_masks``, keyed by ``detection_index``) AND
@@ -192,7 +265,16 @@ class Planner:
                         and ctg.detection_index in snapshot.cartridge_masks):
                     kwargs["label_map"] = \
                         snapshot.cartridge_masks[ctg.detection_index]
-                pa = self.extractor.extract(image_rgb, ctg.bbox, **kwargs)
+                pa = self.extractor.extract(
+                    image_rgb, ctg.bbox, mm_per_px=mm_per_px, **kwargs)
+            except UnknownScale:
+                # NOT swallowed by the blanket handler below. An
+                # uncalibrated frame is a configuration error affecting
+                # every cartridge in the run, and "skip and retry next
+                # frame" would retry it forever while reporting a clean
+                # zero - which is the exact shape of the failure this
+                # whole change is repairing.
+                raise
             except BadDetectorBox:
                 # A misaligned detector box - a PERCEPTION failure, not
                 # an empty cartridge. Counted separately from ordinary
@@ -230,13 +312,26 @@ class Planner:
             ctg.placeable_rectangle = pa.rectangle
             ctg.occupancy = pa.occupancy
             ctg.pcb_mask = pa.pcb_mask
+            # From the PlacementArea, not from the local variable: the
+            # extractor is the authority on what it actually measured at,
+            # and reading it back means an extractor that resolved the
+            # scale differently cannot go unnoticed.
+            ctg.mm_per_px = pa.mm_per_px
 
     # ---- FFDH wrapper ---------------------------------------------------
 
     def _pack_cartridge(self, ctg: Cartridge) -> PackResult:
         pr = ctg.placeable_rectangle
-        strip_w_mm = pr.width * self.cfg.mm_per_px
-        strip_h_mm = pr.height * self.cfg.mm_per_px
+        # The cartridge's OWN scale, not the current frame's: this
+        # rectangle is in the pixels of the frame that measured it.
+        # _drop_areas_measured_at_another_scale guarantees they are the
+        # same number whenever both exist, and this reads the one that
+        # is true by construction rather than the one that is true by
+        # convention.
+        scale = _resolve_scale(ctg.mm_per_px, self.cfg.mm_per_px,
+                               f"cartridge {ctg.id}")
+        strip_w_mm = pr.width * scale
+        strip_h_mm = pr.height * scale
 
         # Estimate an upper bound on how many items might fit, with 2x
         # slack so FFDH has enough candidates to saturate the strip.
@@ -278,8 +373,19 @@ class Planner:
         ctg: Cartridge,
         placement,
         available: List[Battery],
+        frame_mm_per_px: float,
     ) -> PickPlacePose:
-        """Turn one FFDH placement into a :class:`PickPlacePose`."""
+        """Turn one FFDH placement into a :class:`PickPlacePose`.
+
+        Two scales, deliberately. The PLACE point comes off the
+        cartridge's rectangle and uses the scale that rectangle was
+        measured at (``ctg.mm_per_px``); the PICK point comes off a loose
+        battery detected in THIS frame and uses this frame's scale. They
+        are the same number on a fixed-mount camera and are only
+        different while a cached area outlives a re-calibration - at
+        which point using one for the other would put the gripper in the
+        wrong place.
+        """
         # Target place point (workspace mm).
         cx_mm = placement.x + placement.width / 2
         cy_mm = placement.y + placement.height / 2
@@ -290,7 +396,8 @@ class Planner:
         available.remove(bat)
         bat.assigned_to_pose = True
 
-        pick_x, pick_y = self._image_to_workspace(bat.bbox.cx, bat.bbox.cy)
+        pick_x, pick_y = self._image_to_workspace(
+            bat.bbox.cx, bat.bbox.cy, frame_mm_per_px)
         row, col = self._xy_mm_to_cell(ctg, placement.x, placement.y)
         ctg.mark_cell(row, col, CellState.PLANNED)
 
@@ -320,13 +427,15 @@ class Planner:
         placement,
     ) -> Battery:
         """Pick the battery nearest to the placement target (squared px)."""
+        scale = _resolve_scale(ctg.mm_per_px, self.cfg.mm_per_px,
+                               f"cartridge {ctg.id}")
         tx = (
             ctg.placeable_rectangle.xmin
-            + (placement.x + placement.width / 2) / self.cfg.mm_per_px
+            + (placement.x + placement.width / 2) / scale
         )
         ty = (
             ctg.placeable_rectangle.ymin
-            + (placement.y + placement.height / 2) / self.cfg.mm_per_px
+            + (placement.y + placement.height / 2) / scale
         )
         return min(
             available,
@@ -334,22 +443,24 @@ class Planner:
         )
 
     def _image_to_workspace(
-        self, px: float, py: float,
+        self, px: float, py: float, mm_per_px: float,
     ) -> Tuple[float, float]:
-        """Map camera pixel → workspace mm using the calibration."""
+        """Map camera pixel → workspace mm at THIS frame's scale."""
         return (
-            px * self.cfg.mm_per_px + self.cfg.origin_offset_x_mm,
-            py * self.cfg.mm_per_px + self.cfg.origin_offset_y_mm,
+            px * mm_per_px + self.cfg.origin_offset_x_mm,
+            py * mm_per_px + self.cfg.origin_offset_y_mm,
         )
 
     def _cell_to_workspace(
         self, ctg: Cartridge, x_mm: float, y_mm: float,
     ) -> Tuple[float, float]:
-        """Cartridge-local mm → workspace mm."""
+        """Cartridge-local mm → workspace mm, at the cartridge's scale."""
         pr = ctg.placeable_rectangle
+        scale = _resolve_scale(ctg.mm_per_px, self.cfg.mm_per_px,
+                               f"cartridge {ctg.id}")
         return (
-            pr.xmin * self.cfg.mm_per_px + x_mm + self.cfg.origin_offset_x_mm,
-            pr.ymin * self.cfg.mm_per_px + y_mm + self.cfg.origin_offset_y_mm,
+            pr.xmin * scale + x_mm + self.cfg.origin_offset_x_mm,
+            pr.ymin * scale + y_mm + self.cfg.origin_offset_y_mm,
         )
 
     def _xy_mm_to_cell(
