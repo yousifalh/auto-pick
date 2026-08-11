@@ -262,7 +262,7 @@ def test_segmentation_extract_arithmetic_stays_under_the_o3_budget():
     label[12:276, 12:119] = CH_BAY
 
     ex = SegmentationPlacementAreaExtractor(
-        mm_per_cell=1.5, mm_per_px=0.625, wall_inset_mm=4.0, tau=0.0)
+        mm_per_cell=1.5, mm_per_px=0.625, wall_inset_mm=4.0)
     img = np.zeros((720, 1280, 3), np.uint8)
     from common.types import BBox
     box = BBox(100, 100, 231, 388)

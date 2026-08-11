@@ -294,12 +294,28 @@ PlacementAreaExtractor = HeuristicPlacementAreaExtractor
 # ---------------------------------------------------- segmentation path ----
 
 class PlacementDisagreement(RuntimeError):
-    """The two placement estimates disagreed beyond tau.
+    """The two placement estimates disagree about a REAL cartridge.
 
     plan/planner.py's _ensure_placement_areas already catches every
     exception and leaves the cartridge unplanned for the cycle, so
     raising is exactly the behaviour wanted: the cartridge is skipped
     and retried next frame.
+
+    NOTHING IN THIS REPOSITORY RAISES THIS CLASS BARE any more. It used
+    to mean "iou < tau"; that gate was measured to be inert and deleted
+    (FDR v3 section 13.2.1), and an empty ``P_safe`` is deliberately NOT
+    re-labelled as a disagreement - on 15 dataset3d_seg frames 18 of 26
+    cartridges have no predicted `bay` at all, and calling that a
+    disagreement would bury the real signal under the ordinary "this
+    cartridge has no visible placement area" case.
+
+    The class is kept, rather than deleted as vestigial API, because it
+    is still READ in three places: :class:`BadDetectorBox` derives from
+    it (so ``except PlacementDisagreement`` catches a bad box),
+    ``plan/planner.py`` catches it and counts it, and it is exported.
+    It is the family name for "perception says this cartridge is not
+    safe to plan, skip and retry" - a subclass, or an out-of-tree
+    extractor, raises it; the base class itself is now only a type.
     """
 
 
@@ -313,8 +329,8 @@ class BadDetectorBox(PlacementDisagreement):
     from a genuinely full cartridge: both reduce to an empty ``P_safe``
     and IoU 0.0, because ``mask_iou`` reports "both estimates empty" as
     maximally disagreeing (0.0) rather than as the trivial agreement it
-    actually is. Checked explicitly, ahead of the tau gate, so the two
-    do not silently collapse into the same signal.
+    actually is. Checked explicitly, before ``arbitrate`` is called at
+    all, so the two do not silently collapse into the same signal.
 
     Subclasses :class:`PlacementDisagreement` on purpose: a plain
     ``except PlacementDisagreement`` still catches it (skip-and-retry is
@@ -350,15 +366,29 @@ class SegmentationPlacementAreaExtractor:
     Does mask arithmetic only. The model runs in Recognition and its
     output arrives on Snapshot.cartridge_masks - FDR O3 caps planning at
     8 ms per cartridge and a DeepLabv3 forward is ~12.6 ms.
+
+    NO ``tau``. ``P_safe = P_direct & P_derived`` is applied
+    unconditionally; the IoU between the two estimates is reported on
+    ``PlacementArea.consistency_iou`` as observability and is not acted
+    on. The gate that used to sit here was measured and retired (FDR v3
+    section 13.2.1, docs/receipts/tau_independence_correlation.txt): the
+    IoU correlates POSITIVELY with placement error in all four cataloged
+    SKUs, raw and area-normalised, which is the wrong sign for a
+    confidence gate. Measured cost of leaving it in, on 15
+    recog/dataset3d_seg frames through the real detector and segmenter:
+    26 cartridge crops, 8 with a predicted bay, of which the gate
+    admitted 3 at tau=0.85/mm_per_px=0.625 and 0 at planning.yaml's own
+    mm_per_px=0.38, against 8 with the gate gone at either scale
+    (docs/superpowers/specs/2026-08-11-segmenter-integration.md). The
+    ``tau`` constructor argument is DELETED rather than accepted and
+    ignored, so a caller still passing it fails loudly.
     """
 
     def __init__(self, mm_per_cell: float = 1.5, mm_per_px: float = 0.625,
-                 wall_inset_mm: float = _DEFAULT_WALL_INSET_MM,
-                 tau: float = 0.85) -> None:
+                 wall_inset_mm: float = _DEFAULT_WALL_INSET_MM) -> None:
         self.mm_per_cell = float(mm_per_cell)
         self.mm_per_px = float(mm_per_px)
         self.wall_inset_mm = float(wall_inset_mm)
-        self.tau = float(tau)
 
     @property
     def wall_inset_px(self) -> int:
@@ -387,9 +417,12 @@ class SegmentationPlacementAreaExtractor:
 
         # Bad-box gate: cartridge material is visible SOMEWHERE in the
         # crop, but not at its centre. See BadDetectorBox's docstring
-        # for why this has to be checked here, ahead of the tau gate,
+        # for why this has to be checked here, ahead of arbitrate(),
         # rather than left for arbitrate() to fold into the same
-        # (empty P_safe, iou 0.0) a full cartridge also produces.
+        # (empty P_safe, iou 0.0) a full cartridge also produces. This
+        # is the one perception check that survives; it is a statement
+        # about WHERE the crop landed, not about how well two estimates
+        # of the same argmax happen to agree.
         has_foreground = bool((label_map != CH_BACKGROUND).any())
         if has_foreground and not centre_component(label_map).any():
             raise BadDetectorBox(
@@ -401,27 +434,33 @@ class SegmentationPlacementAreaExtractor:
 
         safe, iou = arbitrate(label_map, self.wall_inset_px)
 
-        if iou < self.tau:
+        ys, xs = np.nonzero(safe)
+        if xs.size == 0:
+            # P_safe is empty, so there is nothing to plan on either
+            # way - but the two sub-cases are still worth telling apart
+            # in the message, which is the part of the old tau branch
+            # that was never about tau. mask_iou's union == 0 rule
+            # reports "both estimates empty" as 0.0, the same number a
+            # real disagreement produces, so the IoU cannot make this
+            # distinction and the masks have to be re-read.
+            #
+            # NEITHER sub-case raises PlacementDisagreement. "No bay
+            # predicted here" is the ordinary majority case - 18 of 26
+            # cartridges over 15 dataset3d_seg frames - and routing it
+            # to the disagreement counter would drown the interlock it
+            # is supposed to be.
             direct = direct_placement(label_map)
             derived = derived_placement(label_map, self.wall_inset_px)
             if not direct.any() and not derived.any():
-                # Both independent estimates agree there is nothing
-                # here. mask_iou's union == 0 rule reports that as 0.0,
-                # same as a real disagreement, but two empty sets are
-                # not a disagreement - this is a normal, expected "the
-                # cartridge is full" state and must not be counted as
-                # one.
                 raise RuntimeError(
                     "no placeable area in this cartridge: both "
                     "placement estimates are empty (the cartridge may "
                     "simply be full)")
-            raise PlacementDisagreement(
-                f"placement estimates disagree: IoU {iou:.3f} < "
-                f"tau {self.tau:.3f}")
-
-        ys, xs = np.nonzero(safe)
-        if xs.size == 0:
-            raise RuntimeError("no placeable area in this cartridge")
+            raise RuntimeError(
+                f"no placeable area in this cartridge: P_direct "
+                f"({int(direct.sum())} px) and P_derived "
+                f"({int(derived.sum())} px) do not overlap "
+                f"(IoU {iou:.3f})")
 
         x0, y0 = int(xs.min()), int(ys.min())
         x1, y1 = int(xs.max()) + 1, int(ys.max()) + 1

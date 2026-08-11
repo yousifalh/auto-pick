@@ -8,8 +8,14 @@ disagree.
 
 The planner consumes their INTERSECTION. The asymmetry is deliberate:
 siting a cell on a PCB is a damage event, whereas skipping a cartridge
-costs one cycle. Their IoU is the confidence signal that says how much
-to trust the frame at all.
+costs one cycle.
+
+Their IoU is NOT a confidence signal and nothing gates on it. It was
+measured to correlate with placement error in the wrong direction in
+all four cataloged SKUs and retired - see `derived_placement`'s
+docstring for the mechanism, FDR v3 section 13.2.1 for the numbers. It
+is still computed and reported (`PlacementArea.consistency_iou`) as
+observability; treat it as a diagnostic, never as a permission.
 
 Pure NumPy and cv2. No torch: this runs inside the planning cycle, which
 FDR O3 caps at 8 ms per cartridge.
@@ -150,9 +156,10 @@ def arbitrate(label_map: np.ndarray,
     """``(P_safe, iou)``.
 
     ``P_safe`` is the intersection: a pixel is placeable only where both
-    estimates agree. ``iou`` is the per-cartridge confidence the caller
-    gates on - see plan.placement_area and the calibrated threshold in
-    docs/receipts/tau_calibration.txt.
+    estimates agree, and it is applied unconditionally. ``iou`` is
+    returned for reporting only - no caller gates on it (the threshold
+    in docs/receipts/tau_calibration.txt is retired; see this module's
+    docstring).
     """
     direct = direct_placement(label_map)
     derived = derived_placement(label_map, wall_inset_px)

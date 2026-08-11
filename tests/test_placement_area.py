@@ -116,7 +116,7 @@ def test_segmentation_extractor_produces_the_same_contract():
     label[12:68, 12:48] = CH_BAY
 
     ex = SegmentationPlacementAreaExtractor(
-        mm_per_cell=1.5, mm_per_px=0.625, wall_inset_mm=4.0, tau=0.0)
+        mm_per_cell=1.5, mm_per_px=0.625, wall_inset_mm=4.0)
     pa = ex.extract(np.zeros((200, 200, 3), np.uint8),
                     BBox(20, 30, 80, 110), label_map=label)
 
@@ -143,7 +143,7 @@ def test_rectangle_is_in_full_image_coordinates():
     label[12:68, 12:48] = CH_BAY
 
     ex = SegmentationPlacementAreaExtractor(
-        mm_per_cell=1.5, mm_per_px=0.625, wall_inset_mm=0.0, tau=0.0)
+        mm_per_cell=1.5, mm_per_px=0.625, wall_inset_mm=0.0)
     pa = ex.extract(np.zeros((200, 200, 3), np.uint8),
                     BBox(20, 30, 80, 110), label_map=label)
 
@@ -151,25 +151,69 @@ def test_rectangle_is_in_full_image_coordinates():
     assert pa.rectangle.xmax <= 80 and pa.rectangle.ymax <= 110
 
 
-def test_low_agreement_raises_so_the_planner_skips_the_cartridge():
+def test_low_agreement_is_planned_anyway_the_tau_gate_is_retired():
+    """The inverse of the test this replaces.
+
+    This label map is the old gate's own fixture: most of the predicted
+    `bay` is really electronics, so the two estimates agree over well
+    under half their union (measured IoU ~0.43 here) - comfortably
+    below every tau this repo ever quoted (0.85 / 0.7492 / 0.5715), and
+    it used to raise PlacementDisagreement.
+
+    It must now plan. The IoU is measured to correlate with placement
+    error in the WRONG direction (FDR v3 section 13.2.1), so refusing
+    on it discarded good cartridges for no safety return - 5 of 8 on
+    real frames. What still protects the cell is P_safe: the electronics
+    are excluded from the returned area by the INTERSECTION, which this
+    test also pins, so "the gate is gone" cannot quietly become
+    "the exclusion is gone".
+    """
     import numpy as np
-    import pytest
 
     from common.types import BBox
-    from plan.arbitration import CH_BAY, CH_CARTRIDGE, CH_ELECTRONICS
-    from plan.placement_area import (PlacementDisagreement,
-                                     SegmentationPlacementAreaExtractor)
+    from plan.arbitration import (CH_BAY, CH_CARTRIDGE, CH_ELECTRONICS,
+                                  arbitrate)
+    from plan.placement_area import SegmentationPlacementAreaExtractor
 
     label = np.zeros((80, 60), np.int8)
     label[5:75, 5:55] = CH_CARTRIDGE
     label[12:68, 12:48] = CH_BAY
     label[12:50, 12:48] = CH_ELECTRONICS      # most of "bay" is really PCB
 
+    _safe, iou = arbitrate(label, 0)
+    assert iou < 0.5715, (
+        "fixture no longer exercises a low-agreement cartridge - it has "
+        "to sit below every tau this repo ever quoted for the test to "
+        "mean anything")
+
     ex = SegmentationPlacementAreaExtractor(
-        mm_per_cell=1.5, mm_per_px=0.625, wall_inset_mm=0.0, tau=0.95)
-    with pytest.raises(PlacementDisagreement):
-        ex.extract(np.zeros((200, 200, 3), np.uint8),
-                   BBox(20, 30, 80, 110), label_map=label)
+        mm_per_cell=1.5, mm_per_px=0.625, wall_inset_mm=0.0)
+    pa = ex.extract(np.zeros((200, 200, 3), np.uint8),
+                    BBox(20, 30, 80, 110), label_map=label)
+
+    assert pa.inside_mask.any(), "a low-IoU cartridge must still plan"
+    assert pa.consistency_iou == iou, (
+        "the IoU must still be REPORTED - it is retired as a gate, not "
+        "as observability")
+    # P_safe is load-bearing and stays: no pixel the segmenter called
+    # electronics may end up inside the placeable area.
+    assert not (pa.inside_mask.astype(bool)
+                & (label == CH_ELECTRONICS)).any()
+
+
+def test_tau_is_gone_from_the_constructor_not_silently_ignored():
+    """Passing the retired argument must fail loudly.
+
+    A constructor that accepted `tau=` and did nothing with it is the
+    exact failure this whole change is repairing: a decision that lives
+    in prose while the behaviour continues underneath.
+    """
+    import pytest
+
+    from plan.placement_area import SegmentationPlacementAreaExtractor
+
+    with pytest.raises(TypeError, match="tau"):
+        SegmentationPlacementAreaExtractor(mm_per_px=0.625, tau=0.85)
 
 
 def test_missing_label_map_raises_rather_than_silently_degrading():
@@ -180,7 +224,7 @@ def test_missing_label_map_raises_rather_than_silently_degrading():
     from plan.placement_area import SegmentationPlacementAreaExtractor
 
     ex = SegmentationPlacementAreaExtractor(
-        mm_per_cell=1.5, mm_per_px=0.625, wall_inset_mm=4.0, tau=0.0)
+        mm_per_cell=1.5, mm_per_px=0.625, wall_inset_mm=4.0)
     with pytest.raises(ValueError, match="label_map"):
         ex.extract(np.zeros((200, 200, 3), np.uint8), BBox(0, 0, 40, 40))
 
@@ -215,7 +259,7 @@ def test_bad_detector_box_is_distinguished_from_a_disagreement():
     label[0:20, 0:20] = CH_BAY  # a neighbour's bay, in frame but off-centre
 
     ex = SegmentationPlacementAreaExtractor(
-        mm_per_cell=1.5, mm_per_px=0.625, wall_inset_mm=0.0, tau=0.85)
+        mm_per_cell=1.5, mm_per_px=0.625, wall_inset_mm=0.0)
     with pytest.raises(BadDetectorBox):
         ex.extract(np.zeros((200, 200, 3), np.uint8),
                    BBox(20, 30, 80, 90), label_map=label)
@@ -245,7 +289,7 @@ def test_a_full_cartridge_does_not_raise_placement_disagreement():
     label[12:68, 12:48] = CH_BATTERY   # every cell position already full
 
     ex = SegmentationPlacementAreaExtractor(
-        mm_per_cell=1.5, mm_per_px=0.625, wall_inset_mm=0.0, tau=0.85)
+        mm_per_cell=1.5, mm_per_px=0.625, wall_inset_mm=0.0)
     with pytest.raises(RuntimeError) as excinfo:
         ex.extract(np.zeros((200, 200, 3), np.uint8),
                    BBox(20, 30, 80, 110), label_map=label)

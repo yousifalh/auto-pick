@@ -203,10 +203,21 @@ class Planner:
                 self.bad_detector_box_count += 1
                 continue
             except PlacementDisagreement:
-                # The two placement estimates disagree beyond tau on a
-                # real cartridge. Rate is observable via the counter -
+                # The extractor judged this a real cartridge it is not
+                # safe to plan on. Rate is observable via the counter -
                 # a safety interlock that fires invisibly is not a
                 # safety interlock.
+                #
+                # In-tree this branch is currently unreachable: the tau
+                # gate that used to raise the bare class is retired
+                # (FDR v3 section 13.2.1) and BadDetectorBox, its only
+                # remaining subclass, is caught above. Kept because the
+                # base class is the documented extension point for an
+                # extractor that has a real reason to refuse - deleting
+                # it would move that decision into the blanket
+                # `except Exception` below, where it stops being
+                # counted at all. The counter reading 0 forever is
+                # therefore the honest number, not a broken one.
                 self.placement_disagreement_count += 1
                 continue
             except Exception:

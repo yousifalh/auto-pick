@@ -278,11 +278,14 @@ def _segmenter_fraction(segmenter, image: np.ndarray,
                         ) -> Tuple[float, str]:
     """``(placeable_fraction, note)`` for one cartridge ROI.
 
-    tau=0 so nothing is skipped on disagreement - every cartridge is
-    scored, matching the brief: "the comparison covers every cartridge."
-    A cartridge can still fail with no placeable area at all (both
-    estimates empty), which is scored as fraction 0.0 with a note, not
-    silently dropped from the summary.
+    Nothing is skipped on disagreement - every cartridge is scored,
+    matching the brief: "the comparison covers every cartridge." That
+    used to need an explicit tau=0; the tau gate is now retired from
+    the extractor entirely (FDR v3 section 13.2.1), so the default
+    behaviour is already the one this measurement wants. A cartridge
+    can still fail with no placeable area at all (both estimates
+    empty), which is scored as fraction 0.0 with a note, not silently
+    dropped from the summary.
     """
     from plan.placement_area import SegmentationPlacementAreaExtractor
 
@@ -297,7 +300,7 @@ def _segmenter_fraction(segmenter, image: np.ndarray,
     label_map = segmenter.segment(crop)
 
     extractor = SegmentationPlacementAreaExtractor(
-        mm_per_px=mm_per_px_estimate, wall_inset_mm=wall_inset_mm, tau=0.0)
+        mm_per_px=mm_per_px_estimate, wall_inset_mm=wall_inset_mm)
     try:
         pa = extractor.extract(image, BBox(x0, y0, x1, y1), label_map=label_map)
     except (ValueError, RuntimeError) as exc:

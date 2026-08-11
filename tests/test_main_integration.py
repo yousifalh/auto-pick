@@ -73,17 +73,20 @@ def test_full_cycle_with_a_stub_segmenter_attaches_masks_and_plans():
     A stub segmenter stands in for recog.bay_segmenter.BaySegmenter
     (same segment_batch(crops) -> List[np.ndarray] contract). Two
     cartridges are in frame: one whose direct/derived estimates agree
-    (IoU ~0.97, comfortably above tau) and one engineered to disagree
-    below tau (bay predicted over only half the interior, IoU ~0.44).
+    (IoU ~0.97) and one where the bay is predicted over only the left
+    half of the interior (IoU ~0.44).
 
-    Asserts three things per the brief:
+    Asserts:
     * Snapshot.cartridge_masks is populated by attach_cartridge_masks
       (the Recognition-side batching from Task 5);
     * the planner produces a non-empty queue;
-    * the disagreeing cartridge is skipped via PlacementDisagreement -
-      counted on the planner, not silently absorbed by the blanket
-      `except Exception` a crash would also hit - so this fails if the
-      skip stops actually happening, not just if the cycle raises.
+    * BOTH cartridges are planned. The second one used to be discarded
+      by the tau gate; that gate is retired (FDR v3 section 13.2.1) and
+      the low-IoU cartridge is a perfectly good one. Its placement area
+      is still confined to where the bay was actually predicted, which
+      is P_safe doing the work the gate was mistakenly credited with;
+    * neither planner skip-counter fires, so a cartridge silently
+      vanishing into the blanket `except Exception` still fails here.
     """
     import numpy as np
 
@@ -101,8 +104,9 @@ def test_full_cycle_with_a_stub_segmenter_attaches_masks_and_plans():
     agrees[12:276, 12:119] = CH_BAY
 
     # Cartridge B: the bay channel only covers the left half of the
-    # interior, so direct and derived disagree well below tau (measured
-    # IoU ~0.44 at wall_inset_mm=4.0, mm_per_px=0.625).
+    # interior, so direct and derived agree over only ~44% of their
+    # union at wall_inset_mm=4.0, mm_per_px=0.625 - under every tau this
+    # repo ever quoted.
     disagrees = np.zeros((288, 131), np.int8)
     disagrees[5:283, 5:126] = CH_CARTRIDGE
     disagrees[12:276, 12:60] = CH_BAY
@@ -135,7 +139,7 @@ def test_full_cycle_with_a_stub_segmenter_attaches_masks_and_plans():
     cfg = PlannerConfig(
         battery_width_mm=18.5, battery_length_mm=65.0, mm_per_px=0.625)
     extractor = SegmentationPlacementAreaExtractor(
-        mm_per_cell=1.5, mm_per_px=0.625, wall_inset_mm=4.0, tau=0.85)
+        mm_per_cell=1.5, mm_per_px=0.625, wall_inset_mm=4.0)
     workspace = WorkspaceBounds(-1000, 1000, -1000, 1000)
     planner = Planner(cfg, extractor, workspace)
 
@@ -143,16 +147,22 @@ def test_full_cycle_with_a_stub_segmenter_attaches_masks_and_plans():
 
     assert len(queue) >= 1, "the planner must produce a queue"
 
-    # Direct signal, not a battery-count coincidence: cartridge 0 got a
-    # placement area (was planned), cartridge 1's stayed None because
-    # _ensure_placement_areas caught PlacementDisagreement and skipped
-    # it. Checking the queue's cartridge_id composition alone would not
-    # discriminate this from "cartridge 1 just ran out of batteries" -
-    # both cartridges share one pool and cartridge 0 is processed first.
+    # Direct signal, not a battery-count coincidence: both cartridges
+    # got a placement area. Checking the queue's cartridge_id
+    # composition alone would not discriminate this from "cartridge 1
+    # just ran out of batteries" - both cartridges share one pool and
+    # cartridge 0 is processed first.
     assert planner.env.cartridge(0).placeable_rectangle is not None
-    assert planner.env.cartridge(1).placeable_rectangle is None, (
-        "the disagreeing cartridge must be skipped, not planned")
-    assert planner.placement_disagreement_count == 1, (
-        "the disagreeing cartridge must be skipped via "
-        "PlacementDisagreement, not silently dropped some other way")
+    assert planner.env.cartridge(1).placeable_rectangle is not None, (
+        "the low-agreement cartridge must be planned - the tau gate "
+        "that used to discard it is retired")
+    assert planner.placement_disagreement_count == 0
     assert planner.bad_detector_box_count == 0
+
+    # ...but only over the half of the interior the segmenter actually
+    # called `bay`. P_safe is what confines it, and it is still applied.
+    wide = planner.env.cartridge(0).placeable_rectangle
+    narrow = planner.env.cartridge(1).placeable_rectangle
+    assert narrow.width < 0.6 * wide.width, (
+        "P_safe must still confine the placement area to the predicted "
+        "bay - removing the tau gate must not remove the intersection")
