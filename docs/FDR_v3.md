@@ -1068,9 +1068,23 @@ Every way the new path could no-op therefore raises instead, including
 a completed run that produced zero placement areas.
 `configs/demo_seg.yaml` is the shipped instance, and
 `docs/receipts/main_seg_run.txt` is its tooling-generated receipt: **26
-cartridges detected → 26 segmented → 8 placement areas → 1
-pick-and-place**, at `mm_per_px: 0.625` (this dataset's true framing,
-overriding `planning.yaml`'s 0.38 placeholder). That receipt is
+cartridges detected → 26 segmented → 8 placement areas → 7 poses
+queued → 3 pick-and-places over 15 frames**, with every frame planned
+at its own ground sample distance read from that frame's render
+sidecar (15 of 15 frames carried one).
+
+**Both of those were corrected on 2026-08-11 and the superseded
+wording is worth naming.** This paragraph previously read *1
+pick-and-place* — a figure that predated the packing fix at `d6c46ac`
+— and *at `mm_per_px: 0.625` (this dataset's true framing)*. The
+second is the substantive correction: 0.625 is the generator's framing
+at `margin = 1.0, zoom = 1.0`, and `recog/synth3d/world.py` randomises
+both per scene, so **no frame in this corpus is rendered at it** — the
+true ground sample distance runs 0.49–1.09 mm/px. It survives in
+`configs/demo_seg.yaml` only as the declared fallback for frames that
+carry no sidecar, and `planning.yaml`'s 0.38 remains the placeholder
+for an uncalibrated camera. See §13.2.1 and
+`docs/superpowers/specs/2026-08-11-scale-calibration.md`. That receipt is
 evidence that the *wiring* works end to end; it is not a generalisation
 measurement, because those frames are the segmenter's own training
 corpus — §13.1.1 and `docs/receipts/seg_eval_*_on_cad_test.txt` are
@@ -1965,22 +1979,56 @@ proposal was a Mask R-CNN head on the existing backbone. It is now a
 detector followed by a *per-ROI semantic segmenter* (DeepLabv3 +
 MobileNetV3-Large, 256² crops, fp16). torchvision's
 `MaskRCNNPredictor` emits 28 × 28 per instance by default, upsampled
-to the instance box; at the generator's framing (1280 px across an
-800 mm layout, 0.625 mm/px) a PowerCore26800 cartridge occupies
-roughly 131 × 288 px, so one mask cell covers **2.9 × 6.4 mm**.
-Against an 18.3 mm cell diameter, the 6.4 mm axis is a third of a
-cell — and "does the last cell fit" is exactly the decision at stake.
-Measured mean boundary displacement of the per-ROI segmenter, against
-synthetic ground truth on the 126-crop validation split (unchanged in
-size — 502 scenes / 841 crops — but every scene re-rendered with the
-tray right-side up, and the model retrained from scratch since the
-figures below were last published), is:
+to the instance box; a PowerCore26800 cartridge occupies roughly
+131 × 288 px, so one mask cell covers **4.68 × 10.29 px**. At the
+generator's nominal framing (1280 px across an 800 mm layout,
+0.625 mm/px) that is **2.9 × 6.4 mm**, the figure this section
+published from the start. Against an 18.3 mm cell diameter, the coarse
+axis is a third of a cell — and "does the last cell fit" is exactly
+the decision at stake. Measured mean boundary displacement of the
+per-ROI segmenter, against synthetic ground truth on the 126-crop
+validation split (unchanged in size — 502 scenes / 841 crops — but
+every scene re-rendered with the tray right-side up, and the model
+retrained from scratch since these figures were first published), is:
 
-| Class | Boundary displacement | Crops | Class IoU |
-|-------------|---------------:|------:|----------:|
-| bay         | 0.949 mm       | 35    | 0.890     |
-| electronics | 0.987 mm       | 35    | 0.861     |
-| obstruction | 1.184 mm       | 24    | 0.658     |
+| Class | Boundary displacement | Crops | mm/px | Mask head, same crops | Clears by | Class IoU |
+|-------------|---------------:|------:|------:|---------------:|------:|----------:|
+| bay         | 1.226 mm       | 35    | 0.822 | 3.844 mm | 3.14× | 0.890     |
+| electronics | 1.273 mm       | 35    | 0.822 | 3.844 mm | 3.02× | 0.861     |
+| obstruction | 1.582 mm       | 24    | 0.822 | 3.846 mm | 2.43× | 0.658     |
+
+**These millimetres were corrected on 2026-08-11 and the superseded
+figures should be recognisable, not quietly replaced.** This table
+previously read **0.949 / 0.987 / 1.184 mm**, and those numbers are
+quoted in `NEXT_STEPS.md` as Plan C's headline. They were computed by
+multiplying pixel distances by the nominal 0.625 mm/px — a framing
+`recog/synth3d/world.py` renders no frame at, because it randomises
+margin and zoom per scene. Each crop is now converted at its own
+frame's ground sample distance, which on this split runs 0.490–1.074
+and has a median of 0.821: the figures rise by a factor of about 1.29.
+The correction is arithmetic, not a retrain; the model, the dataset and
+the checkpoint are the same, the IoU column and every other pixel-space
+figure are bit-identical, and only quantities carrying a millimetre
+moved. The mechanism and the audit are
+`docs/superpowers/specs/2026-08-11-scale-calibration.md` and
+`docs/superpowers/specs/2026-08-11-scale-figures.md`.
+
+**The architecture conclusion does not move, and that is a property of
+the comparison rather than good luck.** A mask head's quantisation is a
+pixel count too, so it is understated at 0.625 by exactly the same
+factor: over the same crops it is 3.844 mm, not 2.9 mm. Both sides
+scale together, the ratio is scale-invariant, and the *clears by*
+column is therefore essentially what this section always reported —
+3.1× / 2.9× / 2.4× before, 3.14× / 3.02× / 2.43× now. All three classes
+still clear, so the architecture argument still rests on measurement
+rather than reasoning. Two qualifications keep it from being oversold.
+The margin is narrowest on `obstruction`, which remains the weakest
+class in the set on 24 crops; and the mask-head resolution is a
+configurable trade rather than a hard ceiling, so the sound claim is
+still not "Mask R-CNN cannot do this," only that operating on the crop
+sidesteps the trade. And these are *synthetic* figures, measured in the
+domain the model trained in: evidence about the architecture, not about
+real photographs.
 
 The IoU column is pooled over the whole split; the checkpoint's own
 selection metric averages per crop instead and reads slightly
@@ -1991,32 +2039,25 @@ boundary-displacement figures improved over the pre-fix numbers**
 obstruction) — the largest single-class move either direction in this
 retrain — plausibly because the tray's walls are now real standing
 geometry the model can key on, rather than a flat decal whose edges
-were partly an artefact of the wall-inset arithmetic.
-
-All three sit below 2.9 mm, the *finer* of the two mask-head
-quantisation axes, so the architecture argument still rests on
-measurement rather than reasoning. Two qualifications keep it from
-being oversold. The margin is narrowest on `obstruction`, which
-clears the finer axis by a factor of 2.4 and remains the weakest class
-in the set, on 24 crops; `bay` and `electronics` clear it by 3.1× and
-2.9× respectively — every class now clears by a wider margin than
-before the tray fix, but the mask-head resolution is a configurable
-trade rather than a hard ceiling, so the sound claim is still not
-"Mask R-CNN cannot do this," only that operating on the crop sidesteps
-the trade. And these are *synthetic* figures, measured in the domain
-the model trained in: evidence about the architecture, not about real
-photographs.
+were partly an artefact of the wall-inset arithmetic. That comparison
+is retained in its original units: **both sides of it were computed at
+the nominal 0.625**, so the improvement it reports is a like-for-like
+ratio and stands, while both absolute figures are understated by the
+factor above. The pre-fix half cannot be regenerated — that model and
+that render of the dataset no longer exist — so rescaling one side of
+the pair would have produced a comparison in two different units, which
+is the error being corrected, not a repair of it.
 
 **The latency budget still holds, with margin close to what it always
 had.** Segmentation was moved out of Planning and into Recognition, on
 the grounds that it is perception and belongs in the perception budget.
 Planning then performs mask arithmetic only, measured at **2.0–2.2 ms
 per cartridge** against the tested 8 ms O3 budget of §10.4. Segmentation
-itself runs at **20.2 ms for 8 crops batched** (was 16.7 ms) — still
-inside the 50 ms end-to-end PPR budget, by 29.8 ms rather than 33.3.
+itself runs at **21.2 ms for 8 crops batched** (was 16.7 ms) — still
+inside the 50 ms end-to-end PPR budget, by 28.8 ms rather than 33.3.
 Batching is still a requirement rather than an optimisation: the same
-eight crops, same checkpoint, same warm-up give 20.2 ms batched against
-**76.5 ms if they are segmented one at a time (3.8×, was 3.6×)**, which
+eight crops, same checkpoint, same warm-up give 21.2 ms batched against
+**88.0 ms if they are segmented one at a time (4.2×, was 3.6×)**, which
 breaches the end-to-end budget outright either way.
 
 An earlier pass of this measurement reported 40.9 ms batched / 157.0 ms
@@ -2029,14 +2070,19 @@ showed the inflation was consistent rather than a fluke, though
 contention was never formally isolated as the sole cause. Rather than
 keep relying on that judgment call, the measurement has since been
 re-run clean (`docs/receipts/seg_eval.txt`, regenerated at commit
-`390836b`): **20.2 ms batched / 76.5 ms looped**, the figures quoted
-above. The honest before/after is **16.7 → 20.2 ms** — a real increase,
-but nowhere near the ~2.5× the contended figure implied, and the margin
-against the 50 ms budget barely moved (33.3 ms → 29.8 ms, not the ~9 ms
-the contended figure gave). The architecture conclusion is unchanged
-either way: batching remains load-bearing — the looped figure alone
-breaches the 50 ms budget, on both the old contended pair and the new
-clean one.
+`390836b`): **20.2 ms batched / 76.5 ms looped**. Regenerating that
+receipt for the 2026-08-11 scale correction above re-took the timings
+in the same run — the table is wall-clock and cannot be carried
+forward across a regeneration — giving **21.2 ms / 88.0 ms**, the
+figures quoted above. That is within the run-to-run spread this
+paragraph already describes and is not attributed to the scale change,
+which touches no code on the inference path. The honest before/after is
+**16.7 → 21.2 ms** — a real increase, but nowhere near the ~2.5× the
+contended figure implied, and the margin against the 50 ms budget
+barely moved (33.3 ms → 28.8 ms, not the ~9 ms the contended figure
+gave). The architecture conclusion is unchanged either way: batching
+remains load-bearing — the looped figure alone breaches the 50 ms
+budget, on every pair measured.
 
 Both figures come from the same receipt
 (`docs/receipts/seg_eval.txt`, regenerated by `recog.seg_evaluate`) —
@@ -2159,7 +2205,7 @@ document" below. The measurement is retained as the record of why.)* The
 arbitration compared two estimates and rejected a cartridge
 whose estimates disagreed by more than a threshold τ. Calibrating τ
 against a 5 % safety budget, on the tray-fix checkpoint and the same
-126-crop validation split, returned **τ = 0.5715 with a rejected
+126-crop validation split, returned **τ = 0.5695 with a rejected
 fraction of 0.0** over 35 validation cartridges for which a bay was
 predicted (down from 37; population size moves with which crops the
 model predicts a bay for, not by design). τ itself jumped up sharply
@@ -2168,18 +2214,33 @@ safety threshold, for the same structural reason as before: **not one
 of the 35 cartridges ever admitted a cell into the disputed region, at
 any threshold**. The safety budget therefore still never bound, and
 the sweep still returned the smallest candidate it was offered —
-simply the lowest IoU this split happened to contain (0.5715, up from
+simply the lowest IoU this split happened to contain (0.5695, up from
 0.3180) — not a boundary located by trading safety against throughput.
 
+*(τ read 0.5715 until 2026-08-11. Unlike the boundary-displacement
+figures above, the per-frame calibration is not merely a reporting
+correction here: this calibration converts the 4.25 mm wall inset and
+the cell footprint into pixels and then **feeds** them to the erosion
+and the cell-admission test, so correcting the scale changed the
+arbitration IoUs themselves — by roughly 0.002. Nothing about the null
+result moves; the population is still 35, and still not one cartridge
+admits a cell.)*
+
 **The largest optimistic error SHRANK — 79.4 % of one cell's area down
-to 42.0 % — which is the opposite of what would be needed to make τ
+to 61.9 % — which is the opposite of what would be needed to make τ
 calibratable, and the opposite of the trend the last two dataset
 scale-ups produced.** The two prior scale-ups (19→37 cartridges, then
 this task) were compared on the assumption that a larger validation
 set predictably surfaces a harder crop; that held for 19→37 (27 %→79.4
 %) and broke here: the largest observed optimistic error is now
-**1278 px against the same 3045 px² cell footprint — 42.0 % of one
-cell's area**, roughly half the pre-fix figure. The direct read is
+**851 px against a 1375 px² cell footprint — 61.9 % of one cell's
+area**, below the pre-fix figure. *(This read 1278 px against 3045 px²
+— 42.0 % — until 2026-08-11, when both sides of the fraction were
+recomputed at each frame's own scale rather than the nominal 0.625: a
+larger ground sample distance both erodes fewer pixels and makes a
+65 mm cell smaller in pixels, and the cell shrinks faster than the
+error does. The shrinkage relative to 79.4 % survives, by a narrower
+margin than previously reported.)* The direct read is
 that the corrected tray geometry made the two independent placement
 estimates (`P_direct`, `P_derived`) *more* self-consistent, not less —
 plausible, since both estimates are now computed against a real
@@ -2325,7 +2386,8 @@ attempted here.
 geometric ceiling on `P_safe` itself, for two of the four SKUs.** Per
 `docs/superpowers/specs/2026-08-10-tau-difficulty-design.md` §4.3,
 eroding each SKU's CAD `tray_outer_mm` by the production `wall_inset`
-(4.25 mm / 7 px, `docs/receipts/tau_calibration.txt`) and subtracting
+(4.25 mm, `docs/receipts/tau_calibration.txt` — 4–9 px depending on the
+frame's ground sample distance, 5 px at the median) and subtracting
 `module_bay_mm` gives the largest area `P_safe` can ever occupy for
 that SKU, independent of segmenter accuracy: `AnkerPowerCore10000`
 fails to admit an 18.3×65.0 mm cell in **either** orientation (short by
@@ -2392,9 +2454,11 @@ comparing frames against the source CAD, not running the tests.
 
 **Status.** Supported by measurement: the resolution argument for the
 architecture (now with more margin than before — boundary displacement
-improved on all three classes) and the latency budget's *shape*
-(batching is still load-bearing), with its *margin* narrowed only
-slightly (16.7→20.2 ms at 8 crops, against a 50 ms budget) once a
+improved on all three classes, and the margin against a mask head is
+unchanged by the 2026-08-11 scale correction, which moves both sides of
+that comparison together) and the latency budget's *shape* (batching is
+still load-bearing), with its *margin* narrowed only slightly
+(16.7→21.2 ms at 8 crops, against a 50 ms budget) once a
 GPU-contention-inflated intermediate reading (40.9 ms, superseded by a
 clean re-measurement in `docs/receipts/seg_eval.txt`) is set aside.
 Δcells (§13.2.1) got *worse* on the metric that matters most —
@@ -2411,8 +2475,10 @@ is not — and as of commit `5a619fc` that is true of the running code
 and not only of this document. Also now demonstrated, and previously
 overstated: the segmenter runs in `main.py`'s end-to-end loop
 (`12134c2`, `configs/demo_seg.yaml`, `docs/receipts/main_seg_run.txt` —
-26 detected, 26 segmented, 8 placement areas, 1 pick-and-place), where
-before it was unreachable under any configuration; see §8. Not
+26 detected, 26 segmented, 8 placement areas, 7 poses queued, 3
+pick-and-places over 15 frames; this read "1 pick-and-place" before the
+packer fix at `d6c46ac` and the per-frame calibration at `58dd21d`),
+where before it was unreachable under any configuration; see §8. Not
 demonstrated: synthetic-to-real
 transfer — the real-photo comparison now sits at three points (0.211,
 0.232, 0.318) against the 0.218 threshold, from three checkpoints that

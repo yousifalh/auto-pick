@@ -11,6 +11,17 @@ morphological test in plan.arbitration.admits_a_cell, not an area
 threshold: error spread along a boundary cannot hold a cell, the same
 area in one blob can.
 
+Both of those quantities are measured in PIXELS and specified in
+MILLIMETRES, so both depend on the frame's ground sample distance - and
+until 2026-08-11 this module converted at the generator's nominal
+0.625 mm/px, a framing no frame in the corpus was rendered at. It now
+takes each crop's scale from that crop's own render sidecar
+(`recog.calibration`, via `recog.seg_evaluate.resolve_frame_scales`).
+Unlike the figures in `recog.seg_evaluate`, this is not only a reporting
+correction: the wall inset and the cell footprint feed the measurement
+itself, so the arbitration IoUs and the admits-a-cell verdicts this
+module produces genuinely differ from the ones it produced before.
+
 tau is then the SMALLEST threshold at which at most `fail_budget` of
 accepted cartridges admit a cell. Smallest, because a larger tau rejects
 more cartridges - so this maximises throughput subject to the safety
@@ -143,8 +154,9 @@ def calibrate(records: Sequence[dict], fail_budget: float = 0.05) -> Dict:
 # --------------------------------------------------------- record collection --
 
 def collect_records(segmenter, full_dataset, val_indices: Sequence[int],
-                     wall_inset_px: int,
-                     cell_w_px: float, cell_h_px: float) -> List[Dict[str, Any]]:
+                     scales: Dict[int, float], wall_inset_mm: float,
+                     cell_w_mm: float, cell_h_mm: float
+                     ) -> List[Dict[str, Any]]:
     """One record per validation crop: arbitration IoU, whether its
     optimistic error admits a cell, and whether its predicted direct
     estimate (`bay` channel) is non-empty at all.
@@ -152,19 +164,45 @@ def collect_records(segmenter, full_dataset, val_indices: Sequence[int],
     Runs the segmenter at NATIVE crop resolution (`out_size=None`),
     matching recog.seg_evaluate.evaluate() - a jittered union box is not
     square, so a single scalar mm_per_px could only describe the native
-    frame anyway. wall_inset_px/cell_w_px/cell_h_px arrive already
-    converted to pixels by the caller, so this function itself never
-    needs mm_per_px (a formerly-unused parameter, removed).
+    frame anyway.
+
+    ``scales`` maps crop index -> that crop's OWN mm_per_px
+    (:func:`recog.seg_evaluate.resolve_frame_scales`), and the three
+    millimetre quantities are converted to pixels PER CROP rather than
+    once for the split. That conversion is not cosmetic here the way it
+    is for a reported figure: a 4.25 mm tray wall is 7 px at the nominal
+    0.625 mm/px but 4-9 px across this corpus's frames (5 px at their
+    0.82 median), and an 18.3 x 65 mm cell is 29 x 104 px against
+    22 x 79 px at that median. Both feed the measurement
+    itself - the erosion radius `arbitrate` applies and the structuring
+    element `admits_a_cell` tries to fit - so calibrating at one constant
+    scale eroded too far and then tested with a cell too large, on a
+    corpus where no frame had that scale.
+
+    A scalar is refused rather than accepted, for the same reason
+    ``evaluate`` refuses one: a signature that still takes one number can
+    regress to one number without anything failing.
     """
     from PIL import Image
 
     from plan.arbitration import CH_BAY, admits_a_cell, arbitrate, direct_placement
     from recog.seg_dataset import extract_crop, rasterise_crop
 
+    if isinstance(scales, (int, float)):
+        raise TypeError(
+            "collect_records() takes a per-crop {index: mm_per_px} map, "
+            f"not one constant ({scales!r}) - see "
+            "recog.seg_evaluate.resolve_frame_scales.")
+
     records: List[Dict[str, Any]] = []
     for idx in val_indices:
         img_meta, anns, unit_box = full_dataset.samples[idx]
         box = tuple(int(v) for v in unit_box)   # no jitter at eval
+        mm_per_px = scales[idx]                 # THIS frame's own GSD
+
+        wall_inset_px = max(0, int(round(wall_inset_mm / mm_per_px)))
+        cell_w_px = cell_w_mm / mm_per_px
+        cell_h_px = cell_h_mm / mm_per_px
 
         path = Path(full_dataset.img_dir) / img_meta["file_name"]
         image = np.asarray(Image.open(path).convert("RGB"))
@@ -182,6 +220,9 @@ def collect_records(segmenter, full_dataset, val_indices: Sequence[int],
         records.append({
             "idx": int(idx),
             "file": img_meta["file_name"],
+            "mm_per_px": float(mm_per_px),
+            "wall_inset_px": int(wall_inset_px),
+            "cell_px": (float(cell_w_px), float(cell_h_px)),
             "iou": float(iou),
             "admits_cell": bool(admits),
             "predicts_bay": predicts_bay,
@@ -212,10 +253,15 @@ def format_report(result: Dict, *, records: Sequence[dict],
                   all_records: Sequence[dict], all_result: Dict,
                   fail_budget: float,
                   checkpoint: str, config_path: str,
-                  synth_config_source: str, mm_per_px: float,
-                  wall_inset_mm: float, wall_inset_px: int,
+                  synth_config_source: str,
+                  scale_stats: Dict[str, float],
+                  scale_provenance: Dict[str, Any],
+                  nominal_mm_per_px: Optional[float],
+                  wall_inset_mm: float,
                   cell_w_mm: float, cell_h_mm: float,
                   n_val_total: int, split_seed: int) -> str:
+    median_mm_per_px = scale_stats["median"]
+    inset_px = [r["wall_inset_px"] for r in all_records] or [0]
     lines: List[str] = []
     lines.append("")
     lines.append("Tau calibration (placement-disagreement threshold)")
@@ -223,12 +269,42 @@ def format_report(result: Dict, *, records: Sequence[dict],
     lines.append(f"  checkpoint        : {checkpoint}")
     lines.append(f"  config            : {config_path}")
     lines.append(f"  synth config      : {synth_config_source}")
-    lines.append(f"  mm_per_px         : {mm_per_px:.4f}")
-    lines.append(f"  wall_inset        : {wall_inset_mm:.2f} mm "
-                 f"({wall_inset_px} px at this framing) - "
-                 "plan.placement_area's _DEFAULT_WALL_INSET_MM")
+    # Not one number: this receipt quoted mm_per_px = 0.6250 for a corpus
+    # in which no frame is rendered at that framing, and every millimetre
+    # -> pixel conversion below inherited it. See
+    # docs/superpowers/specs/2026-08-11-scale-figures.md.
+    lines.append("  mm_per_px         : per frame, from each frame's own "
+                 "render sidecar (camera.ortho_scale*1000 / width)")
+    lines.append(f"    measured        : {scale_provenance['n_measured']} of "
+                 f"{scale_provenance['n_measured'] + scale_provenance['n_fallback']}"
+                 f" crops over {scale_provenance['n_frames']} frames")
+    lines.append(f"    distribution    : median {median_mm_per_px:.4f}, "
+                 f"range {scale_stats['min']:.4f}-{scale_stats['max']:.4f} "
+                 "mm/px")
+    fb = scale_provenance.get("fallback")
+    lines.append("    fallback        : "
+                 + ("none configured - an uncalibrated frame raises "
+                    "UnknownScale rather than reverting to a constant"
+                    if fb is None else
+                    f"{fb:.4f} mm/px, applied to "
+                    f"{scale_provenance['n_fallback']} crops"))
+    if nominal_mm_per_px:
+        lines.append(
+            f"    note            : the generator's NOMINAL framing "
+            f"({nominal_mm_per_px:.4f}) is the framing at margin=1.0, "
+            f"zoom=1.0 and describes NO frame here. This calibration used "
+            f"it as a constant before 2026-08-11, which eroded the wall "
+            f"inset too deep AND tested with a cell too large, on every "
+            f"frame at once.")
+    lines.append(f"  wall_inset        : {wall_inset_mm:.2f} mm - "
+                 "plan.placement_area's _DEFAULT_WALL_INSET_MM - eroded "
+                 f"per frame at {min(inset_px)}-{max(inset_px)} px "
+                 f"({int(round(wall_inset_mm / median_mm_per_px))} px at "
+                 "the median GSD)")
     lines.append(f"  cell footprint    : {cell_w_mm:.1f} x {cell_h_mm:.1f} mm "
-                 "(18650, CAD-measured)")
+                 "(18650, CAD-measured), "
+                 f"{cell_w_mm / median_mm_per_px:.0f} x "
+                 f"{cell_h_mm / median_mm_per_px:.0f} px at the median GSD")
     lines.append(f"  fail budget       : {fail_budget:.2%} of accepted "
                  "cartridges may admit a cell")
     lines.append(f"  split             : seed={split_seed}, "
@@ -249,12 +325,19 @@ def format_report(result: Dict, *, records: Sequence[dict],
             f"max={ious.max():.4f}, "
             f"fraction>0.95={float((ious > 0.95).mean()):.4f}")
     lines.append("")
-    lines.append("Per-cartridge records (this population):")
-    head = f"  {'file':<28}{'iou':>8}{'opt_err_px':>12}{'admits_cell':>13}"
+    lines.append("Per-cartridge records (this population). mm_per_px is "
+                 "THIS frame's own ground")
+    lines.append("sample distance, and inset_px / the cell footprint "
+                 "admits_a_cell tried to fit are")
+    lines.append("derived from it per row, not from one split-wide "
+                 "constant:")
+    head = (f"  {'file':<28}{'mm/px':>8}{'inset_px':>10}{'iou':>8}"
+            f"{'opt_err_px':>12}{'admits_cell':>13}")
     lines.append(head)
     lines.append("  " + "-" * (len(head) - 2))
     for r in sorted(records, key=lambda r: r["iou"]):
-        lines.append(f"  {r['file']:<28}{r['iou']:>8.4f}"
+        lines.append(f"  {r['file']:<28}{r['mm_per_px']:>8.4f}"
+                     f"{r['wall_inset_px']:>10}{r['iou']:>8.4f}"
                      f"{r['optimistic_error_px']:>12}"
                      f"{str(r['admits_cell']):>13}")
     lines.append("  " + "-" * (len(head) - 2))
@@ -295,8 +378,13 @@ def format_report(result: Dict, *, records: Sequence[dict],
 
     n_fail_total = sum(1 for r in records if r["admits_cell"])
     if records and n_fail_total == 0:
-        cell_area_px = cell_w_mm / mm_per_px * (cell_h_mm / mm_per_px)
-        max_err_px = max(r["optimistic_error_px"] for r in records)
+        # Per record, because a crop's error in pixels only means
+        # anything against a cell footprint in THAT crop's pixels.
+        worst = max(records,
+                    key=lambda r: r["optimistic_error_px"]
+                    / (r["cell_px"][0] * r["cell_px"][1]))
+        cell_area_px = worst["cell_px"][0] * worst["cell_px"][1]
+        max_err_px = worst["optimistic_error_px"]
         lines.append(
             "IMPORTANT caveat, not just a sample-size one: NOT ONE of the "
             f"{len(records)} accepted cartridges admitted a cell, at any "
@@ -346,9 +434,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--checkpoint", default="recog/checkpoints/seg/best.pt")
     ap.add_argument("--config", default="configs/segmentation.yaml")
     ap.add_argument("--synth-config", default=None,
-                    help="render/layout config to compute mm_per_px from. "
-                         "Defaults to the dataset's own manifest.json, "
-                         "falling back to configs/synth3d.yaml.")
+                    help="render/layout config to read the generator's "
+                         "NOMINAL framing from, for the receipt's note "
+                         "only - it is no longer what millimetres are "
+                         "converted at. Defaults to the dataset's own "
+                         "manifest.json, falling back to "
+                         "configs/synth3d.yaml.")
+    ap.add_argument("--fallback-mm-per-px", type=float, default=None,
+                    help="scale for frames that carry NO render sidecar. "
+                         "Unset by default: an uncalibrated frame then "
+                         "raises rather than silently reverting to a "
+                         "constant.")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--fail-budget", type=float, default=0.05)
     ap.add_argument("--wall-inset-mm", type=float,
@@ -378,15 +474,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     from recog.seg_evaluate import load_synth_config, resolve_mm_per_px
 
+    # The NOMINAL framing, kept for the receipt's note only. Nothing
+    # below converts millimetres with it.
     synth_cfg, synth_source = load_synth_config(
         ds_cfg["coco_path"], args.synth_config)
     synth_source = Path(synth_source).as_posix()
-    mm_per_px = resolve_mm_per_px(synth_cfg)
+    nominal_mm_per_px = resolve_mm_per_px(synth_cfg)
 
     from recog.bay_segmenter import BaySegmenter
     from recog.seg_dataset import BaySegDataset
     from recog.seg_evaluate import (check_split_matches_checkpoint,
-                                    compute_val_instance_counts)
+                                    compute_val_instance_counts,
+                                    resolve_frame_scales, scale_stats)
     from recog.seg_training import _split_dataset
 
     full_dataset = BaySegDataset(
@@ -412,21 +511,40 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # same reason: the dataset is gitignored and resumable, so a moved
     # split would silently calibrate against crops this checkpoint
     # trained on.
+    #
+    # Two corrections against the version that shipped before
+    # 2026-08-11, both of which made this CLI unrunnable or wrong:
+    # `coco_path` was never passed, so this line raised TypeError before
+    # reaching a single measurement ever since 138105d added the argument
+    # (the same defect 58dd21d fixed in recog.seg_ablation - and the
+    # reason docs/receipts/tau_calibration.txt could not be regenerated);
+    # and `out_size` was left at native while seg_training's stored
+    # counts come off a DataLoader that rasterises at crop_size, so the
+    # guard would have fired on a dataset that never moved. Matches
+    # recog.seg_evaluate.main's own call on both counts.
     val_counts_now = compute_val_instance_counts(
-        full_dataset, val_indices, num_classes=num_classes)
-    check_split_matches_checkpoint(args.checkpoint, val_counts_now)
+        full_dataset, val_indices, num_classes=num_classes,
+        out_size=crop_size)
+    check_split_matches_checkpoint(args.checkpoint, ds_cfg["coco_path"],
+                                   val_counts_now)
+
+    # Resolved BEFORE inference: an uncalibrated frame is a configuration
+    # error and should cost nothing but the time to notice it.
+    scales, scale_provenance = resolve_frame_scales(
+        full_dataset, val_indices, fallback=args.fallback_mm_per_px)
+    stats = scale_stats(scales)
+    log.info("scale: %d of %d crops calibrated from their own frame; "
+             "median %.4f, range %.4f-%.4f mm/px (nominal framing %.4f)",
+             scale_provenance["n_measured"], len(val_indices),
+             stats["median"], stats["min"], stats["max"], nominal_mm_per_px)
 
     segmenter = BaySegmenter(checkpoint=args.checkpoint, device=args.device,
                              crop_size=crop_size, half=half,
                              num_classes=num_classes)
 
-    wall_inset_px = max(0, int(round(args.wall_inset_mm / mm_per_px)))
-    cell_w_px = args.cell_w_mm / mm_per_px
-    cell_h_px = args.cell_h_mm / mm_per_px
-
     all_records = collect_records(
-        segmenter, full_dataset, val_indices, wall_inset_px,
-        cell_w_px, cell_h_px)
+        segmenter, full_dataset, val_indices, scales, args.wall_inset_mm,
+        args.cell_w_mm, args.cell_h_mm)
     records = [r for r in all_records if r["predicts_bay"]]
 
     result = calibrate(records, fail_budget=args.fail_budget)
@@ -440,8 +558,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         all_result=all_result,
         fail_budget=args.fail_budget, checkpoint=args.checkpoint,
         config_path=args.config, synth_config_source=synth_source,
-        mm_per_px=mm_per_px, wall_inset_mm=args.wall_inset_mm,
-        wall_inset_px=wall_inset_px, cell_w_mm=args.cell_w_mm,
+        scale_stats=stats, scale_provenance=scale_provenance,
+        nominal_mm_per_px=nominal_mm_per_px,
+        wall_inset_mm=args.wall_inset_mm, cell_w_mm=args.cell_w_mm,
         cell_h_mm=args.cell_h_mm, n_val_total=len(val_indices),
         split_seed=split_seed)
 

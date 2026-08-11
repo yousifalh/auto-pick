@@ -4,7 +4,11 @@ Bay segmenter evaluation
   checkpoint        : recog/checkpoints/seg_cad_control_AnkerPowerCore13000/best.pt
   config            : configs/segmentation_cad_test.yaml
   synth config      : recog/dataset3d_seg_cad_test/manifest.json
-  mm_per_px         : 0.6250 (layout.area[0]*1000 / render.res[0])
+  mm_per_px         : per frame, from each frame's own render sidecar (camera.ortho_scale*1000 / width)
+    measured        : 836 of 836 crops over 434 frames
+    distribution    : median 0.7815, range 0.4903-1.0915, mean 0.7796 mm/px
+    fallback        : none configured - an uncalibrated frame raises UnknownScale rather than reverting to a constant
+    note            : the generator's NOMINAL framing (0.6250 = layout.area[0]*1000 / render.res[0]) is the framing at margin=1.0, zoom=1.0 and describes NO frame in this corpus. Receipts published before 2026-08-11 converted every millimetre below at that constant and therefore UNDERSTATED them by a median factor of 1.25x. Pixel-space figures (IoU, crop counts) are unaffected - they never multiply by this number.
   device            : cuda
   validation crops  : 836
 
@@ -25,23 +29,29 @@ Per-class IoU (pooled over the validation split; NaN = class absent from both pr
 
 Boundary displacement, mm (mean distance from a predicted boundary pixel to
 the nearest ground-truth boundary pixel; the figure that chose a per-ROI
-segmenter over a 28x28 Mask R-CNN head, whose quantisation at this framing is 2.9 x 6.4 mm):
-  class               mm     crops
-  --------------------------------
-  bay              0.892       210
-  electronics      1.203       209
-  obstruction      1.369       126
-  --------------------------------
+segmenter over a 28x28 Mask R-CNN head). Each crop is converted at ITS OWN
+frame's ground sample distance, not at one constant. `head mm` is the SAME
+comparison the architecture argument always made, converted the same way:
+  class               mm     crops     mm/px   head mm  clears by
+  ---------------------------------------------------------------
+  bay              1.105       210    0.7928     3.709      3.36x
+  electronics      1.501       209    0.7933     3.712      2.47x
+  obstruction      1.795       126    0.8012     3.749      2.09x
+  ---------------------------------------------------------------
+  head mm = 4.68 px x that class's own mean mm/px. The 4.68 x 10.29 px comes from a 28x28 head over a PowerCore26800 crop of ~131 x 288 px (FDR 13.2.1), which is 2.9 x 6.4 mm at the generator's NOMINAL 0.6250 mm/px - the figure the FDR published, and the framing no frame in this corpus was rendered at.
+  Both sides of this comparison are pixel counts times the same scale, so the `clears by` ratio is SCALE-INVARIANT: correcting the calibration moves the millimetres and leaves the architecture verdict exactly where it was.
   verdict: BELOW the mask-head quantisation figure - supports the architecture choice.
 
 Signed placeable-area error, mm^2 (optimistic = predicted placeable where truth
 is not, the error that can put a cell on a PCB; conservative = the opposite,
-a lost cell, not a safety issue). Mean per crop and total over the split:
+a lost cell, not a safety issue). Mean per crop and total over the split,
+each crop converted at its own frame's GSD - an AREA, so it moves with the
+SQUARE of the scale correction, not linearly:
   class          opt mean   opt total   cons mean   cons total
   ------------------------------------------------------------
-  bay                44.8     37462.1        40.6      33942.2
-  electronics        27.8     23210.9        12.5      10485.2
-  obstruction        13.2     11075.0        10.6       8839.5
+  bay                65.1     54419.8        60.8      50823.6
+  electronics        41.8     34922.5        18.3      15322.7
+  obstruction        20.6     17256.3        15.2      12724.9
   ------------------------------------------------------------
 
 Latency vs the FDR 10.4 50 ms end-to-end budget (fp16 batched inference):
@@ -50,12 +60,12 @@ n calls) - the path batching replaced. This is the single measured source for
 the batching-latency figure; quote THIS receipt rather than a hand-measured one.
    cartridges   total_ms  per_cart_ms  within_50ms   looped_ms
   ------------------------------------------------------------
-            1       10.1        10.14         True        10.2
-            2       11.7         5.84         True        22.0
-            4       15.8         3.94         True        40.8
-            8       17.2         2.15         True        73.3
+            1        9.5         9.50         True         6.2
+            2       10.9         5.44         True        13.8
+            4       11.9         2.97         True        28.2
+            8       16.3         2.03         True        50.9
   ------------------------------------------------------------
-  at 8 cartridges: 17.2 ms batched vs 73.3 ms looped (4.3x) - batching is load-bearing, not an optimisation: the looped figure breaches the 50 ms end-to-end budget on its own.
+  at 8 cartridges: 16.3 ms batched vs 50.9 ms looped (3.1x) - batching is load-bearing, not an optimisation: the looped figure breaches the 50 ms end-to-end budget on its own.
 
 
 Per-SKU IoU (design spec Sec7/Sec10/Sec12):

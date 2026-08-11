@@ -88,8 +88,8 @@ Four plans were executed end to end. Every number below has a receipt in
 |---|---|---|
 | A | Forbidden-mask FFDH shelf advance | 3.17 → **14.28 cells** at 2.5 % coverage, 40/40 paired seed wins (that measures `first_fit_decreasing`, which is frozen; the planner now runs `common.packing.pack_best_effort` at **14.55** — see "The packing ceiling" below) |
 | B | Five-class segmentation ground truth from CAD | `placement_area` = currently-free floor, **0 overlapping pixels** across 3280 mask pairs (full 502-scene tray-interior dataset; was 139 pairs on a 32-scene spot check) |
-| C | Per-ROI bay segmenter | IoU 0.8126; boundary displacement **0.949 mm** (bay) vs the 2.9 mm a mask head would quantise to |
-| D | Integration and arbitration | Planning **2.0 ms/cartridge** vs an 8 ms budget; segmentation 20.2 ms for 8 crops vs 50 ms (was 16.7 ms; an intermediate 40.9 ms reading was GPU-contention noise, since superseded by a clean re-measurement — see the tray-interior retrain note below) |
+| C | Per-ROI bay segmenter | IoU 0.8126; boundary displacement **1.226 mm** (bay) against the **3.844 mm** a mask head would quantise to over the same crops — it clears by **3.14×** (corrected 2026-08-11; this row read *0.949 mm vs 2.9 mm* while both sides were converted at a nominal 0.625 mm/px that no frame was rendered at. Both figures rose by the same factor, so the margin is unchanged — see below) |
+| D | Integration and arbitration | Planning **2.0 ms/cartridge** vs an 8 ms budget; segmentation 21.2 ms for 8 crops vs 50 ms (was 16.7 ms; an intermediate 40.9 ms reading was GPU-contention noise, since superseded by clean re-measurements — the table is wall-clock and is re-taken every time the receipt is regenerated, most recently 21.2 / 88.0 ms; see the tray-interior retrain note below) |
 
 New modules: `recog/synth3d/bay.py`, `recog/seg_dataset.py`,
 `recog/seg_training.py`, `recog/seg_evaluate.py`, `recog/bay_segmenter.py`,
@@ -584,10 +584,15 @@ Retrained to completion again — from a fresh initialisation, on a fully
 re-rendered 502-scene / 841-crop dataset (the tray-interior fix; see the
 note near the top of this document) — with 35 `bay` / 35 `electronics`
 / 24 `obstruction` validation instances (was 37/37/18 pre-fix; 19/19/11
-before that). τ came out at **0.5715**, accepting 35 of 35 cartridges —
+before that). τ came out at **0.5695**, accepting 35 of 35 cartridges —
 sharply *up* from 0.3180. (Both remain lower bounds set by the sample's
 own minimum rather than a calibrated threshold, so which one is quoted
-does not change the conclusion below.)
+does not change the conclusion below.) *This read 0.5715 until
+2026-08-11: `recog.calibrate_tau` converted the wall inset and the cell
+footprint at a nominal 0.625 mm/px and now takes each frame's own scale,
+which — unlike the boundary-displacement figures — changes the
+arbitration IoUs themselves, because the erosion radius is one of the
+inputs. The shift is ~0.002 and nothing about the null result moves.*
 
 **It is still uninformative, but scaling is no longer the story — geometric
 correctness is.** Not one of the 35 accepted cartridges admitted a cell at
@@ -597,10 +602,15 @@ safety against throughput. That part is unchanged.
 
 **The diagnosis moved in the OPPOSITE direction from every previous
 scale-up, which is itself the finding worth recording.** The largest
-optimistic error observed is now **1278 px against a cell footprint of
-3045 px² — 42.0 % of one cell's area** — roughly HALF the pre-fix
+optimistic error observed is now **851 px against a cell footprint of
+1375 px² — 61.9 % of one cell's area** — below the pre-fix
 figure of 79.4 %, and further from (not closer to) the 100%+ needed to
-make the test bite. Every previous scale-up (19→37 cartridges) grew this
+make the test bite. *(Read 1278 px / 3045 px² / 42.0 % until 2026-08-11.
+Both sides of the fraction are per-frame quantities and both were
+recomputed at each frame's true scale: a larger ground sample distance
+erodes fewer pixels and shrinks a 65 mm cell in pixels, and the cell
+shrinks faster than the error. The direction of the finding survives;
+the margin is narrower than first reported.)* Every previous scale-up (19→37 cartridges) grew this
 number; a geometry correction shrank it instead. The likely mechanism:
 `P_direct` and `P_derived` are now both computed against a real cavity
 floor rather than one of them inferring a floor from a flat top face, so
@@ -669,7 +679,12 @@ validation crops (was 37/37/18 pre-fix; 19/19/11 before that) — the same
 generator or the split's underlying scenes change. The per-class numbers
 moved with the tray fix, but **not uniformly for the better**: boundary
 displacement improved on all three classes this time (bay 1.299→0.949 mm,
-electronics 1.085→0.987 mm, obstruction 1.633→1.184 mm — see FDR §13.2.1
+electronics 1.085→0.987 mm, obstruction 1.633→1.184 mm — **both sides of
+each pair are at the retired nominal 0.625 mm/px**, so the improvement
+they report is a like-for-like ratio and stands, while both absolute
+figures are understated by about 1.29×; the corrected post-fix values
+are 1.226 / 1.273 / 1.582 mm and the pre-fix half cannot be regenerated,
+that render and that checkpoint no longer existing — see FDR §13.2.1
 for the full table), but the pooled selected mean IoU dipped slightly
 (0.8045 → 0.8032) even as the checkpoint's own per-epoch selection metric
 rose (0.8096 → 0.8126), and Δcells' negative-direction fraction got worse
@@ -765,8 +780,12 @@ therefore **segmenter IoU/boundary-displacement improvement on
   framing halves, which stay in Step 3 below.
 - Re-run `python -m recog.seg_evaluate` against the harder split once it
   exists and compare `obstruction`/`battery` IoU and boundary
-  displacement to the current 0.6579/0.6907 and 1.184 mm baselines
-  (`docs/receipts/seg_eval.txt`). **Compare against the disjoint CAD test
+  displacement to the current 0.6579/0.6907 and 1.582 mm baselines
+  (`docs/receipts/seg_eval.txt`; the boundary figure was 1.184 mm while
+  that receipt converted at the nominal 0.625 mm/px — compare at the
+  per-frame scale the receipt now uses, or the harder split will look
+  better than it is purely from the units).
+  **Compare against the disjoint CAD test
   set's figures too, not only those** — spec #2 measured
   `obstruction` at 0.6320–0.6507 there for CAD-trained models, i.e.
   below the 0.6579 quoted here, which means part of what this step is

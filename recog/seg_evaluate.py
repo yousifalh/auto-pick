@@ -16,6 +16,14 @@ Per-class IoU is table stakes. Three others carry the argument:
   latency_table             the 50 ms budget has no slack. See
                             bay_segmenter's module docstring.
 
+Every millimetre above is a pixel count times mm_per_px, and mm_per_px
+is a property of the FRAME, not of the corpus: see the "frame
+calibration" section below. Every figure this module published before
+2026-08-11 was converted at the generator's nominal 0.625 mm/px, which
+describes no frame in a corpus that randomises zoom, and was understated
+by roughly 1.3x for a length and 1.6x for an area as a result.
+Pixel-space figures (IoU, crop counts) are unaffected and did not move.
+
 CLI::
 
     python -m recog.seg_evaluate --checkpoint recog/checkpoints/seg/best.pt \\
@@ -43,9 +51,17 @@ from common.logging import get_logger
 # stated once, in one place, instead of being rediscovered.
 from recog.calibration import (  # noqa: F401  (re-exported)
     frame_mm_per_px,
+    frame_mm_per_px_for_image,
     load_synth_config,
     resolve_mm_per_px,
 )
+
+# The same exception plan.planner raises for the same condition, imported
+# rather than restated. An unknown scale is one fault with one name
+# wherever it happens; a second class called the same thing in a second
+# module is how "raise rather than default" quietly becomes "raise in one
+# of the two places".
+from plan.placement_area import UnknownScale
 
 # Derived from the dataset's contract rather than restated. Two
 # hand-written copies of the same order drift, and the drift is silent:
@@ -69,9 +85,139 @@ log = get_logger("recog.seg_evaluate")
 SELECT_ON: Tuple[str, ...] = ("bay", "electronics", "obstruction")
 
 # Spec 3.1's rejection figure for a 28x28 Mask R-CNN head at the
-# generator's framing. Boundary displacement below this is the
-# acceptance criterion for having chosen a per-ROI segmenter instead.
+# generator's NOMINAL framing (0.625 mm/px). Boundary displacement below
+# this is the acceptance criterion for having chosen a per-ROI segmenter
+# instead.
+#
+# It is a millimetre figure and therefore, like every millimetre figure
+# in this module, a function of the scale it was converted at - so the
+# underlying PIXEL figure is kept beside it and is what the verdict is
+# actually judged against. FDR 13.2.1 derives 2.9 x 6.4 mm from a
+# PowerCore26800 crop of roughly 131 x 288 px split 28 ways, and
+# 131/28 x 288/28 px is the part of that derivation that does NOT move
+# when the framing does. At 0.625 mm/px it reproduces 2.9 x 6.4 mm
+# exactly.
+#
+# Judging a per-frame boundary displacement against the mm figure frozen
+# at 0.625 would compare a rescaled measurement with an unrescaled
+# threshold, which is not conservatism - it is the same units error in a
+# new place, and measured on the CAD test split it flips `electronics`
+# from clearing to failing on scale alone. Converting BOTH sides over
+# the same crops at the same scales leaves the ratio - the only part of
+# the comparison that is about the two architectures - untouched.
 MASK_HEAD_QUANTISATION_MM: Tuple[float, float] = (2.9, 6.4)
+MASK_HEAD_QUANTISATION_PX: Tuple[float, float] = (131.0 / 28.0, 288.0 / 28.0)
+
+
+# --------------------------------------------------- frame calibration --
+#
+# Every millimetre this module publishes is a pixel count multiplied by
+# mm_per_px, and until 2026-08-11 that multiplier was one constant for
+# the whole split: `resolve_mm_per_px(synth_cfg)`, the generator's
+# framing at margin = 1.0, zoom = 1.0. `recog/synth3d/world.py`'s
+# setup_camera sets `ortho_scale = need * margin * zoom` with margin
+# drawn from [1.02, 1.10] and zoom from `param_space.zoom`, so on this
+# corpus NO frame is rendered at that framing - the true GSD runs
+# 0.49-1.09 mm/px against a nominal 0.625, and every millimetre figure
+# in docs/receipts/seg_eval.txt was understated by that ratio.
+#
+# The fix is the same one 58dd21d applied to the planner, using the same
+# module: scale is a property of the FRAME, read from that frame's own
+# render sidecar. IoU and every other pixel-space quantity are untouched
+# by construction - they never multiply by this number.
+
+def crop_image_path(full_dataset, img_meta: dict) -> Path:
+    """The image file one crop was taken from.
+
+    One definition, because both the pixel loading in :func:`evaluate`
+    and the sidecar lookup in :func:`resolve_frame_scales` must name the
+    same file or a crop would be scored at another frame's scale.
+    """
+    return Path(full_dataset.img_dir) / img_meta["file_name"]
+
+
+def resolve_frame_scales(full_dataset, indices: Sequence[int],
+                         fallback: Optional[float] = None
+                         ) -> Tuple[Dict[int, float], Dict[str, Any]]:
+    """``({crop index: mm_per_px}, provenance)`` - the scale each crop is
+    scored at, taken from that crop's OWN render sidecar.
+
+    Delegates to ``recog.calibration.frame_mm_per_px_for_image``; there
+    is deliberately no arithmetic here. A duplicated dimension constant
+    has already cost this project one defect, and a second copy of
+    ``ortho_scale * 1000 / width`` would be exactly that again.
+
+    ``fallback`` is for inputs that carry no render metadata at all - a
+    photograph, or ``recog/synth_dataset.py``'s cv2-drawn rectangles. It
+    must be passed DELIBERATELY: with no fallback configured, an
+    uncalibrated frame raises :class:`plan.placement_area.UnknownScale`
+    rather than quietly reverting to a constant. That is the whole point
+    of the change; silent degradation is this project's characteristic
+    failure and this receipt was an instance of it.
+
+    ``provenance`` reports how many crops were measured and how many fell
+    back, so the receipt can never again print one number that a reader
+    cannot tell apart from a real per-frame calibration.
+    """
+    scales: Dict[int, float] = {}
+    by_file: Dict[str, Optional[float]] = {}
+    n_measured = n_fallback = 0
+
+    for idx in indices:
+        img_meta, _anns, _box = full_dataset.samples[idx]
+        name = img_meta["file_name"]
+        if name not in by_file:
+            # Cached per FILE, not per crop: one frame yields several
+            # unit crops and the sidecar is a large JSON document.
+            by_file[name] = frame_mm_per_px_for_image(
+                crop_image_path(full_dataset, img_meta))
+
+        measured = by_file[name]
+        if measured is not None:
+            scales[int(idx)] = float(measured)
+            n_measured += 1
+            continue
+
+        if fallback is None:
+            raise UnknownScale(
+                f"crop {idx} comes from {name}, which carries no render "
+                "metadata, and no fallback mm_per_px was configured - so "
+                "every millimetre this evaluation would publish for it "
+                "is invented. Pass --fallback-mm-per-px explicitly if "
+                "this corpus really is a single fixed framing (a real "
+                "fixed-mount camera is), or point --config at a dataset "
+                "whose frames carry their own calibration. Refusing to "
+                "guess: a constant standing in for a per-frame scale is "
+                "the defect this resolution exists to remove.")
+        scale = float(fallback)
+        if scale <= 0.0:
+            raise UnknownScale(
+                f"fallback mm_per_px={fallback!r}: a pixel cannot span "
+                "zero or negative millimetres.")
+        scales[int(idx)] = scale
+        n_fallback += 1
+
+    return scales, {"n_measured": n_measured, "n_fallback": n_fallback,
+                    "n_frames": len(by_file),
+                    "fallback": (None if fallback is None
+                                 else float(fallback))}
+
+
+def scale_stats(scales: Dict[int, float]) -> Dict[str, float]:
+    """min / median / max / mean over a per-crop scale map.
+
+    The receipt prints the distribution rather than a single number
+    because a single number is what went wrong: a run planned at each
+    frame's own scale and a run planned at one constant produced
+    identical-looking headers for months.
+    """
+    vals = np.asarray(sorted(scales.values()), dtype=np.float64)
+    if vals.size == 0:
+        nan = float("nan")
+        return {"n": 0, "min": nan, "median": nan, "max": nan, "mean": nan}
+    return {"n": int(vals.size), "min": float(vals.min()),
+            "median": float(np.median(vals)), "max": float(vals.max()),
+            "mean": float(vals.mean())}
 
 
 # ------------------------------------------------------------- metrics --
@@ -214,20 +360,29 @@ def _mean_or_nan(xs: Sequence[float]) -> float:
 
 
 def evaluate(segmenter, full_dataset, val_indices: Sequence[int],
-            mm_per_px: float, num_classes: int = 6
+            scales: Dict[int, float], num_classes: int = 6
             ) -> Dict[str, Any]:
     """Run the segmenter over every validation crop at native resolution
     and accumulate every metric this module reports.
 
+    ``scales`` maps crop index -> that crop's OWN mm_per_px, as
+    :func:`resolve_frame_scales` builds it. It is deliberately NOT a
+    scalar, and passing one raises: this argument was a single constant
+    (0.625, the generator's nominal framing) while the renderer varied
+    zoom per frame, which understated every millimetre this function
+    reports by the ratio of true to nominal GSD - a median factor of
+    ~1.3 on recog/dataset3d_seg's validation split. A signature that
+    still accepts one number is a signature that can regress to it
+    silently.
+
     "Native resolution" (extract_crop / rasterise_crop called with
-    out_size=None) rather than the model's fixed square input: the
-    render's mm_per_px (layout.area / render.res) is isotropic only in
-    that native frame - a jittered union box is not square, so resizing
-    it to out_size x out_size would rescale x and y by different factors,
-    and a single scalar mm_per_px could not describe the result
-    correctly. Boundary displacement and area error need that native
-    frame; IoU is computed there too so all four numbers describe the
-    same pixels.
+    out_size=None) rather than the model's fixed square input: mm_per_px
+    is isotropic only in that native frame - a jittered union box is not
+    square, so resizing it to out_size x out_size would rescale x and y
+    by different factors, and a single scalar mm_per_px could not
+    describe the result correctly. Boundary displacement and area error
+    need that native frame; IoU is computed there too so all four
+    numbers describe the same pixels.
 
     IoU is pooled pixel-wise over the whole split (sum of intersections
     / sum of unions across crops), matching recog.seg_training's
@@ -244,12 +399,28 @@ def evaluate(segmenter, full_dataset, val_indices: Sequence[int],
     """
     from PIL import Image
 
+    if isinstance(scales, (int, float)):
+        raise TypeError(
+            "evaluate() takes a per-crop {index: mm_per_px} map, not one "
+            f"constant ({scales!r}). Scale is a property of the FRAME - "
+            "recog/synth3d/world.py randomises margin and zoom per scene, "
+            "so no single number describes this corpus. Build the map "
+            "with resolve_frame_scales(); if the corpus really is one "
+            "fixed framing, pass that value as its `fallback` so the "
+            "receipt records that it was a fallback.")
+
     inter = [0] * num_classes
     union = [0] * num_classes
     counts = [0] * num_classes            # crops containing class c
 
     boundary_mm: Dict[str, List[float]] = {c: [] for c in SELECT_ON}
     boundary_defined: Dict[str, int] = {c: 0 for c in SELECT_ON}
+    # The scales of exactly the crops that contributed to each class's
+    # boundary mean - not the whole split's. The mask-head threshold this
+    # is judged against is a PIXEL quantity converted at the same scale,
+    # and a threshold converted over a different set of crops than the
+    # measurement would be the very mismatch this module is fixing.
+    boundary_scale: Dict[str, List[float]] = {c: [] for c in SELECT_ON}
     area_opt_mm2: Dict[str, List[float]] = {c: [] for c in SELECT_ON}
     area_cons_mm2: Dict[str, List[float]] = {c: [] for c in SELECT_ON}
 
@@ -268,8 +439,9 @@ def evaluate(segmenter, full_dataset, val_indices: Sequence[int],
     for idx in val_indices:
         img_meta, anns, unit_box = full_dataset.samples[idx]
         box = tuple(int(v) for v in unit_box)     # no jitter at eval
+        mm_per_px = scales[idx]                   # THIS frame's own GSD
 
-        path = Path(full_dataset.img_dir) / img_meta["file_name"]
+        path = crop_image_path(full_dataset, img_meta)
         image = np.asarray(Image.open(path).convert("RGB"))
 
         crop = extract_crop(image, box, out_size=None)
@@ -299,6 +471,7 @@ def evaluate(segmenter, full_dataset, val_indices: Sequence[int],
             bd = boundary_displacement_mm(pred, target, c, mm_per_px)
             if not np.isnan(bd):
                 boundary_mm[name].append(bd)
+                boundary_scale[name].append(mm_per_px)
                 boundary_defined[name] += 1
             opt, cons = signed_area_error_mm2(pred, target, c, mm_per_px)
             area_opt_mm2[name].append(opt)
@@ -314,10 +487,17 @@ def evaluate(segmenter, full_dataset, val_indices: Sequence[int],
 
     return {
         "n_val_crops": len(val_indices),
+        # The scales these millimetres were actually measured at. Carried
+        # in the result rather than left to the caller to remember, for
+        # the same reason PlacementArea.mm_per_px is: a millimetre figure
+        # separated from its scale is how this receipt went wrong.
+        "mm_per_px": scale_stats({i: scales[i] for i in val_indices}),
         "ious": ious,
         "instance_counts": counts_by_name,
         "selected_mean_iou": selected_mean_iou,
         "boundary_mm": {c: _mean_or_nan(boundary_mm[c]) for c in SELECT_ON},
+        "boundary_mm_per_px": {c: _mean_or_nan(boundary_scale[c])
+                               for c in SELECT_ON},
         "boundary_n": boundary_defined,
         "area_opt_mm2_mean": {c: _mean_or_nan(area_opt_mm2[c]) for c in SELECT_ON},
         "area_cons_mm2_mean": {c: _mean_or_nan(area_cons_mm2[c]) for c in SELECT_ON},
@@ -506,19 +686,50 @@ def _sibling_checkpoint_note(checkpoint_path: str) -> Optional[str]:
 
 def format_report(results: Dict[str, Any], latency: List[dict], *,
                   checkpoint: Optional[str], config_path: str,
-                  synth_config_source: str, mm_per_px: float,
+                  synth_config_source: str,
+                  scale_provenance: Dict[str, Any],
+                  nominal_mm_per_px: Optional[float],
                   device: str,
                   checkpoint_note: Optional[str] = None) -> str:
     """Plain-text receipt, in the style of recog/eval_real.py's report."""
     lines: List[str] = []
+    stats = results["mm_per_px"]
     lines.append("")
     lines.append("Bay segmenter evaluation")
     lines.append("=" * 40)
     lines.append(f"  checkpoint        : {checkpoint or '(none - random init)'}")
     lines.append(f"  config            : {config_path}")
     lines.append(f"  synth config      : {synth_config_source}")
-    lines.append(f"  mm_per_px         : {mm_per_px:.4f} "
-                 "(layout.area[0]*1000 / render.res[0])")
+    # NOT a bare number. A receipt that printed one constant could not
+    # distinguish an evaluation measured at each frame's own scale from
+    # one measured at a fallback, which is how the constant survived as
+    # long as it did (same reasoning as docs/receipts/main_seg_run.txt).
+    lines.append("  mm_per_px         : per frame, from each frame's own "
+                 "render sidecar (camera.ortho_scale*1000 / width)")
+    lines.append(f"    measured        : {scale_provenance['n_measured']} of "
+                 f"{scale_provenance['n_measured'] + scale_provenance['n_fallback']}"
+                 f" crops over {scale_provenance['n_frames']} frames")
+    lines.append(f"    distribution    : median {stats['median']:.4f}, "
+                 f"range {stats['min']:.4f}-{stats['max']:.4f}, "
+                 f"mean {stats['mean']:.4f} mm/px")
+    fb = scale_provenance.get("fallback")
+    lines.append("    fallback        : "
+                 + ("none configured - an uncalibrated frame raises "
+                    "UnknownScale rather than reverting to a constant"
+                    if fb is None else
+                    f"{fb:.4f} mm/px, applied to "
+                    f"{scale_provenance['n_fallback']} crops"))
+    if nominal_mm_per_px:
+        ratio = stats["median"] / nominal_mm_per_px
+        lines.append(
+            f"    note            : the generator's NOMINAL framing "
+            f"({nominal_mm_per_px:.4f} = layout.area[0]*1000 / "
+            f"render.res[0]) is the framing at margin=1.0, zoom=1.0 and "
+            f"describes NO frame in this corpus. Receipts published "
+            f"before 2026-08-11 converted every millimetre below at that "
+            f"constant and therefore UNDERSTATED them by a median factor "
+            f"of {ratio:.2f}x. Pixel-space figures (IoU, crop counts) are "
+            f"unaffected - they never multiply by this number.")
     lines.append(f"  device            : {device}")
     lines.append(f"  validation crops  : {results['n_val_crops']}")
     lines.append("")
@@ -582,24 +793,56 @@ def format_report(results: Dict[str, Any], latency: List[dict], *,
 
     # ---- boundary displacement ----------------------------------------
     lo, hi = MASK_HEAD_QUANTISATION_MM
+    px_lo, px_hi = MASK_HEAD_QUANTISATION_PX
     lines.append("Boundary displacement, mm (mean distance from a "
                  "predicted boundary pixel to")
     lines.append("the nearest ground-truth boundary pixel; the figure "
                  "that chose a per-ROI")
-    lines.append("segmenter over a 28x28 Mask R-CNN head, whose "
-                 f"quantisation at this framing is {lo:.1f} x {hi:.1f} mm):")
-    head = f"  {'class':<12}{'mm':>10}{'crops':>10}"
+    lines.append("segmenter over a 28x28 Mask R-CNN head). Each crop is "
+                 "converted at ITS OWN")
+    lines.append("frame's ground sample distance, not at one constant. "
+                 "`head mm` is the SAME")
+    lines.append("comparison the architecture argument always made, "
+                 "converted the same way:")
+    head = (f"  {'class':<12}{'mm':>10}{'crops':>10}{'mm/px':>10}"
+            f"{'head mm':>10}{'clears by':>11}")
     lines.append(head)
     lines.append("  " + "-" * (len(head) - 2))
     all_below = True
     for c in SELECT_ON:
         bd = results["boundary_mm"][c]
         n = results["boundary_n"][c]
+        # The mask head quantises in PIXELS. Converting its figure over
+        # the same crops, at the same scales, is the only comparison that
+        # is about the two architectures rather than about the framing:
+        # both sides move together and the ratio is scale-invariant.
+        # Judging a per-frame measurement against the mm figure frozen at
+        # the nominal 0.625 would flip verdicts on scale alone - measured,
+        # it does exactly that to `electronics` on the CAD test split.
+        crop_scale = results.get("boundary_mm_per_px", {}).get(c, float("nan"))
+        head_mm = px_lo * crop_scale
         bd_s = "NaN" if np.isnan(bd) else f"{bd:.3f}"
-        lines.append(f"  {c:<12}{bd_s:>10}{n:>10}")
-        if not np.isnan(bd) and bd >= lo:
+        sc_s = "NaN" if np.isnan(crop_scale) else f"{crop_scale:.4f}"
+        hm_s = "NaN" if np.isnan(head_mm) else f"{head_mm:.3f}"
+        ratio_s = ("NaN" if np.isnan(bd) or np.isnan(head_mm) or bd <= 0
+                   else f"{head_mm / bd:.2f}x")
+        lines.append(f"  {c:<12}{bd_s:>10}{n:>10}{sc_s:>10}"
+                     f"{hm_s:>10}{ratio_s:>11}")
+        if not np.isnan(bd) and not np.isnan(head_mm) and bd >= head_mm:
             all_below = False
     lines.append("  " + "-" * (len(head) - 2))
+    lines.append(
+        f"  head mm = {px_lo:.2f} px x that class's own mean mm/px. The "
+        f"{px_lo:.2f} x {px_hi:.2f} px comes from a 28x28 head over a "
+        f"PowerCore26800 crop of ~131 x 288 px (FDR 13.2.1), which is "
+        f"{lo:.1f} x {hi:.1f} mm at the generator's NOMINAL 0.6250 mm/px "
+        f"- the figure the FDR published, and the framing no frame in "
+        f"this corpus was rendered at.")
+    lines.append(
+        "  Both sides of this comparison are pixel counts times the same "
+        "scale, so the `clears by` ratio is SCALE-INVARIANT: correcting "
+        "the calibration moves the millimetres and leaves the "
+        "architecture verdict exactly where it was.")
     verdict = ("BELOW the mask-head quantisation figure - supports the "
                "architecture choice." if all_below else
                "NOT below the mask-head quantisation figure for at "
@@ -615,7 +858,10 @@ def format_report(results: Dict[str, Any], latency: List[dict], *,
     lines.append("is not, the error that can put a cell on a PCB; "
                  "conservative = the opposite,")
     lines.append("a lost cell, not a safety issue). Mean per crop and "
-                 "total over the split:")
+                 "total over the split,")
+    lines.append("each crop converted at its own frame's GSD - an AREA, "
+                 "so it moves with the")
+    lines.append("SQUARE of the scale correction, not linearly:")
     head = (f"  {'class':<12}{'opt mean':>11}{'opt total':>12}"
            f"{'cons mean':>12}{'cons total':>13}")
     lines.append(head)
@@ -671,9 +917,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--checkpoint", default="recog/checkpoints/seg/best.pt")
     ap.add_argument("--config", default="configs/segmentation.yaml")
     ap.add_argument("--synth-config", default=None,
-                    help="render/layout config to compute mm_per_px from. "
-                         "Defaults to the dataset's own manifest.json, "
-                         "falling back to configs/synth3d.yaml.")
+                    help="render/layout config to read the generator's "
+                         "NOMINAL framing from, for the receipt's "
+                         "understatement note only - it is no longer what "
+                         "millimetres are measured at. Defaults to the "
+                         "dataset's own manifest.json, falling back to "
+                         "configs/synth3d.yaml.")
+    ap.add_argument("--fallback-mm-per-px", type=float, default=None,
+                    help="scale to use for frames that carry NO render "
+                         "sidecar (a photograph; synth_dataset.py's "
+                         "rectangles). Unset by default: an uncalibrated "
+                         "frame then raises rather than silently reverting "
+                         "to a constant. A real fixed-mount camera is one "
+                         "calibrated scale and is served by setting this.")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--out", default="docs/receipts/seg_eval.txt")
     ap.add_argument("--per-sku", action="store_true",
@@ -698,10 +954,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     crop_size = int(model_cfg.get("crop_size", 256))
     half = bool(model_cfg.get("half", True))
 
+    # The NOMINAL framing, kept only so the receipt can state how far the
+    # figures it used to publish were from the ones it publishes now.
+    # Nothing below multiplies by it.
     synth_cfg, synth_source = load_synth_config(
         ds_cfg["coco_path"], args.synth_config)
     synth_source = Path(synth_source).as_posix()
-    mm_per_px = resolve_mm_per_px(synth_cfg)
+    nominal_mm_per_px = resolve_mm_per_px(synth_cfg)
 
     from recog.bay_segmenter import BaySegmenter
     from recog.seg_dataset import BaySegDataset
@@ -739,11 +998,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         check_split_matches_checkpoint(args.checkpoint, ds_cfg["coco_path"],
                                        val_counts_now)
 
+    # Resolved BEFORE inference: an uncalibrated frame is a configuration
+    # error and should cost nothing but the time to notice it.
+    scales, scale_provenance = resolve_frame_scales(
+        full_dataset, val_indices, fallback=args.fallback_mm_per_px)
+    stats = scale_stats(scales)
+    log.info("scale: %d of %d crops calibrated from their own frame; "
+             "median %.4f, range %.4f-%.4f mm/px (nominal framing %.4f)",
+             scale_provenance["n_measured"], len(val_indices),
+             stats["median"], stats["min"], stats["max"], nominal_mm_per_px)
+
     segmenter = BaySegmenter(checkpoint=args.checkpoint, device=args.device,
                              crop_size=crop_size, half=half,
                              num_classes=num_classes)
 
-    results = evaluate(segmenter, full_dataset, val_indices, mm_per_px,
+    results = evaluate(segmenter, full_dataset, val_indices, scales,
                        num_classes=num_classes)
     latency = latency_table(segmenter)
 
@@ -752,13 +1021,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     report = format_report(
         results, latency,
         checkpoint=args.checkpoint, config_path=args.config,
-        synth_config_source=synth_source, mm_per_px=mm_per_px,
+        synth_config_source=synth_source,
+        scale_provenance=scale_provenance,
+        nominal_mm_per_px=nominal_mm_per_px,
         device=str(segmenter.device), checkpoint_note=checkpoint_note)
 
     if args.per_sku:
         by_asset = group_indices_by_asset(full_dataset, val_indices)
         per_sku_results = {
-            asset: evaluate(segmenter, full_dataset, idxs, mm_per_px,
+            asset: evaluate(segmenter, full_dataset, idxs, scales,
                             num_classes=num_classes)
             for asset, idxs in by_asset.items() if idxs
         }
@@ -788,6 +1059,11 @@ __all__ = [
     "CHANNEL_NAMES",
     "SELECT_ON",
     "MASK_HEAD_QUANTISATION_MM",
+    "MASK_HEAD_QUANTISATION_PX",
+    "UnknownScale",
+    "crop_image_path",
+    "resolve_frame_scales",
+    "scale_stats",
     "per_class_iou",
     "boundary_displacement_mm",
     "signed_area_error_mm2",

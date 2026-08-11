@@ -4,96 +4,102 @@ Tau calibration (placement-disagreement threshold)
   checkpoint        : recog/checkpoints/seg/best.pt
   config            : configs/segmentation.yaml
   synth config      : recog/dataset3d_seg/manifest.json
-  mm_per_px         : 0.6250
-  wall_inset        : 4.25 mm (7 px at this framing) - plan.placement_area's _DEFAULT_WALL_INSET_MM
-  cell footprint    : 18.3 x 65.0 mm (18650, CAD-measured)
+  mm_per_px         : per frame, from each frame's own render sidecar (camera.ortho_scale*1000 / width)
+    measured        : 126 of 126 crops over 112 frames
+    distribution    : median 0.8211, range 0.4903-1.0739 mm/px
+    fallback        : none configured - an uncalibrated frame raises UnknownScale rather than reverting to a constant
+    note            : the generator's NOMINAL framing (0.6250) is the framing at margin=1.0, zoom=1.0 and describes NO frame here. This calibration used it as a constant before 2026-08-11, which eroded the wall inset too deep AND tested with a cell too large, on every frame at once.
+  wall_inset        : 4.25 mm - plan.placement_area's _DEFAULT_WALL_INSET_MM - eroded per frame at 4-9 px (5 px at the median GSD)
+  cell footprint    : 18.3 x 65.0 mm (18650, CAD-measured), 22 x 79 px at the median GSD
   fail budget       : 5.00% of accepted cartridges may admit a cell
   split             : seed=0, 126 val crops total
 
 Population: cartridges with a PREDICTED bay region (P_direct non-empty) - 35 of 126 val crops. See the module docstring for why this is the only non-vacuous population: P_safe is empty whenever P_direct is empty, regardless of tau, so those crops can never admit a cell and tau never actually gates them.
-  IoU distribution: n=35, mean=0.7807, std=0.0817, min=0.5715, max=0.9607, fraction>0.95=0.0286
+  IoU distribution: n=35, mean=0.7826, std=0.0801, min=0.5695, max=0.9522, fraction>0.95=0.0286
 
-Per-cartridge records (this population):
-  file                             iou  opt_err_px  admits_cell
-  -------------------------------------------------------------
-  scene_00322.png               0.5715         293        False
-  scene_00454.png               0.6093         152        False
-  scene_00118.png               0.6860          32        False
-  scene_00192.png               0.6939         143        False
-  scene_00196.png               0.6942         236        False
-  scene_00414.png               0.7183          74        False
-  scene_00058.png               0.7187         261        False
-  scene_00080.png               0.7230         283        False
-  scene_00065.png               0.7239         263        False
-  scene_00076.png               0.7326         140        False
-  scene_00358.png               0.7352         375        False
-  scene_00414.png               0.7366         154        False
-  scene_00038.png               0.7393         189        False
-  scene_00394.png               0.7681         406        False
-  scene_00241.png               0.7746         290        False
-  scene_00330.png               0.7749         163        False
-  scene_00017.png               0.7791         207        False
-  scene_00475.png               0.7832         388        False
-  scene_00076.png               0.7846         166        False
-  scene_00320.png               0.7892         269        False
-  scene_00120.png               0.7986         859        False
-  scene_00407.png               0.8010         189        False
-  scene_00300.png               0.8077         186        False
-  scene_00137.png               0.8194         910        False
-  scene_00044.png               0.8229        1278        False
-  scene_00333.png               0.8271        1250        False
-  scene_00033.png               0.8311        1151        False
-  scene_00450.png               0.8329         379        False
-  scene_00293.png               0.8350          65        False
-  scene_00307.png               0.8423        1005        False
-  scene_00032.png               0.8689         287        False
-  scene_00115.png               0.8834         813        False
-  scene_00324.png               0.9232         346        False
-  scene_00483.png               0.9350         555        False
-  scene_00086.png               0.9607        1095        False
-  -------------------------------------------------------------
+Per-cartridge records (this population). mm_per_px is THIS frame's own ground
+sample distance, and inset_px / the cell footprint admits_a_cell tried to fit are
+derived from it per row, not from one split-wide constant:
+  file                           mm/px  inset_px     iou  opt_err_px  admits_cell
+  -------------------------------------------------------------------------------
+  scene_00322.png               0.7877         5  0.5695         293        False
+  scene_00454.png               0.8685         5  0.6197         163        False
+  scene_00118.png               0.8279         5  0.6570          32        False
+  scene_00196.png               0.8471         5  0.6942         236        False
+  scene_00192.png               0.9983         4  0.7227         203        False
+  scene_00065.png               0.6420         7  0.7239         263        False
+  scene_00058.png               0.9038         5  0.7269         265        False
+  scene_00358.png               0.6732         6  0.7304         377        False
+  scene_00414.png               0.8211         5  0.7311         158        False
+  scene_00080.png               0.7502         6  0.7322         303        False
+  scene_00038.png               0.9083         5  0.7401         189        False
+  scene_00414.png               0.8211         5  0.7438         142        False
+  scene_00394.png               0.8284         5  0.7454         416        False
+  scene_00330.png               0.8566         5  0.7718         163        False
+  scene_00076.png               1.0319         4  0.7754         192        False
+  scene_00475.png               0.8878         5  0.7763         409        False
+  scene_00320.png               0.7078         6  0.7806         292        False
+  scene_00017.png               0.7518         6  0.7861         214        False
+  scene_00241.png               0.9327         5  0.7918         296        False
+  scene_00300.png               1.0395         4  0.7968         225        False
+  scene_00120.png               0.5767         7  0.7986         859        False
+  scene_00407.png               0.7968         5  0.7991         294        False
+  scene_00076.png               1.0319         4  0.8004         217        False
+  scene_00333.png               0.7090         6  0.8176        1297        False
+  scene_00137.png               0.6289         7  0.8194         910        False
+  scene_00293.png               0.9132         5  0.8262          69        False
+  scene_00033.png               0.6856         6  0.8264        1209        False
+  scene_00044.png               0.4903         9  0.8360        1114        False
+  scene_00307.png               0.6601         6  0.8393        1005        False
+  scene_00450.png               1.0710         4  0.8583         416        False
+  scene_00115.png               0.9300         5  0.8638         851        False
+  scene_00032.png               1.0254         4  0.8994         471        False
+  scene_00324.png               0.8865         5  0.9108         422        False
+  scene_00483.png               0.7683         6  0.9283         649        False
+  scene_00086.png               0.6994         6  0.9522        1200        False
+  -------------------------------------------------------------------------------
 
 Calibration sweep (every observed IoU tried as a candidate tau, ascending):
        tau  n_accepted  n_fail  fail_rate  rejected_frac  meets_budget
   --------------------------------------------------------------------
-    0.5715          35       0     0.0000         0.0000          True <-- picked
-    0.6093          34       0     0.0000         0.0286          True
-    0.6860          33       0     0.0000         0.0571          True
-    0.6939          32       0     0.0000         0.0857          True
-    0.6942          31       0     0.0000         0.1143          True
-    0.7183          30       0     0.0000         0.1429          True
-    0.7187          29       0     0.0000         0.1714          True
-    0.7230          28       0     0.0000         0.2000          True
-    0.7239          27       0     0.0000         0.2286          True
-    0.7326          26       0     0.0000         0.2571          True
-    0.7352          25       0     0.0000         0.2857          True
-    0.7366          24       0     0.0000         0.3143          True
-    0.7393          23       0     0.0000         0.3429          True
-    0.7681          22       0     0.0000         0.3714          True
-    0.7746          21       0     0.0000         0.4000          True
-    0.7749          20       0     0.0000         0.4286          True
-    0.7791          19       0     0.0000         0.4571          True
-    0.7832          18       0     0.0000         0.4857          True
-    0.7846          17       0     0.0000         0.5143          True
-    0.7892          16       0     0.0000         0.5429          True
+    0.5695          35       0     0.0000         0.0000          True <-- picked
+    0.6197          34       0     0.0000         0.0286          True
+    0.6570          33       0     0.0000         0.0571          True
+    0.6942          32       0     0.0000         0.0857          True
+    0.7227          31       0     0.0000         0.1143          True
+    0.7239          30       0     0.0000         0.1429          True
+    0.7269          29       0     0.0000         0.1714          True
+    0.7304          28       0     0.0000         0.2000          True
+    0.7311          27       0     0.0000         0.2286          True
+    0.7322          26       0     0.0000         0.2571          True
+    0.7401          25       0     0.0000         0.2857          True
+    0.7438          24       0     0.0000         0.3143          True
+    0.7454          23       0     0.0000         0.3429          True
+    0.7718          22       0     0.0000         0.3714          True
+    0.7754          21       0     0.0000         0.4000          True
+    0.7763          20       0     0.0000         0.4286          True
+    0.7806          19       0     0.0000         0.4571          True
+    0.7861          18       0     0.0000         0.4857          True
+    0.7918          17       0     0.0000         0.5143          True
+    0.7968          16       0     0.0000         0.5429          True
     0.7986          15       0     0.0000         0.5714          True
-    0.8010          14       0     0.0000         0.6000          True
-    0.8077          13       0     0.0000         0.6286          True
-    0.8194          12       0     0.0000         0.6571          True
-    0.8229          11       0     0.0000         0.6857          True
-    0.8271          10       0     0.0000         0.7143          True
-    0.8311           9       0     0.0000         0.7429          True
-    0.8329           8       0     0.0000         0.7714          True
-    0.8350           7       0     0.0000         0.8000          True
-    0.8423           6       0     0.0000         0.8286          True
-    0.8689           5       0     0.0000         0.8571          True
-    0.8834           4       0     0.0000         0.8857          True
-    0.9232           3       0     0.0000         0.9143          True
-    0.9350           2       0     0.0000         0.9429          True
-    0.9607           1       0     0.0000         0.9714          True
+    0.7991          14       0     0.0000         0.6000          True
+    0.8004          13       0     0.0000         0.6286          True
+    0.8176          12       0     0.0000         0.6571          True
+    0.8194          11       0     0.0000         0.6857          True
+    0.8262          10       0     0.0000         0.7143          True
+    0.8264           9       0     0.0000         0.7429          True
+    0.8360           8       0     0.0000         0.7714          True
+    0.8393           7       0     0.0000         0.8000          True
+    0.8583           6       0     0.0000         0.8286          True
+    0.8638           5       0     0.0000         0.8571          True
+    0.8994           4       0     0.0000         0.8857          True
+    0.9108           3       0     0.0000         0.9143          True
+    0.9283           2       0     0.0000         0.9429          True
+    0.9522           1       0     0.0000         0.9714          True
   --------------------------------------------------------------------
 
-RESULT: tau = 0.5715
+RESULT: tau = 0.5695
   fail_rate         : 0.0000 (budget 0.0500)
   accepted          : 35/35 cartridges
   rejected_fraction : 0.0000
@@ -102,7 +108,7 @@ RESULT: tau = 0.5715
 Sample size caveat: n=35 cartridges. With fail_budget=5.00%, a single admitting cartridge in an accepted set this small already exceeds the budget for any accepted set under 20 cartridges - so at this sample size the calibration is, in practice, closer to a zero-tolerance test than a genuine 5% tolerance test. Treat tau as provisional until the validation split grows.
 
 IMPORTANT caveat, not just a sample-size one: NOT ONE of the 35 accepted cartridges admitted a cell, at any observed IoU down to the sample minimum - so fail_budget never actually bound, and the returned tau is simply the LOWEST IoU this split happened to contain, not a threshold discovered by trading safety against throughput. It is a lower bound on where an unsafe boundary might sit, not evidence that IoU below it is unsafe or that IoU at or above it is safe - this split never observed a failure to locate that boundary against.
-  Additionally: the largest optimistic error observed was 1278 px, against a 18.3x65.0 mm cell footprint of 3045 px^2 at this framing - 42.0% of one cell's area. Every record in this split fails on AREA ALONE; the morphological vs. areal distinction admits_a_cell exists for (Task 2's blob-vs-rim demonstration) is never exercised by this particular validation split, because no crop's error gets close enough to a cell's footprint to make shape the deciding factor. A validation set with larger errors would be a stronger test of tau, not just a larger one.
+  Additionally: the largest optimistic error observed was 851 px, against a 18.3x65.0 mm cell footprint of 1375 px^2 at this framing - 61.9% of one cell's area. Every record in this split fails on AREA ALONE; the morphological vs. areal distinction admits_a_cell exists for (Task 2's blob-vs-rim demonstration) is never exercised by this particular validation split, because no crop's error gets close enough to a cell's footprint to make shape the deciding factor. A validation set with larger errors would be a stronger test of tau, not just a larger one.
 
 Cross-check only, NOT the calibration result - calibrate() run over ALL 126 val crops (including those with no predicted bay, which can never admit a cell and should never be read as evidence of safety):
   tau = 0.0000, rejected_fraction = 0.0000, n=126
