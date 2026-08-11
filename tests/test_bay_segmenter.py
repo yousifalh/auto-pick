@@ -306,6 +306,46 @@ def test_check_split_matches_checkpoint_still_raises_when_coco_path_matches(tmp_
             dict(trained_on, bay=24))
 
 
+# ------------------------------------------------- singleton last batch --
+
+def test_drop_last_batch_true_when_the_final_batch_would_be_a_singleton():
+    """A train split of 721 crops at batch_size 8 leaves a final batch of
+    exactly 1. DeepLabV3's ASPP pooling branch reduces that to a
+    [1, 256, 1, 1] tensor, and BatchNorm in TRAINING mode raises
+    `ValueError: Expected more than 1 value per channel when training`.
+    This is not hypothetical: it is what
+    `configs/segmentation_anchored.yaml` (848 crops, 0.85 split -> 721
+    train) did on its first epoch, and it kills the run outright.
+    """
+    from recog.seg_training import drop_last_batch
+
+    assert drop_last_batch(721, 8) is True
+
+
+def test_drop_last_batch_false_when_the_final_batch_is_safe():
+    """Every other remainder trains fine, so nothing is dropped - the
+    existing baseline (361 crops -> 307 train, 307 % 8 == 3) must keep
+    seeing every crop in every epoch, exactly as it did when
+    `docs/receipts/seg_eval.txt` was produced.
+    """
+    from recog.seg_training import drop_last_batch
+
+    assert drop_last_batch(307, 8) is False
+    assert drop_last_batch(720, 8) is False   # remainder 0
+    assert drop_last_batch(722, 8) is False   # remainder 2
+
+
+def test_drop_last_batch_false_when_batch_size_is_one():
+    """batch_size 1 makes EVERY batch a singleton; dropping the last one
+    would not help and dropping them all would train on nothing. Such a
+    config is broken for BatchNorm regardless, and silently emptying the
+    loader would hide that instead of letting it surface.
+    """
+    from recog.seg_training import drop_last_batch
+
+    assert drop_last_batch(9, 1) is False
+
+
 # --------------------------------------------------------- latency exit --
 
 def test_latency_within_budget_true_when_the_batch8_row_passes():

@@ -147,6 +147,28 @@ def _build_scheduler(opt, cfg: Dict[str, Any], steps_per_epoch: int):
     return None
 
 
+def drop_last_batch(n_train: int, batch_size: int) -> bool:
+    """Whether the train loader must drop its final, short batch.
+
+    DeepLabV3's ASPP image-pooling branch collapses every feature map to
+    1x1, so a batch of ONE reaches BatchNorm as `[1, C, 1, 1]` - one
+    value per channel - and `F.batch_norm` raises in training mode
+    (`Expected more than 1 value per channel when training`). It is a
+    hard crash at the end of epoch 1, not a degradation.
+
+    Kept deliberately narrow: only the singleton remainder is dropped.
+    An unconditional `drop_last=True` would silently shorten every
+    epoch of every run, including the existing baseline whose published
+    IoUs (`docs/receipts/seg_eval.txt`) are the floor this work is
+    measured against - a second, gratuitous difference between the
+    baseline and the runs being compared to it. batch_size 1 is left
+    alone on purpose: it cannot be rescued by dropping one batch, and
+    emptying the loader would hide a broken config rather than surface
+    it.
+    """
+    return batch_size > 1 and n_train % batch_size == 1
+
+
 def _split_dataset(dataset, train_val_split: float, seed: int = 0):
     import torch
 
@@ -356,11 +378,20 @@ def train(cfg: Dict[str, Any], resume: bool = False) -> None:
     )
 
     train_cfg = cfg["training"]
+    batch_size = int(train_cfg.get("batch_size", 8))
+    drop_last = drop_last_batch(len(train_set), batch_size)
+    if drop_last:
+        log.info(
+            "train split of %d crops leaves a final batch of 1 at "
+            "batch_size %d; dropping it (BatchNorm cannot train on a "
+            "singleton batch - see drop_last_batch)",
+            len(train_set), batch_size)
     train_loader = torch.utils.data.DataLoader(
         train_set,
-        batch_size=int(train_cfg.get("batch_size", 8)),
+        batch_size=batch_size,
         shuffle=True,
         num_workers=int(train_cfg.get("num_workers", 0)),
+        drop_last=drop_last,
     )
     val_loader = torch.utils.data.DataLoader(
         val_set,
