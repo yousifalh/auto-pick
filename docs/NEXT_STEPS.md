@@ -35,11 +35,20 @@ mature into one either. Any statement of real-world performance
 anywhere in this project's documentation — this file, the FDR, a
 receipt — must be read as unvalidated and labelled as such.
 
-`docs/FDR_v3.md` does not yet carry a dedicated, explicit limitation
+~~`docs/FDR_v3.md` does not yet carry a dedicated, explicit limitation
 statement to this effect (§13.2(5)'s prose gets close but stops short of
 one). It needs one. That is a separate, deliberately larger edit and is
 intentionally **not** done as part of this pass — noted here so it is
-not forgotten.
+not forgotten.~~ **Done, 2026-08-11: `docs/FDR_v3.md` §13.2.2,
+"Limitation: sim-to-real transfer is unvalidated, and cannot be
+validated under this project's constraints."** It states the constraint,
+names every class of figure in the report as synthetic-to-synthetic,
+labels the three real-photo numbers as the smoke test they are, records
+what stands in for a transfer measurement (cross-distribution
+generalisation and domain randomisation) and how much weaker each is,
+and bounds what the limitation does *not* touch. §13.2's future-work
+list now signposts it, so items (1) and (4) can no longer be read as
+work this project deferred.
 
 Two corrections to how this document previously reasoned about the
 constraint, both worked through in full below:
@@ -77,7 +86,7 @@ Four plans were executed end to end. Every number below has a receipt in
 
 | Plan | What it built | Headline |
 |---|---|---|
-| A | Forbidden-mask FFDH shelf advance | 3.17 → **14.28 cells** at 2.5 % coverage, 40/40 paired seed wins |
+| A | Forbidden-mask FFDH shelf advance | 3.17 → **14.28 cells** at 2.5 % coverage, 40/40 paired seed wins (that measures `first_fit_decreasing`, which is frozen; the planner now runs `common.packing.pack_best_effort` at **14.55** — see "The packing ceiling" below) |
 | B | Five-class segmentation ground truth from CAD | `placement_area` = currently-free floor, **0 overlapping pixels** across 3280 mask pairs (full 502-scene tray-interior dataset; was 139 pairs on a 32-scene spot check) |
 | C | Per-ROI bay segmenter | IoU 0.8126; boundary displacement **0.949 mm** (bay) vs the 2.9 mm a mask head would quantise to |
 | D | Integration and arbitration | Planning **2.0 ms/cartridge** vs an 8 ms budget; segmentation 20.2 ms for 8 crops vs 50 ms (was 16.7 ms; an intermediate 40.9 ms reading was GPU-contention noise, since superseded by a clean re-measurement — see the tray-interior retrain note below) |
@@ -87,8 +96,15 @@ New modules: `recog/synth3d/bay.py`, `recog/seg_dataset.py`,
 `recog/seg_ablation.py`, `recog/calibrate_tau.py`, `plan/arbitration.py`,
 `scripts/forbidden_bench.py`.
 
-621 tests. The torch-free demo (`python main.py --config configs/demo.yaml`)
-still runs, which is what the FDR's reproducibility claim rests on.
+708 tests (was 621 when this table was written; the baseline moved
+through 666 / 678 / 704 as the three changes recorded in "Landed
+2026-08-11" below and one concurrent agent's work landed). The
+torch-free demo (`python main.py --config configs/demo.yaml`) still
+runs and is **unchanged**, which is what the FDR's reproducibility claim
+rests on. Since `12134c2` there is also a second, torch-requiring path —
+`python main.py --config configs/demo_seg.yaml` — that puts the trained
+segmenter in the same loop; the reproducibility claim does *not* rest on
+it and must not be moved onto it.
 
 The segmentation checkpoint referenced throughout this document (Plan C's
 row above, and items 1, 4 and 5 below) is `recog/checkpoints/seg/best.pt`
@@ -113,6 +129,54 @@ scale (not resumed — resuming would have silently mixed the old and
 new label conventions in one dataset), and the checkpoint was retrained
 from a fresh initialisation, not fine-tuned from the pre-fix weights.
 See FDR §13.2.1 for the full before/after and `docs/receipts/`.
+
+---
+
+## Landed 2026-08-11 — three things that were true in the docs and not in the code
+
+Recorded here because each one changes what a figure elsewhere in this
+document means. All three are measured, not asserted; none changed a
+metric definition.
+
+**1. τ is deleted from `plan/placement_area.py` (`5a619fc`).** It had
+been documented as retired since `dee9854` while the branch went on
+running, and at `configs/planning.yaml`'s own `mm_per_px: 0.38` it
+rejected **every** plannable cartridge it was offered — 0 before, 8
+after. Detail and the three-way value inconsistency it resolved: item 4
+below.
+
+**2. The segmenter is in the end-to-end loop (`12134c2`).** Before this,
+`main.py` ran only the heuristic extractor and the segmenter was
+unreachable under *any* config — `load_detector` took no `segmenter`
+argument and `_build_planner` hardcoded the heuristic. **Any earlier
+statement that the pipeline demonstrated the segmenter end to end was
+overstated; it is true now.** `configs/demo_seg.yaml` plus
+`docs/receipts/main_seg_run.txt`: 26 cartridges detected → 26 segmented
+→ 8 placement areas → 1 pick-and-place. Every way the new path could
+no-op raises instead, including a completed run that produced zero
+placement areas. Those frames are the segmenter's own training corpus,
+so the receipt is evidence about the **wiring**, not a generalisation
+measurement — that is what "The generalisation measurement" section
+below is for. `configs/demo.yaml` is untouched and still torch-free.
+
+**3. The packing ceiling is lifted (`d6c46ac`).** `first_fit_decreasing`
+never scans its shelf origin in y, and `_next_free_x` collapses a
+shelf's whole row band, so one forbidden region in the first shelf's band
+kills the entire pack: `scene_00005` handed the packer a 93 %-free grid
+containing a clear 112 × 48 mm rectangle and got **zero** cells. The
+planner now calls `common.packing.pack_best_effort` — FFDH plus a
+shelf-origin-scanning arm plus a shelf-free grid-greedy arm, maximum
+taken, ties to FFDH — so `best ≥ FFDH` holds **by construction** and no
+instance can regress. Real frames **8 → 17 cells** over the 7 capable
+instances of 30. `first_fit_decreasing` is frozen and `recog/synth3d`
+still calls it, so no dataset moves; FDR §6.3.1's pseudocode remains
+accurate *for FFDH*. Two consequences for figures in this document: Plan
+A's 14.28 is still the FFDH number (the shipping packer is 14.55 at the
+same coverage), and item 3's Δcells figures were measured under the
+FFDH-only planner and have not been re-run.
+
+Specs: `docs/superpowers/specs/2026-08-11-segmenter-integration.md`
+(items 1 and 2), `2026-08-11-packing-ceiling.md` (item 3).
 
 ---
 
@@ -150,6 +214,30 @@ Pooled over all 836 CAD test crops (selected mean is over
 | CAD control, hold out 13000 | 0.9045 | 0.8611 | 0.6320 | 0.7728 | 0.9412 | 0.7992 |
 | CAD control, hold out 20100 | 0.9032 | 0.8530 | 0.6412 | 0.7444 | 0.9387 | 0.7991 |
 | CAD control, hold out 26800 | 0.9044 | 0.8600 | 0.6322 | 0.7439 | 0.9437 | 0.7989 |
+| **procedural, anchored + crowned lid** (2026-08-11, see below) | **0.8755** | 0.7819 | 0.6360 | 0.6906 | 0.9120 | **0.7645** |
+
+**Do not quote the `bay` column of that table on its own — it conflates
+two unrelated quantities and understates the procedural result.** A
+pooled per-class IoU accumulates one union over all 836 crops, while the
+instance count printed beside it counts only the crops that *contain*
+the class, so painting `bay` on a closed cartridge is charged against
+the same number as segmenting a real bay badly. Split apart:
+
+| model | pooled `bay` (836 crops) | **present-only `bay`** (the 213 crops with a GT bay) | **sealed crops given a hallucinated bay** |
+|---|---:|---:|---:|
+| procedural, anchored | 0.6555 | **0.8801** | **136 / 623 = 21.8 %**, 675 460 px |
+| procedural, anchored + crowned lid | 0.8755 | **0.8856** | **16 / 623 = 2.6 %**, 22 559 px |
+| CAD control (each SKU scored by the fold that never saw it) | 0.9009 | **0.9013** | **2 / 623 = 0.3 %**, 722 px |
+
+On the crops that actually contain a bay, procedural training was
+already within **0.021** of the CAD ceiling before any fix — not the
+0.246 the pooled row shows. **91.4 % of the published gap was
+false-positive `bay` on sealed cartridges.** `battery` is the same
+mechanism (0.5593 pooled → 0.6924 present-only, control 0.7500);
+`electronics` (0.7541 → 0.7652) and `obstruction` (0.6306 → 0.6316) are
+barely affected and their pooled figures read as published. Report both
+halves — present-only IoU **and** the sealed false-positive rate —
+wherever this headline appears.
 
 The CAD-trained control is what makes this readable. Without it, a
 procedural selected mean of 0.68 would be ambiguous between "the model
@@ -231,13 +319,23 @@ the anchored procedural model on the same SKU:
 | SKU (crops) | model | bay | electronics | obstruction | battery |
 |---|---|---:|---:|---:|---:|
 | 10000 (202) | anchored | 0.6376 | 0.7623 | 0.6612 | 0.3399 ⚠ |
+| | crowned | 0.8430 | 0.8051 | 0.6665 | 0.5963 ⚠ |
 | | control (held out) | 0.9005 | 0.9023 | 0.6837 | 0.8173 ⚠ |
 | 13000 (218) | anchored | 0.6750 | 0.7856 | 0.7010 | 0.7267 |
+| | crowned | 0.8783 | 0.8030 | 0.7093 | 0.7856 |
 | | control (held out) | 0.8884 | 0.9067 | 0.6967 | 0.8019 |
 | 20100 (214) | anchored | 0.6344 | 0.6997 | 0.5043 | 0.5365 |
+| | crowned | 0.8706 | 0.7454 | 0.4897 | 0.7101 |
 | | control (held out) | 0.8988 | 0.7787 | 0.5000 | 0.7447 |
 | 26800 (202) | anchored | 0.6665 | 0.7573 | 0.6197 | 0.5331 |
+| | crowned | 0.8890 | 0.7748 | 0.6316 | 0.6101 |
 | | control (held out) | 0.9098 | 0.8310 | 0.6180 | 0.6763 |
+
+(The `crowned` rows were added 2026-08-11 from
+`docs/receipts/seg_eval_anchored_crown_on_cad_test.txt`; the `anchored`
+and `control` rows are unchanged. The crowned model closes most of the
+per-SKU `bay` gap on every SKU, and the ⚠ 14-crop caveat below applies
+to its `battery` figure exactly as to the other two rows.)
 
 ⚠ AnkerPowerCore10000's `battery` figures rest on **14 crops**, below the
 ~24–36-instance density this project treats as reportable. Flagged before
@@ -305,7 +403,9 @@ Reported rather than tuned away:
 Five-class disjointness held at **0 overlapping pixels** on every dataset
 generated for this work — anchored 5426 pairs, wide 6374, CAD test 11450,
 and the four leave-one-SKU-out controls at 15669 / 14270 / 13328 / 11040
-pairs. Suite green at 666 passing. `python main.py --config
+pairs — and on the two datasets rendered since (18650-only 13 689 pairs,
+crowned lid 13 589 pairs, both 0 overlapping). Suite green at **708
+passing** (was 666 when this line was written). `python main.py --config
 configs/demo.yaml` still runs torch-free (10 cycles, 10 placed). The
 `assembled` variant seals for procedural trays exactly as for CAD,
 verified numerically at full scale: 614 anchored / 593 wide / 627 CAD
@@ -435,7 +535,18 @@ its own shelf behaviour, not because the space is unsafe.
 pass at IoU 0.91–0.94, comfortably above both τ = 0.7492 and τ = 0.85 — because
 the gate measures a single prediction's *self-consistency*, not its
 *correctness against truth*. Worth remembering before relying on it for
-anything it was not designed to do.
+anything it was not designed to do. (Historical: that gate no longer
+exists in the code as of `5a619fc` — see item 4 below. The reasoning
+stands as a reason not to rebuild it.)
+
+**`scene_00106`'s packer artefact was a real defect and has since been
+fixed** — FFDH never scanned its shelf origin in y, so a forbidden region
+in the first shelf's row band voided the whole pack. The planner now runs
+`common.packing.pack_best_effort` (`d6c46ac`), which competes FFDH
+against two obstacle-tolerant arms and takes the maximum. Δcells has
+**not** been re-measured under the new packer, so the +0.032 mean and the
+2/126 negative-direction count above are both figures from the FFDH-only
+planner. Re-measuring them is now part of resolving this item.
 
 **Mitigations were tested and rejected on cost-benefit**: a larger wall inset
 (to 7.5 mm), requiring `P_safe` itself to admit a cell, and extra `P_safe`
@@ -518,11 +629,37 @@ disjoint CAD test set built for spec #2 they are lower for every model
 measured, CAD-trained controls included — see "The generalisation
 measurement" above before treating 0.6579/0.6907 as a floor.)
 
-`plan/placement_area.py` still defaults to 0.85 and nothing reads the
+~~`plan/placement_area.py` still defaults to 0.85 and nothing reads the
 calibrated value. That remains the right call, now for a stronger
 reason than before: the calibration is not merely uninformative on this
 split, it is retired as a mechanism. Wiring in any calibrated number
-would misrepresent an inert gate as a working safety threshold.
+would misrepresent an inert gate as a working safety threshold.~~
+
+**Superseded 2026-08-11 — τ is now retired in the CODE, not only in the
+prose, and the delay had a measured cost.** Everything above described a
+gate that was still running. `dee9854` changed the documentation and the
+comments; `plan/placement_area.py` went on evaluating
+`if iou < self.tau: raise PlacementDisagreement`. Three inconsistent
+values were live at once and none agreed — constructor default **0.85**
+(what every in-tree caller got), `configs/planning.yaml`'s
+`arbitration.tau: 0.7492` (read by **nothing**, grep-verified), and the
+README's **0.5715** (which described the YAML value as live). Measured on
+15 `recog/dataset3d_seg` frames through the real detector and segmenter
+(26 crops, 8 with a predicted `bay`): the gate admitted **3 of 8** at
+0.85, 6 at 0.7492, 7 at 0.5715 — and at `configs/planning.yaml`'s own
+`mm_per_px: 0.38`, **0 of 8**. That calibration widens the wall erosion
+7 px → 11 px, shrinking `P_derived` until the whole observed IoU range
+(0.639–0.848) sits below 0.85. **In the project's own configured
+calibration the gate rejected every cartridge it was ever offered,
+silently.** `5a619fc` deleted the branch, `self.tau`, the constructor
+argument (deleted rather than accepted-and-ignored, so a stale caller
+gets a `TypeError`) and the dead `arbitration.tau` key; both rows now
+read 8 of 8. `P_safe = P_direct ∩ P_derived` is unchanged, applied
+unconditionally, and separately pinned. `PlacementArea.consistency_iou`
+is still computed and reported; nothing acts on it. **There is no live
+description of τ anywhere in the docs any more — check before
+reintroducing one.** Record:
+`docs/superpowers/specs/2026-08-11-segmenter-integration.md`.
 
 ### 5. The validation split is small — still modest, and its per-class composition keeps shifting with the generator
 
@@ -716,13 +853,13 @@ the scale-up described in this step.
 
 ### Step 5 — Close the loop on the open items
 
-- Delete the `tau` config key, or repurpose it as a fixed, explicitly
+- ~~Delete the `tau` config key, or repurpose it as a fixed, explicitly
   un-calibrated conservative default (currently the key exists and
   nothing reads it; 0.85 is what `plan/placement_area.py` actually
-  applies). No longer "depends on a future step producing a τ worth
-  wiring" — per item 4, τ is retired as a confidence gate outright, so
-  no scene-difficulty or dataset-scale step downstream will ever produce
-  one worth wiring in.
+  applies).~~ **DONE, `5a619fc`** — deleted, along with the `iou < tau`
+  branch, `self.tau` and the constructor argument, after the gate was
+  measured to reject 8 of 8 plannable cartridges at the project's own
+  `mm_per_px`. See item 4 above.
 - Resolve the 2/126 damage cases (was 1/126 pre-fix, 2/54 before that) per
   item 3 above — not yet individually re-investigated on the current split.
 - Consider hardening `tests/test_synth3d.py`'s bpy-boundary check: it is a
