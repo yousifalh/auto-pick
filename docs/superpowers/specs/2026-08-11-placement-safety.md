@@ -319,6 +319,16 @@ paths, with the shipping commands.
   unchanged. No conclusion in that receipt or in FDR v3 turns on the
   difference; it strengthens the existing one.
 
+**Both were regenerated on 2026-08-11, after this section was written,
+by the agent that owns `docs/receipts/`.** Every figure predicted above
+reproduced exactly — all six of `main_seg_run`'s (2 / 2 / 7 / 6 / 13 /
+1, `frames_with_scale` 15 of 15) and all three of `seg_ablation`'s,
+with median, range and the negative count unmoved as stated. The
+predictions above are left as written; they were right. `README.md`,
+`docs/FDR_v3.md` §8, §10.6 and §13.2.1, and `docs/NEXT_STEPS.md` items
+2 and 3 were updated to the new figures in the same pass, each naming
+the superseded value and this commit.
+
 Four existing tests were edited, all in the same way and all for one
 reason: `tests/test_placement_area.py::_bay_label` was a 140 x 200 px
 crop, which at the 1.0 mm/px those tests use is a 110 x 170 mm cartridge

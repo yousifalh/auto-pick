@@ -1133,13 +1133,26 @@ Every way the new path could no-op therefore raises instead, including
 a completed run that produced zero placement areas.
 `configs/demo_seg.yaml` is the shipped instance, and
 `docs/receipts/main_seg_run.txt` is its tooling-generated receipt: **26
-cartridges detected → 26 segmented → 8 placement areas → 7 poses
-queued → 3 pick-and-places over 15 frames**, with every frame planned
-at its own ground sample distance read from that frame's render
-sidecar (15 of 15 frames carried one).
+cartridges detected → 26 segmented → 7 placement areas → 6 poses
+queued → 2 pick-and-places over 15 frames**, with one detector box
+rejected as not describing a single cartridge, and with every frame
+planned at its own ground sample distance read from that frame's
+render sidecar (15 of 15 frames carried one).
 
-**Both of those were corrected on 2026-08-11 and the superseded
-wording is worth naming.** This paragraph previously read *1
+**That receipt moved again at `0d7d204`, and the superseded figures
+are worth naming.** It read *8 placement areas → 7 poses → 3
+pick-and-places, 0 bad detector boxes* immediately before. Both halves
+of `0d7d204` show up in it: `_rasterise_mask` now calls a grid cell
+free only when *every* pixel it covers is free rather than only its
+centre pixel, which costs one placement area (and, one pose per cycle,
+one pick); and `BadDetectorBox`'s new contents condition rejects the
+one crop of 26 whose box spans a cartridge *and* three loose cells,
+which the centre check passed and the planner then planned onto bare
+backdrop. Both changes give up throughput to buy safety, and the
+receipt is where that trade is visible.
+
+**Two earlier figures in that same receipt paragraph were corrected on
+2026-08-11 and are also worth naming.** It previously read *1
 pick-and-place* — a figure that predated the packing fix at `d6c46ac`
 — and *at `mm_per_px: 0.625` (this dataset's true framing)*. The
 second is the substantive correction: 0.625 is the generator's framing
@@ -1508,17 +1521,28 @@ the counter now reads zero by construction rather than by
 configuration.** The exception type is retained because
 `bad_detector_box` derives from it and the planner still counts that.
 Its subclass **`bad_detector_box`**
-separates a *perception* failure — a detector box whose centre does
-not land on cartridge material — from a cartridge that is genuinely
+separates a *perception* failure — a detector box that does not
+describe one cartridge — from a cartridge that is genuinely
 full, which is normal operation and is deliberately not counted as a
-fault. The two are counted separately on the planner, and both are
+fault. Two complementary conditions raise it, one about *where* the
+crop landed and one about *what* it contains: the crop's centre is on
+background while the crop is not empty, or (added in `0d7d204`) the
+predicted placeable floor measures larger, at that frame's own scale,
+than the largest cataloged cartridge's outer footprint — a floor
+bigger than a whole cartridge is not one cartridge's floor. The two
+are counted separately on the planner, and both are
 absorbed by the existing per-cartridge exception handler, so either
 costs one cartridge-cycle of throughput rather than stopping the
 loop. `placement_disagreement` has no rate to measure because it can no
-longer fire; `bad_detector_box` has none measured on this benchmark
+longer fire; `bad_detector_box` has no rate measured on this benchmark
 because the segmentation extractor is not in the default configuration
-it runs (`docs/receipts/main_seg_run.txt`, the end-to-end run that does
-use it, reports 0 of each over 26 cartridges).
+it runs. On the end-to-end run that does use it
+(`docs/receipts/main_seg_run.txt`) the counts are **0
+`placement_disagreement` and 1 `bad_detector_box` over 26
+cartridges** — the second condition firing on a box that spans a
+cartridge and three loose cells. That receipt read *0 of each* before
+`0d7d204`: the centre check alone passed this box, because its centre
+does sit on real foreground.
 
 ### 10.7 Design ablations
 
@@ -2170,17 +2194,34 @@ columns and displaced obstacles by up to ~10 mm (final whole-branch
 review); the corrected re-measurement on the original 54-crop split
 was +0.037 mean, 2 of 54 negative. Re-measured again using
 `plan.placement_area._rasterise_mask` — production's own rasteriser,
-unchanged — running the fixed packer of §6.3.1 on the ground-truth
-mask and on the predicted mask from the completed 40-epoch checkpoint
-gives a mean difference of **+0.032 cells** over the same **126**
-validation crops (numerically unchanged from the pre-fix figure at
-this rounding — a coincidence of the mean, not of the underlying
-distribution): **120 of 126 exact** (was 121), 4 losing a cell to
-conservatism (unchanged), and — the figure that matters for safety —
-**2 of 126 in the negative direction** (was 1 of 126; range widened to
-[−2, +2] from [−1, +2]). This is a regression on the metric that
+whatever it currently is — running the fixed packer of §6.3.1 on the
+ground-truth mask and on the predicted mask from the 40-epoch checkpoint
+gives a mean difference of **+0.008 cells** over the same **126**
+validation crops: **122 of 126 exact**, 2 losing a cell to
+conservatism, and — the figure that matters for safety —
+**2 of 126 in the negative direction** (range [−2, +2]). This is a
+regression on the metric that
 matters most and is reported as one: the damage-direction fraction
-got *worse* after the tray fix, not better. Positive means cells the
+got *worse* after the tray fix, not better — it was 1 of 126 pre-fix
+(range [−1, +2]) and 2 of 54 on the smaller pre-scale-up split, and
+the whole-cell rasterisation below did not move it.
+
+**The mean and the loss count moved at `0d7d204`; the damage-direction
+count did not.** This paragraph read *+0.032 mean, 120 of 126 exact, 4
+losing a cell* until then, and noted that the mean was numerically
+unchanged from the pre-tray-fix figure at that rounding. `0d7d204`
+made `_rasterise_mask` call a grid cell free only when every pixel it
+covers is free, where before it checked only the cell's centre pixel.
+`recog.seg_ablation._pack_count` deliberately calls production's own
+rasteriser, so **both** sides of the difference requantised at once,
+and two of the four conservatism losses became exact agreements. Read
+that carefully: it is a change in the measuring instrument, not
+evidence that the segmenter improved — the checkpoint is the same
+`best.pt` throughout, and mask IoU did not move. What it says is that
+some of the gap this metric used to report was the two sides
+disagreeing about half-wall cells rather than about the mask. Which
+side's count fell has not been separated, and the 2 negative crops are
+the same 2 and remain the open item. Positive means cells the
 ground truth would have placed and the prediction gave up; negative
 means a cell packed where the truth forbids it, the direction that
 puts a cell on a PCB. The earlier split's two negative crops (from the
@@ -2539,8 +2580,11 @@ GPU-contention-inflated intermediate reading (40.9 ms, superseded by a
 clean re-measurement in `docs/receipts/seg_eval.txt`) is set aside.
 Δcells (§13.2.1) got *worse* on the metric that matters most —
 now 2 of 126 crops in the damage direction (was 1 of 126 pre-fix, 2 of
-54 on the smaller pre-scale-up split) — while its mean is unchanged at
-+0.032. τ has moved from "uninformative on this split" to **retired as
+54 on the smaller pre-scale-up split), and `0d7d204` did not move that
+count — while its mean is now **+0.008** (it read +0.032 until
+`0d7d204` requantised both sides of the difference; §13.2.1 explains
+why that is an instrument change and not a segmenter improvement).
+τ has moved from "uninformative on this split" to **retired as
 a confidence gate**: per-SKU, IoU and optimistic error correlate
 POSITIVELY in all four SKUs (`docs/receipts/tau_independence_correlation.txt`),
 the opposite sign a gate needs, traced to the argmax mechanism in
@@ -2551,8 +2595,10 @@ is not — and as of commit `5a619fc` that is true of the running code
 and not only of this document. Also now demonstrated, and previously
 overstated: the segmenter runs in `main.py`'s end-to-end loop
 (`12134c2`, `configs/demo_seg.yaml`, `docs/receipts/main_seg_run.txt` —
-26 detected, 26 segmented, 8 placement areas, 7 poses queued, 3
-pick-and-places over 15 frames; this read "1 pick-and-place" before the
+26 detected, 26 segmented, 7 placement areas, 6 poses queued, 2
+pick-and-places and 1 rejected detector box over 15 frames; this read
+"8 areas / 7 poses / 3 pick-and-places / 0 bad boxes" until the
+placement-safety fix at `0d7d204`, and "1 pick-and-place" before the
 packer fix at `d6c46ac` and the per-frame calibration at `58dd21d`),
 where before it was unreachable under any configuration; see §8. Not
 demonstrated: synthetic-to-real

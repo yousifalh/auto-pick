@@ -1,7 +1,7 @@
 
 End-to-end run: recognition -> planning -> execution
 ==================================================================
-  generated     : 2026-08-11T19:10:11
+  generated     : 2026-08-11T20:08:13
   command       : python main.py --config configs/demo_seg.yaml --receipt docs/receipts/main_seg_run.txt
   config        : configs/demo_seg.yaml
   frames        : recog/dataset3d_seg/images
@@ -18,12 +18,12 @@ counts twice); `placement areas` counts twin cartridges that newly
 obtained one, and IDs are never reused, so it does not double-count
 a cartridge that simply persisted.
 
-  cycles executed        : 3
+  cycles executed        : 2
   cartridges detected    : 26
   cartridges segmented   : 26
-  placement areas        : 8
+  placement areas        : 7
   placement disagreements: 0
-  bad detector boxes     : 0
+  bad detector boxes     : 1
   areas dropped (rescale): 0
 
 Execution (mock KUKA unless mode.robot is `real`). A pose needs a
@@ -32,11 +32,11 @@ executes at most one pose per cycle before re-planning (PPR 5.4),
 so `placed` is bounded by cycles, not by placement areas.
 
   loose batteries detected: 78
-  poses queued           : 7
-  placed                 : 3
+  poses queued           : 6
+  placed                 : 2
   pick failed            : 0
   place failed           : 0
-  empty queue (run ended): 12
+  empty queue (run ended): 13
 
 The remaining cartridges are not errors. The segmenter
 predicts no `bay` channel on most crops - those raise a plain

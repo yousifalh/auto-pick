@@ -16,12 +16,12 @@ this figure was dominated by the packer abandoning shelves, not by mask error.
 
   wall_inset_mm used: 4.25
   validation crops (n=126):
-    mean   : 0.032
+    mean   : 0.008
     median : 0.000
     range  : [-2, 2]
-    positive (cells lost)   : 4 / 126
+    positive (cells lost)   : 2 / 126
     negative (cells packed where forbidden) : 2 / 126
-    zero (no difference)    : 120 / 126
+    zero (no difference)    : 122 / 126
 
 Heuristic vs segmenter on the real photographs (recog/realtest)
 ------------------------------------------------------------------

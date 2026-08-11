@@ -152,7 +152,14 @@ argument and `_build_planner` hardcoded the heuristic. **Any earlier
 statement that the pipeline demonstrated the segmenter end to end was
 overstated; it is true now.** `configs/demo_seg.yaml` plus
 `docs/receipts/main_seg_run.txt`: 26 cartridges detected → 26 segmented
-→ 8 placement areas → 1 pick-and-place. Every way the new path could
+→ 7 placement areas → 6 poses queued → 2 pick-and-places, with 1
+detector box rejected as not describing one cartridge. (This line read
+*8 placement areas → 1 pick-and-place* and was doubly stale: the pick
+count predated the packer fix at `d6c46ac`, which FDR §8 had already
+corrected to 3, and the area and box counts predate `0d7d204`'s
+whole-cell rasterisation and box-contents guard. Regenerated
+2026-08-11 from `python main.py --config configs/demo_seg.yaml
+--receipt docs/receipts/main_seg_run.txt`.) Every way the new path could
 no-op raises instead, including a completed run that produced zero
 placement areas. Those frames are the segmenter's own training corpus,
 so the receipt is evidence about the **wiring**, not a generalisation
@@ -485,14 +492,24 @@ plan depends on it being used.
 
 ### 3. Damage-direction crops — got WORSE this retrain, and still not re-investigated on the current split
 
-Δcells is mean **+0.032** over the 126-crop validation split — numerically
-identical to the pre-tray-fix figure — but the negative-direction count
-**rose to 2 of 126** (was 1 of 126 pre-fix; 2 of 54 further back, before
-the dataset was first scaled to 502/841). This is a regression on the
+Δcells is mean **+0.008** over the 126-crop validation split, with the
+negative-direction count **at 2 of 126** (was 1 of 126 pre-tray-fix; 2
+of 54 further back, before the dataset was first scaled to 502/841).
+This is a regression on the
 metric that matters most, reported as one rather than smoothed over by
-the unchanged mean: the tray fix corrected the geometry but did not
+the small mean: the tray fix corrected the geometry but did not
 improve, and by this one measure slightly worsened, the fraction of
 crops where the prediction packs a cell the ground truth forbids.
+
+**The mean fell from +0.032 to +0.008 at `0d7d204`, and this item did
+not get better.** That commit made `_rasterise_mask` call a grid cell
+free only if every pixel it covers is free rather than only its centre
+pixel; `recog.seg_ablation._pack_count` calls that same production
+rasteriser, so both sides of the difference requantised and two of the
+four conservatism losses became exact agreements (120 → 122 of 126
+exact). The damage-direction count — the only number this item is
+about — is unmoved at 2 of 126, and they are the same 2 crops. Do not
+read the smaller mean as progress here.
 
 **The investigation below describes an EARLIER split's two negative
 crops under an EARLIER checkpoint; it has not been re-run against
@@ -544,9 +561,17 @@ fixed** — FFDH never scanned its shelf origin in y, so a forbidden region
 in the first shelf's row band voided the whole pack. The planner now runs
 `common.packing.pack_best_effort` (`d6c46ac`), which competes FFDH
 against two obstacle-tolerant arms and takes the maximum. Δcells has
-**not** been re-measured under the new packer, so the +0.032 mean and the
+**not** been re-measured under the new packer, so the +0.008 mean and the
 2/126 negative-direction count above are both figures from the FFDH-only
-planner. Re-measuring them is now part of resolving this item.
+planner. Re-measuring them is now part of resolving this item. **This
+still holds after the 2026-08-11 regeneration** — re-running
+`python -m recog.seg_ablation` does not change it, because
+`recog.seg_ablation._pack_count` calls
+`common.packing.first_fit_decreasing` directly and never reaches
+`pack_best_effort`.
+The mean moved (from +0.032) for an unrelated reason, the rasteriser
+change at `0d7d204`; the packer under it is the same FFDH it always
+was.
 
 **Mitigations were tested and rejected on cost-benefit**: a larger wall inset
 (to 7.5 mm), requiring `P_safe` itself to admit a cell, and extra `P_safe`
