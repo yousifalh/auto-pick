@@ -1,0 +1,59 @@
+# Bay segmenter, trained on the WIDE procedural tray set (spec #2,
+# generalisation plan Task 18). Same architecture/training/augmentation as
+# configs/segmentation.yaml - only dataset.coco_path/img_dir and
+# training.checkpoint_dir differ, so this run and segmentation_anchored.yaml
+# (plus the four leave-one-SKU-out CAD-control runs) are comparable on
+# training conditions alone.
+model:
+  num_classes: 6        # background, cartridge, bay, electronics, obstruction, battery
+  pretrained: true
+  crop_size: 256        # at or above native crop resolution; see bay_segmenter
+  half: true            # fp16 - load-bearing for the 50 ms budget
+
+dataset:
+  # recog/dataset3d_seg_wide: 502 scenes, procedural cartridge trays
+  # sampled from the WIDE TrayRangeCfg band (generalisation plan Task 15),
+  # produced with:
+  #   blender -b --python recog/generate3d.py -- --n 502 \
+  #       --out recog/dataset3d_seg_wide --device GPU \
+  #       --tray-set wide --resume
+  coco_path: recog/dataset3d_seg_wide/instances_seg.json
+  img_dir: recog/dataset3d_seg_wide/images
+  train_val_split: 0.85
+  # Both the split RNG and index-assignment RNG (see recog.seg_dataset's
+  # per-dataset jitter rng) are seeded; this is the split seed specifically,
+  # logged every run so the exact train/val partition is reproducible.
+  split_seed: 0
+  # Jitter magnitude should match the detector's measured box error, not be
+  # chosen. Run recog.eval_real and read the median IoU of matched cartridge
+  # boxes; 0.06 corresponds to roughly IoU 0.88.
+  jitter_frac: 0.06
+
+training:
+  epochs: 40
+  batch_size: 8         # crops are 256px, far smaller than the detector's
+  num_workers: 0        # Windows spawn; raise on Linux
+  learning_rate: 0.01
+  momentum: 0.9
+  weight_decay: 0.0001
+  lr_scheduler: cosine
+  dice_weight: 0.5
+  checkpoint_dir: recog/checkpoints/seg_wide
+  # Selection is on bay/electronics/obstruction IoU only. Including
+  # background and cartridge lets a model that gets the big easy regions
+  # right mask a failure on the three classes the placement mask needs.
+  select_on: [bay, electronics, obstruction]
+
+augmentation:
+  brightness_limit: 0.55
+  contrast_limit: 0.50
+  gamma_limit: [45, 190]
+  hue_shift_limit: 15
+  sat_shift_limit: 30
+  val_shift_limit: 20
+  motion_blur_limit: [3, 11]
+  gauss_noise_std_range: [0.02, 0.14]
+  p_photometric: 0.85
+  p_flip: 0.5
+  p_rot90: 0.5
+  p_camera: 0.6

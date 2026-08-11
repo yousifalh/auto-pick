@@ -1,0 +1,48 @@
+# Bay segmenter EVALUATION config for the held-out CAD test set (spec #2,
+# generalisation plan Task 19). Not used for training - train_val_split is
+# 0.0 so `_split_dataset`'s n_train = round(0.0 * n) = 0, putting every crop
+# in the validation split. This set was never trained on by any of the six
+# models it evaluates; nothing here should be excluded as "training data".
+model:
+  num_classes: 6        # background, cartridge, bay, electronics, obstruction, battery
+  pretrained: true
+  crop_size: 256        # at or above native crop resolution; see bay_segmenter
+  half: true            # fp16 - load-bearing for the 50 ms budget
+
+dataset:
+  # recog/dataset3d_seg_cad_test: held-out CAD-only test set (generalisation
+  # plan Task 16, the four Anker assemblies, --tray-set defaults to cad),
+  # produced with:
+  #   blender -b --python recog/generate3d.py -- --n 500 \
+  #       --out recog/dataset3d_seg_cad_test --device GPU --resume
+  coco_path: recog/dataset3d_seg_cad_test/instances_seg.json
+  img_dir: recog/dataset3d_seg_cad_test/images
+  train_val_split: 0.0
+  split_seed: 0
+  jitter_frac: 0.06
+
+training:
+  epochs: 40
+  batch_size: 8
+  num_workers: 0
+  learning_rate: 0.01
+  momentum: 0.9
+  weight_decay: 0.0001
+  lr_scheduler: cosine
+  dice_weight: 0.5
+  checkpoint_dir: recog/checkpoints/seg
+  select_on: [bay, electronics, obstruction]
+
+augmentation:
+  brightness_limit: 0.55
+  contrast_limit: 0.50
+  gamma_limit: [45, 190]
+  hue_shift_limit: 15
+  sat_shift_limit: 30
+  val_shift_limit: 20
+  motion_blur_limit: [3, 11]
+  gauss_noise_std_range: [0.02, 0.14]
+  p_photometric: 0.85
+  p_flip: 0.5
+  p_rot90: 0.5
+  p_camera: 0.6

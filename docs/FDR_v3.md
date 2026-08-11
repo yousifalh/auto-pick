@@ -1501,6 +1501,78 @@ documented revision of the production default. The project's most valuable artef
 the pipeline itself but the testing and ablation discipline that
 allowed this finding to surface before submission.
 
+### 13.1.1 Generalisation to unseen tray geometry (spec #2)
+
+**Every figure in this subsection is synthetic-to-synthetic. None of it
+is a sim-to-real measurement.** Real photographs carrying segmentation
+ground truth do not exist for this project (§13.2, and `recog/realtest/`
+carries boxes only), so sim-to-real transfer is not measurable here at
+all. What is measurable, and what this subsection reports, is whether a
+segmenter trained exclusively on **procedurally generated cartridge
+trays** transfers to the four **real measured Anker CAD assemblies** it
+never saw in training. That constraint is repeated beside every number
+below because it is the constraint the whole measurement works within.
+
+Six segmenters were trained, each from a fresh initialisation on the
+identical 40-epoch schedule and differing only in training data: two on
+procedural trays (an `anchored` sampling band, held within and slightly
+beyond what the four real SKUs span, and a `wide` band deliberately
+outside it), and four leave-one-SKU-out CAD controls, each trained on
+three real SKUs with the fourth excluded. All six were scored against the
+same 836 held-out CAD test crops from a 500-scene render disjoint from
+every training set, per-SKU and per-class. Receipts:
+`docs/receipts/seg_eval_*_on_cad_test.txt`.
+
+Pooled over all 836 CAD test crops (selected mean over
+`bay`/`electronics`/`obstruction`):
+
+| trained on | bay | electronics | obstruction | battery | cartridge | selected mean |
+|---|---:|---:|---:|---:|---:|---:|
+| procedural, anchored | 0.6555 | 0.7541 | 0.6306 | 0.5593 | 0.8088 | **0.6801** |
+| procedural, wide | 0.6536 | 0.7565 | 0.6280 | 0.5502 | 0.7833 | **0.6794** |
+| CAD control (4 folds) | 0.9032–0.9131 | 0.8530–0.8634 | 0.6320–0.6507 | 0.7439–0.7833 | 0.9387–0.9437 | 0.7989–0.8091 |
+
+The CAD-trained control is the load-bearing part of the design. Without
+it, a procedural selected mean of 0.68 is ambiguous between "the model
+fails to generalise" and "the procedural trays are unrealistic" — two
+different problems with two different fixes. With it, the answer is
+neither in general: **the shortfall is class-by-class and tracks how much
+of each class's geometry the procedural builder actually invents.** `bay`
+(the free tray floor) and `cartridge` (the tray silhouette) are invented
+wholesale and show the largest gaps (−0.25 and −0.14). `battery` is
+−0.20, consistent with the procedural sets deliberately mixing three cell
+formats against an 18650-only CAD test set. `obstruction` alone matches
+the control — and that is not a transfer result: obstruction geometry is
+emitted by a single shared code path (`world.build_obstructions`),
+identical for CAD and procedural scenes, so parity is the expected
+outcome and is reported here as a shared-code artefact rather than as
+evidence.
+
+Decision 2's anchored-versus-wide question — whether sampling beyond what
+the real SKUs span helps — **came out null**: 0.6801 vs 0.6794, with no
+per-SKU per-class separation the instance counts support. Wide is
+meaningfully worse on its own validation split (0.6489 vs 0.7161) without
+buying anything on the CAD test set.
+
+Two results are reported as regressions rather than tuned away. First,
+`obstruction` falls below the previously published 0.6579 floor
+(§13.2.1's receipt) for **all six models, CAD-trained controls included**
+(0.6320–0.6507); because even a CAD-trained model misses it, this
+measures the new disjoint test set being harder than the old
+same-distribution split, not a procedural-training weakness. Second,
+`battery` falls below the published 0.6907 floor for the two procedural
+models (0.5593/0.5502) while all four controls clear it (0.7439–0.7833) —
+here the control does separate the explanations, and the procedural cell
+mix is the cause. One per-SKU figure is explicitly under-powered and was
+flagged before the results were read: AnkerPowerCore10000's `battery`
+rests on 14 crops, below the ~24–36-instance density this project treats
+as reportable.
+
+Five-class disjointness held at **0 overlapping pixels** across all seven
+datasets generated for this work (5426, 6374, 11450, 15669, 14270, 13328
+and 11040 mask pairs respectively), extending the guarantee previously
+established for CAD-only scenes to procedurally generated geometry.
+
 ### 13.2 Future work
 
 One item previously listed here as priority-2 future work — fixing

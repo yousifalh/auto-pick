@@ -1,0 +1,58 @@
+
+Bay segmenter evaluation
+========================================
+  checkpoint        : recog/checkpoints/seg_wide/best.pt
+  config            : configs/segmentation_wide.yaml
+  synth config      : recog/dataset3d_seg_wide/manifest.json
+  mm_per_px         : 0.6250 (layout.area[0]*1000 / render.res[0])
+  device            : cuda
+  validation crops  : 124
+
+Per-class IoU (pooled over the validation split; NaN = class absent from both pred and truth over the whole split, not scored as 0):
+  class              IoU   instances
+  ----------------------------------
+  background      0.3868         119
+  cartridge       0.9422         122
+  bay             0.8676          36
+  electronics     0.4547          18
+  obstruction     0.6245          19
+  battery         0.7498          24
+  ----------------------------------
+  selected mean IoU over ['bay', 'electronics', 'obstruction'] (instances={'bay': 36, 'electronics': 18, 'obstruction': 19}): 0.6489
+  note: background IoU (0.3868 on 119 crops) is STRUCTURAL, not a comparable failure - a crop is the union of the unit's OWN boxes, so background is only the thin leftover corners and gaps, a small region where IoU is naturally harsh. It is not evidence against the model.
+  note: cartridge (122 instances) and bay (36 instances) crop populations are OVERLAPPING on this validation split, measured fresh this run (not assumed): 88 crops carry cartridge only, 2 carry bay only, 34 carry BOTH in the SAME crop, 0 carry neither. See seg_dataset.py's module docstring for why this can no longer be assumed disjoint (real tray-wall geometry, commits 27cbd97..9fcf136). Either way, 0.9422 and 0.8676 are each pooled independently over their own class's pixels across the whole split - a marginal per-class statistic, not a per-crop joint one - so this is still not evidence the model handles both together within the SAME crop, even on crops where both truly co-occur.
+  note: checkpoint selection is noise-limited - best.pt 0.6708 and last.pt 0.6677 differ by 0.0031 on 36/18/19 (bay/electronics/obstruction) val instances, and both ship.
+
+Boundary displacement, mm (mean distance from a predicted boundary pixel to
+the nearest ground-truth boundary pixel; the figure that chose a per-ROI
+segmenter over a 28x28 Mask R-CNN head, whose quantisation at this framing is 2.9 x 6.4 mm):
+  class               mm     crops
+  --------------------------------
+  bay              2.984        34
+  electronics      6.012        17
+  obstruction      2.411        17
+  --------------------------------
+  verdict: NOT below the mask-head quantisation figure for at least one class - the architecture choice in spec 3.1 is NOT supported by this measurement and should be revisited, not defended.
+
+Signed placeable-area error, mm^2 (optimistic = predicted placeable where truth
+is not, the error that can put a cell on a PCB; conservative = the opposite,
+a lost cell, not a safety issue). Mean per crop and total over the split:
+  class          opt mean   opt total   cons mean   cons total
+  ------------------------------------------------------------
+  bay               330.5     40978.1       228.8      28372.3
+  electronics       273.3     33890.2        78.3       9706.6
+  obstruction        65.6      8135.5        63.9       7924.6
+  ------------------------------------------------------------
+
+Latency vs the FDR 10.4 50 ms end-to-end budget (fp16 batched inference):
+looped_ms is the SAME crops through segment_batch() one at a time (batch size 1,
+n calls) - the path batching replaced. This is the single measured source for
+the batching-latency figure; quote THIS receipt rather than a hand-measured one.
+   cartridges   total_ms  per_cart_ms  within_50ms   looped_ms
+  ------------------------------------------------------------
+            1       15.6        15.55         True        15.7
+            2       14.3         7.16         True        24.9
+            4       15.2         3.81         True        50.4
+            8       39.5         4.93         True       127.9
+  ------------------------------------------------------------
+  at 8 cartridges: 39.5 ms batched vs 127.9 ms looped (3.2x) - batching is load-bearing, not an optimisation: the looped figure breaches the 50 ms end-to-end budget on its own.

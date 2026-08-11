@@ -116,6 +116,155 @@ See FDR §13.2.1 for the full before/after and `docs/receipts/`.
 
 ---
 
+## The generalisation measurement (spec #2, 2026-08-11)
+
+**Every number in this section is synthetic-to-synthetic. None of it is a
+sim-to-real measurement, and none of it should be quoted as one.** Real
+photographs with segmentation ground truth do not exist for this project
+and will not (see item 2 below), so sim-to-real transfer cannot be
+measured at all. What *can* be measured is whether a segmenter trained on
+**procedurally generated cartridge trays it has never seen a real example
+of** transfers to the four **real measured Anker CAD assemblies** — and
+that is what this is. Design spec §0 and §12.
+
+Six models, each trained from a fresh initialisation on the identical
+40-epoch schedule, differing only in dataset: `anchored` and `wide`
+(procedural trays, 502 scenes each), and four leave-one-SKU-out CAD
+controls (502 scenes each, one Anker SKU excluded from training). All six
+are scored against the **same** 836 held-out CAD test crops
+(`recog/dataset3d_seg_cad_test`, 500 scenes, disjoint from every training
+set). Receipts: `docs/receipts/seg_eval_{anchored,wide}_on_cad_test.txt`,
+`seg_eval_cad_control_<SKU>_on_cad_test.txt` (×4),
+`seg_eval_{anchored,wide}_on_{anchored,wide}_val.txt`.
+
+### Headline: procedural training reaches the CAD-trained ceiling on some classes and not others
+
+Pooled over all 836 CAD test crops (selected mean is over
+`bay`/`electronics`/`obstruction`, as `select_on` defines it):
+
+| trained on | bay | electronics | obstruction | battery | cartridge | selected mean |
+|---|---:|---:|---:|---:|---:|---:|
+| procedural, anchored | 0.6555 | 0.7541 | 0.6306 | 0.5593 | 0.8088 | **0.6801** |
+| procedural, wide | 0.6536 | 0.7565 | 0.6280 | 0.5502 | 0.7833 | **0.6794** |
+| CAD control, hold out 10000 | 0.9131 | 0.8634 | 0.6507 | 0.7833 | 0.9424 | 0.8091 |
+| CAD control, hold out 13000 | 0.9045 | 0.8611 | 0.6320 | 0.7728 | 0.9412 | 0.7992 |
+| CAD control, hold out 20100 | 0.9032 | 0.8530 | 0.6412 | 0.7444 | 0.9387 | 0.7991 |
+| CAD control, hold out 26800 | 0.9044 | 0.8600 | 0.6322 | 0.7439 | 0.9437 | 0.7989 |
+
+The CAD-trained control is what makes this readable. Without it, a
+procedural selected mean of 0.68 would be ambiguous between "the model
+fails to generalise" and "the procedural trays are unrealistic". **The
+numbers support neither as a blanket answer: the shortfall is
+class-by-class, and it tracks almost exactly how much of each class's
+geometry the procedural tray builder actually generates.**
+
+- `bay` (`placement_area`) is the free tray floor — geometry the
+  procedural builder invents wholesale. Largest gap: 0.655 vs 0.904,
+  **−0.25**.
+- `cartridge` is the tray's own outer silhouette — also invented.
+  0.81/0.78 vs 0.94, **−0.14**.
+- `battery` is cells seated at the packer's pitch inside that invented
+  cavity, and the procedural sets deliberately mix three cell formats
+  (18650/21700/26650) where all four CAD SKUs are 18650-only. **−0.20**.
+- `obstruction` is foreign matter dropped onto the bay floor by
+  `world.build_obstructions` — **one call site, byte-identical code for
+  CAD and procedural scenes**. It is the one class where procedural
+  training matches the CAD-trained control: 0.6306 vs 0.6320–0.6507
+  pooled.
+
+That last row reads like a success and is not one. It was checked rather
+than celebrated: obstruction geometry is *shared source code*, not
+something the procedural pipeline had to generalise to, so parity there
+is the expected result and is **not** evidence of transfer. Read the
+`bay`/`cartridge`/`battery` gaps as the actual answer.
+
+### Leave-one-SKU-out: each control scored on the SKU it never saw
+
+For SKU *X*, `control_X` was trained on the other three SKUs only, so on
+*X* it is itself generalising to unseen geometry — the fair ceiling for
+"trained on real measured trays, tested on a new one". Compared against
+the anchored procedural model on the same SKU:
+
+| SKU (crops) | model | bay | electronics | obstruction | battery |
+|---|---|---:|---:|---:|---:|
+| 10000 (202) | anchored | 0.6376 | 0.7623 | 0.6612 | 0.3399 ⚠ |
+| | control (held out) | 0.9005 | 0.9023 | 0.6837 | 0.8173 ⚠ |
+| 13000 (218) | anchored | 0.6750 | 0.7856 | 0.7010 | 0.7267 |
+| | control (held out) | 0.8884 | 0.9067 | 0.6967 | 0.8019 |
+| 20100 (214) | anchored | 0.6344 | 0.6997 | 0.5043 | 0.5365 |
+| | control (held out) | 0.8988 | 0.7787 | 0.5000 | 0.7447 |
+| 26800 (202) | anchored | 0.6665 | 0.7573 | 0.6197 | 0.5331 |
+| | control (held out) | 0.9098 | 0.8310 | 0.6180 | 0.6763 |
+
+⚠ AnkerPowerCore10000's `battery` figures rest on **14 crops**, below the
+~24–36-instance density this project treats as reportable. Flagged before
+the numbers were seen, not after: they are small-sample estimates in both
+rows and must not be read at the same confidence as the other three SKUs.
+
+`obstruction` is at or slightly above the control on 3 of 4 SKUs — the
+same shared-code artefact as above, not a win. `20100` is the hardest SKU
+for `obstruction` for *every* model measured (0.488–0.514), procedural
+and CAD alike.
+
+### Wide vs anchored: extra variation neither helped nor hurt
+
+Decision 2 asked whether widening the procedural sampling band beyond
+what the real SKUs span helps transfer. **It did not, in either
+direction**: 0.6801 vs 0.6794 selected mean, and no per-SKU per-class
+difference larger than the noise these instance counts support. The
+honest conclusion is that this comparison came out null. Wide is
+meaningfully worse on its *own* validation split (0.6489 vs anchored's
+0.7161) — it is a harder distribution to fit — without buying anything on
+the CAD test set.
+
+### In-distribution vs out-of-distribution
+
+| model | own val split | CAD test | Δ |
+|---|---:|---:|---:|
+| anchored | 0.7161 (127 crops) | 0.6801 (836 crops) | −0.036 |
+| wide | 0.6489 (124 crops) | 0.6794 (836 crops) | +0.031 |
+
+The wide model scoring *higher* out-of-distribution is not a
+generalisation success. It is driven almost entirely by `electronics`
+(0.4547 in-distribution → 0.7565 on CAD), and wide's in-distribution
+`electronics` figure rests on **18 crops** — below the reportable floor.
+The procedural module bay varies far more than any real one does, so the
+procedural val split is simply harder for that class than the CAD test
+set is. Both procedural models lose ground where it matters (`bay`
+−0.21/−0.23, `battery` −0.20/−0.30 going out of distribution).
+
+### What got worse
+
+Reported rather than tuned away:
+
+- **`obstruction` is below the previously published 0.6579 floor
+  (`docs/receipts/seg_eval.txt`) for all six models** — procedural
+  (0.6306/0.6280) *and* all four CAD-trained controls (0.6320–0.6507).
+  Because even the CAD-trained model misses it, this is a property of
+  the new, genuinely disjoint CAD test set being harder than the old
+  same-distribution validation split, not evidence against procedural
+  training. The old 0.6579 was measured on 24 instances of a split drawn
+  from the same 220-scene render the model trained on.
+- **`battery` is below the published 0.6907 floor for the two procedural
+  models** (0.5593/0.5502) while all four CAD controls clear it
+  (0.7439–0.7833). Here the control *does* separate the two
+  explanations: this one is the procedural trays, specifically their
+  three-cell-format mix against an 18650-only CAD test set.
+
+### Regression checks
+
+Five-class disjointness held at **0 overlapping pixels** on every dataset
+generated for this work — anchored 5426 pairs, wide 6374, CAD test 11450,
+and the four leave-one-SKU-out controls at 15669 / 14270 / 13328 / 11040
+pairs. Suite green at 666 passing. `python main.py --config
+configs/demo.yaml` still runs torch-free (10 cycles, 10 placed). The
+`assembled` variant seals for procedural trays exactly as for CAD,
+verified numerically at full scale: 614 anchored / 593 wide / 627 CAD
+assembled units emit only `cartridge` and zero interior-class
+annotations.
+
+---
+
 ## What is honestly unfinished
 
 ### 1. The segmenter-vs-heuristic real-photo comparison has now moved three times
@@ -314,7 +463,11 @@ sign. Building cluttered-bay content is still worth doing (Step 2
 below), but on its own merits — `obstruction` and `battery` are
 measurably the weakest two segmentation classes, IoU 0.6579 and 0.6907
 respectively (`docs/receipts/seg_eval.txt`) — not because it will ever
-make τ calibratable.
+make τ calibratable. (Both figures are from the *same-distribution*
+validation split of the 220-scene render the model trained on. On the
+disjoint CAD test set built for spec #2 they are lower for every model
+measured, CAD-trained controls included — see "The generalisation
+measurement" above before treating 0.6579/0.6907 as a floor.)
 
 `plan/placement_area.py` still defaults to 0.85 and nothing reads the
 calibrated value. That remains the right call, now for a stronger
@@ -427,7 +580,12 @@ therefore **segmenter IoU/boundary-displacement improvement on
 - Re-run `python -m recog.seg_evaluate` against the harder split once it
   exists and compare `obstruction`/`battery` IoU and boundary
   displacement to the current 0.6579/0.6907 and 1.184 mm baselines
-  (`docs/receipts/seg_eval.txt`). Re-running
+  (`docs/receipts/seg_eval.txt`). **Compare against the disjoint CAD test
+  set's figures too, not only those** — spec #2 measured
+  `obstruction` at 0.6320–0.6507 there for CAD-trained models, i.e.
+  below the 0.6579 quoted here, which means part of what this step is
+  chasing is test-set difficulty rather than model weakness. See "The
+  generalisation measurement" above. Re-running
   `python -m recog.calibrate_tau` is no longer a meaningful success
   criterion for this step — τ is retired regardless of what that split
   shows (item 4) — though the receipt can still be regenerated for the

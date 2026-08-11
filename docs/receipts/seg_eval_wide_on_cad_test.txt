@@ -1,0 +1,66 @@
+
+Bay segmenter evaluation
+========================================
+  checkpoint        : recog/checkpoints/seg_wide/best.pt
+  config            : configs/segmentation_cad_test.yaml
+  synth config      : recog/dataset3d_seg_cad_test/manifest.json
+  mm_per_px         : 0.6250 (layout.area[0]*1000 / render.res[0])
+  device            : cuda
+  validation crops  : 836
+
+Per-class IoU (pooled over the validation split; NaN = class absent from both pred and truth over the whole split, not scored as 0):
+  class              IoU   instances
+  ----------------------------------
+  background      0.2438         836
+  cartridge       0.7833         835
+  bay             0.6536         213
+  electronics     0.7565         213
+  obstruction     0.6280         128
+  battery         0.5502         145
+  ----------------------------------
+  selected mean IoU over ['bay', 'electronics', 'obstruction'] (instances={'bay': 213, 'electronics': 213, 'obstruction': 128}): 0.6794
+  note: background IoU (0.2438 on 836 crops) is STRUCTURAL, not a comparable failure - a crop is the union of the unit's OWN boxes, so background is only the thin leftover corners and gaps, a small region where IoU is naturally harsh. It is not evidence against the model.
+  note: cartridge (835 instances) and bay (213 instances) crop populations are OVERLAPPING on this validation split, measured fresh this run (not assumed): 623 crops carry cartridge only, 1 carry bay only, 212 carry BOTH in the SAME crop, 0 carry neither. See seg_dataset.py's module docstring for why this can no longer be assumed disjoint (real tray-wall geometry, commits 27cbd97..9fcf136). Either way, 0.7833 and 0.6536 are each pooled independently over their own class's pixels across the whole split - a marginal per-class statistic, not a per-crop joint one - so this is still not evidence the model handles both together within the SAME crop, even on crops where both truly co-occur.
+  note: checkpoint selection is noise-limited - best.pt 0.6708 and last.pt 0.6677 differ by 0.0031 on 36/18/19 (bay/electronics/obstruction) val instances, and both ship.
+
+Boundary displacement, mm (mean distance from a predicted boundary pixel to
+the nearest ground-truth boundary pixel; the figure that chose a per-ROI
+segmenter over a 28x28 Mask R-CNN head, whose quantisation at this framing is 2.9 x 6.4 mm):
+  class               mm     crops
+  --------------------------------
+  bay              1.251       210
+  electronics      2.461       210
+  obstruction      1.752       126
+  --------------------------------
+  verdict: BELOW the mask-head quantisation figure - supports the architecture choice.
+
+Signed placeable-area error, mm^2 (optimistic = predicted placeable where truth
+is not, the error that can put a cell on a PCB; conservative = the opposite,
+a lost cell, not a safety issue). Mean per crop and total over the split:
+  class          opt mean   opt total   cons mean   cons total
+  ------------------------------------------------------------
+  bay               387.9    324298.4        40.9      34222.7
+  electronics        70.6     59050.4        10.4       8724.6
+  obstruction        16.4     13707.0         8.9       7405.1
+  ------------------------------------------------------------
+
+Latency vs the FDR 10.4 50 ms end-to-end budget (fp16 batched inference):
+looped_ms is the SAME crops through segment_batch() one at a time (batch size 1,
+n calls) - the path batching replaced. This is the single measured source for
+the batching-latency figure; quote THIS receipt rather than a hand-measured one.
+   cartridges   total_ms  per_cart_ms  within_50ms   looped_ms
+  ------------------------------------------------------------
+            1       10.9        10.91         True         9.4
+            2       10.7         5.33         True        20.8
+            4       13.8         3.44         True        36.4
+            8       18.2         2.27         True        73.2
+  ------------------------------------------------------------
+  at 8 cartridges: 18.2 ms batched vs 73.2 ms looped (4.0x) - batching is load-bearing, not an optimisation: the looped figure breaches the 50 ms end-to-end budget on its own.
+
+
+Per-SKU IoU (design spec Sec7/Sec10/Sec12):
+  asset                     n_crops           bay   electronics   obstruction       battery
+  AnkerPowerCore10000           202        0.5930        0.7540        0.6742        0.3381
+  AnkerPowerCore13000           218        0.6204        0.7785        0.6916        0.6968
+  AnkerPowerCore20100           214        0.6618        0.6938        0.5080        0.5332
+  AnkerPowerCore26800           202        0.6916        0.7768        0.6066        0.5300
