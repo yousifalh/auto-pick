@@ -1625,9 +1625,9 @@ allowed this finding to surface before submission.
 
 **Every figure in this subsection is synthetic-to-synthetic. None of it
 is a sim-to-real measurement.** Real photographs carrying segmentation
-ground truth do not exist for this project (§13.2, and `recog/realtest/`
-carries boxes only), so sim-to-real transfer is not measurable here at
-all. What is measurable, and what this subsection reports, is whether a
+ground truth do not exist for this project and cannot be obtained
+(§13.2.2; `recog/realtest/` carries boxes only), so sim-to-real
+transfer is not measurable here at all. What is measurable, and what this subsection reports, is whether a
 segmenter trained exclusively on **procedurally generated cartridge
 trays** transfers to the four **real measured Anker CAD assemblies** it
 never saw in training. That constraint is repeated beside every number
@@ -1828,6 +1828,14 @@ again on the two datasets rendered for the corrections above (13 689 and
 13 589 pairs, 0 overlapping).
 
 ### 13.2 Future work
+
+**Read §13.2.2 before this list.** Several items below — (1)'s
+synthetic-to-real transfer delta and (4)'s real-photograph corpus in
+particular — were written on the assumption that real photographs of
+this project's cartridges could be obtained. They cannot. §13.2.2
+states that constraint and its consequences explicitly; the items are
+retained as what a *successor* project with photographic access should
+do, not as work this one deferred.
 
 One item previously listed here as priority-2 future work — fixing
 the forbidden-mask FFDH shelf-cursor underplacement reported in
@@ -2120,7 +2128,9 @@ direction; three same-architecture runs producing 0.211, 0.232 and
 0.318 against a 0.218 threshold is itself the finding** — this
 comparison does not stabilise with more training runs of the same
 recipe, and will not until real ground truth (item (4)) exists to
-measure against.
+measure against. **Which, per §13.2.2, it will not: real photographs
+are unobtainable for this project, so this comparison cannot mature
+into a transfer measurement here at all.**
 
 Two limits bound how far that reads, in both directions, and they now
 matter more than when this comparison first ran negative. It is
@@ -2136,7 +2146,9 @@ establish a positive transfer claim *or* a negative one as a property
 of the approach — this section's own before-and-after is a
 demonstration of that, not merely an assertion of it. No transfer
 figure is published here in either direction. The prerequisite is a
-50–100 image polygon-annotated set, folding into item (4).
+50–100 image polygon-annotated set, folding into item (4) — **which
+§13.2.2 records as unobtainable within this project, making the
+limitation permanent rather than pending.**
 
 **The τ calibration is still a null result, and the tray fix moved it
 in the OPPOSITE direction from every previous scale-up — worth
@@ -2411,7 +2423,99 @@ directions and by increasing margins — and the next step remains item
 (4)'s annotated real corpus rather than further model iteration; there
 is currently no real-image metric precise enough to score iteration
 against, and three runs in, no basis for expecting a fourth not to move
-it again.
+it again. **And item (4) is not reachable within this project — see
+§13.2.2, which states the sim-to-real limitation as a limitation rather
+than as deferred work.**
+
+#### 13.2.2 Limitation: sim-to-real transfer is unvalidated, and cannot be validated under this project's constraints
+
+This subsection states plainly a limitation that §13.2(5) and §13.2.1
+approach from several directions without ever naming as one. It is
+placed here so that no figure elsewhere in this report can be quoted
+without it.
+
+**Real photographs of this project's cells and cartridges are not
+obtainable.** The project owner confirmed this directly on 2026-08-09.
+It is not a scheduling gap, a backlog item, or a resource that arrives
+later in the programme; it is a fixed constraint for as long as the
+project runs. `recog/realtest/` — 7 photographs, 20 annotated
+cartridges, 80 boxes and **zero segmentation polygons** — is the entire
+real-image corpus this project will ever have.
+
+**The direct consequence: sim-to-real transfer is not measured in this
+report, and cannot be measured under this constraint.** The distinction
+matters and is stated deliberately: this is not "not yet validated",
+which implies a measurement pending. There is no route from the
+evidence available here to a transfer claim in *either* direction — the
+data that would settle it does not exist and will not be collected.
+Every performance figure in this report that concerns the segmenter,
+the placement-area extractor, the arbitration or the packer's behaviour
+on real masks is **synthetic-to-synthetic**: measured on renders,
+against ground truth derived from the same renders. That includes every
+number in §13.1.1 and §13.2.1, the boundary-displacement table, the
+Δcells figure, the per-class and per-SKU IoUs, the sealed-crop
+decomposition and the crown result. None of them is evidence about
+photographs, and none should be quoted as such.
+
+**The three real-photograph figures in §13.2.1 are a smoke test and
+must not be read as a transfer measurement.** Three checkpoints scored
+**0.211, 0.232 and 0.318** on placeable fraction against the
+heuristic's fixed **0.217**, over the same 20 cartridges in 6 images,
+against a design-spec threshold of 0.218. They are reported because
+they are the evidence, not because they support a conclusion: changes
+that ought to be irrelevant to real-photo transfer — a different
+training epoch, a from-scratch retrain on corrected label geometry —
+moved the score by more than the effect the comparison exists to
+detect, so run-to-run variation exceeds the signal at n = 20. The
+quantity is also not what a transfer claim needs: it is placeable area
+as a fraction of the cartridge ROI, chosen because the heuristic
+baseline was measured in it and no human mask ground truth exists, not
+mask IoU against human polygons. **No transfer claim is made here in
+either direction, and the number series itself — not any one of its
+points — is the finding.**
+
+**What stands in for a transfer measurement, and what it is not.** Two
+things, both weaker than the measurement they replace, and neither
+substituting for it:
+
+1. *Cross-distribution generalisation* (§13.1.1). Training on
+   procedurally generated trays and testing on the four real measured
+   Anker CAD assemblies is a genuine, answerable question with no
+   photograph in it — but the target domain is still a renderer. It
+   measures generalisation across synthetic variation, not transfer to
+   a camera.
+2. *Domain randomisation* (§13.2's third follow-on, and the lid crown
+   of §13.1.1). Widening the training distribution to cover more of
+   what might be encountered is the correct response when the distance
+   to the target domain cannot be measured. It licenses "the training
+   set now spans more of what might be encountered" and never "this was
+   tested against what will be encountered". The lid-crown result is
+   the sharpest case: the crown range was chosen *after* measuring the
+   real CAD, so it demonstrates that a measured coverage gap was the
+   mechanism behind a measured synthetic gap — not that the model
+   generalises to an unmeasured shell.
+
+**What this limitation does not touch.** The recognition layer's
+box-level results (§10.1) are synthetic validation figures and are
+labelled as such; `recog.eval_real` exists and can score the detector's
+boxes against the 80 real annotations, which is a real but box-level
+and small-*n* check, and is not a segmentation or placement claim. The
+execution layer's non-validation is a separate and independently stated
+limitation (§10.3): the KR 6 R700 was withdrawn, so the protocol
+implementation is unvalidated against hardware for a different reason.
+Nothing in this subsection weakens the algorithmic contributions of
+§6.3.1, which are measured on their own benchmark and make no claim
+about photographs.
+
+**The honest summary of this project's perception status** is
+therefore: a segmenter that demonstrably segments *renders* well, whose
+failure modes on renders have been diagnosed to mechanism and partly
+repaired, wired into a working end-to-end loop (§8), and whose
+behaviour on photographs is **unknown and not knowable from the
+evidence this project can gather**. A successor with photographic
+access should start at §13.2(4) — a 50–100 image polygon-annotated
+corpus — because it is the prerequisite for every claim this
+subsection has to withhold.
 
 ### 13.3 Critical reflection
 
