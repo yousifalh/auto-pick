@@ -315,14 +315,28 @@ def test_a_full_cartridge_does_not_raise_placement_disagreement():
 
 
 def _bay_label():
+    """A plain cartridge crop, 100 x 180 px.
+
+    Sized so that it is a POSSIBLE cartridge at every scale the tests
+    below use, including the coarsest (1.0 mm/px, where it is a 71 x 151
+    mm floor). It was 140 x 200 px, which at 1.0 mm/px is a 110 x 170 mm
+    floor - wider than any cartridge in
+    recog/synth3d/assets/catalog.json, and now rejected as a spanning
+    detector box. These tests are about the scale reaching the
+    arithmetic, so the fixture is corrected rather than exempted: a
+    fixture that could not exist is not a good witness for anything.
+    """
     import numpy as np
 
     from plan.arbitration import CH_BAY, CH_CARTRIDGE
 
-    label = np.zeros((200, 140), np.int8)
-    label[5:195, 5:135] = CH_CARTRIDGE
-    label[15:185, 15:125] = CH_BAY
+    label = np.zeros((180, 100), np.int8)
+    label[5:175, 5:95] = CH_CARTRIDGE
+    label[15:165, 15:85] = CH_BAY
     return label
+
+
+_BAY_BOX = (20, 30, 120, 210)      # matches _bay_label()'s 100 x 180 px
 
 
 def test_extract_uses_the_frames_scale_over_the_fallback():
@@ -335,7 +349,7 @@ def test_extract_uses_the_frames_scale_over_the_fallback():
 
     label = _bay_label()
     img = np.zeros((400, 400, 3), np.uint8)
-    box = BBox(20, 30, 160, 230)
+    box = BBox(*_BAY_BOX)
 
     ex = SegmentationPlacementAreaExtractor(
         mm_per_cell=1.5, mm_per_px=0.625, wall_inset_mm=4.25)
@@ -375,7 +389,7 @@ def test_placement_area_reports_the_scale_it_was_measured_at():
 
     ex = SegmentationPlacementAreaExtractor(
         mm_per_cell=1.5, mm_per_px=None, wall_inset_mm=4.25)
-    pa = ex.extract(np.zeros((400, 400, 3), np.uint8), BBox(20, 30, 160, 230),
+    pa = ex.extract(np.zeros((400, 400, 3), np.uint8), BBox(*_BAY_BOX),
                     label_map=_bay_label(), mm_per_px=0.8632)
     assert pa.mm_per_px == 0.8632
 
@@ -394,7 +408,7 @@ def test_no_scale_anywhere_raises_rather_than_defaulting():
     ex = SegmentationPlacementAreaExtractor(mm_per_cell=1.5)
     assert ex.mm_per_px is None
     with pytest.raises(UnknownScale, match="mm_per_px"):
-        ex.extract(np.zeros((400, 400, 3), np.uint8), BBox(20, 30, 160, 230),
+        ex.extract(np.zeros((400, 400, 3), np.uint8), BBox(*_BAY_BOX),
                    label_map=_bay_label())
 
 
@@ -408,8 +422,207 @@ def test_a_nonsensical_scale_is_refused():
 
     ex = SegmentationPlacementAreaExtractor(mm_per_cell=1.5)
     with pytest.raises(UnknownScale):
-        ex.extract(np.zeros((400, 400, 3), np.uint8), BBox(20, 30, 160, 230),
+        ex.extract(np.zeros((400, 400, 3), np.uint8), BBox(*_BAY_BOX),
                    label_map=_bay_label(), mm_per_px=0.0)
+
+
+# ------------------------------- a box that spans more than one thing ----
+#
+# docs/superpowers/specs/2026-08-11-placement-safety.md. The centre-based
+# bad-box gate above tests WHERE the crop landed. It passes on a box that
+# landed on a real cartridge AND the loose cells beside it, because the
+# crop centre is still on foreground - and on scene_00014/c25 the
+# segmenter then called the bare jig panel inside that box `bay` and the
+# planner commanded a cell 100 % onto ground-truth background. These
+# tests pin the second condition: what the crop turned out to CONTAIN.
+
+
+def _spanning_crop_label():
+    """scene_00014/c25 in miniature, at that frame's own scale.
+
+    One box, 190 x 142 px at 0.998 mm/px, over a cartridge plus three
+    loose 18650s on the jig panel; the segmenter reads the whole panel as
+    one cartridge with a wide open floor. Everything about it is locally
+    plausible - the centre is on foreground, the shell rings the floor,
+    the two placement estimates agree - and it is 100 % wrong.
+    """
+    import numpy as np
+
+    from plan.arbitration import CH_BAY, CH_BATTERY, CH_CARTRIDGE
+
+    label = np.zeros((142, 190), np.int8)
+    label[6:136, 6:184] = CH_CARTRIDGE      # the panel rim, read as shell
+    label[16:126, 16:174] = CH_BAY          # the bare panel, read as floor
+    label[30:100, 60:170] = CH_BATTERY      # the three loose cells, merged
+    return label
+
+
+def test_a_box_spanning_a_cartridge_and_loose_cells_is_rejected():
+    """The failing case, at the scale it actually failed at."""
+    import numpy as np
+    import pytest
+
+    from common.types import BBox
+    from plan.arbitration import arbitrate
+    from plan.placement_area import (BadDetectorBox, PlacementDisagreement,
+                                     SegmentationPlacementAreaExtractor)
+
+    label = _spanning_crop_label()
+    ex = SegmentationPlacementAreaExtractor(
+        mm_per_cell=1.5, mm_per_px=None, wall_inset_mm=4.25)
+
+    # The fixture has to reach the new gate to be testing it: the crop
+    # centre is on foreground (so the centre gate passes) and P_safe is
+    # non-empty (so the "no placeable area" branch is not what fires).
+    safe, _iou = arbitrate(label, ex.wall_inset_px_at(0.998))
+    assert safe.any(), "fixture no longer produces a placeable region"
+    assert label[label.shape[0] // 2, label.shape[1] // 2] != 0, (
+        "fixture no longer exercises the case the CENTRE gate misses")
+
+    with pytest.raises(BadDetectorBox, match="not one cartridge"):
+        ex.extract(np.zeros((720, 1280, 3), np.uint8),
+                   BBox(330, 130, 520, 272), label_map=label,
+                   mm_per_px=0.998)
+    # Still skip-and-retry for a caller that only knows the base type.
+    with pytest.raises(PlacementDisagreement):
+        ex.extract(np.zeros((720, 1280, 3), np.uint8),
+                   BBox(330, 130, 520, 272), label_map=label,
+                   mm_per_px=0.998)
+
+
+def test_the_largest_real_cartridge_is_not_rejected():
+    """The other half of the guard, and the half that fails silently.
+
+    A bound that rejects everything also rejects the bad box, and the
+    only symptom is placements quietly not happening. This pins the
+    biggest thing in recog/synth3d/assets/catalog.json - an
+    AnkerPowerCore26800, 73.2 x 140.8 mm of placement region, seen at the
+    coarsest scale in the corpus - as ADMITTED.
+    """
+    import numpy as np
+
+    from common.types import BBox
+    from plan.arbitration import CH_BAY, CH_CARTRIDGE
+    from plan.placement_area import SegmentationPlacementAreaExtractor
+
+    mm_per_px = 1.045
+    wall_px = 6
+    w = int(round(73.2 / mm_per_px)) + 2 * wall_px
+    h = int(round(140.8 / mm_per_px)) + 2 * wall_px
+    label = np.zeros((h, w), np.int8)
+    label[:, :] = CH_CARTRIDGE
+    label[wall_px:h - wall_px, wall_px:w - wall_px] = CH_BAY
+
+    ex = SegmentationPlacementAreaExtractor(
+        mm_per_cell=1.5, mm_per_px=None, wall_inset_mm=4.25)
+    pa = ex.extract(np.zeros((720, 1280, 3), np.uint8),
+                    BBox(100, 100, 100 + w, 100 + h), label_map=label,
+                    mm_per_px=mm_per_px)
+    assert pa.inside_mask.any()
+
+
+def test_the_guard_needs_the_frames_own_scale_to_fire():
+    """The same pixels, two calibrations, two verdicts.
+
+    This check could not have existed before mm_per_px became a property
+    of the frame: at the old fixed 0.625 the spanning crop measures 68 mm
+    across and passes. If this test starts failing because both scales
+    give the same answer, something has put a constant back.
+    """
+    import numpy as np
+    import pytest
+
+    from common.types import BBox
+    from plan.placement_area import (BadDetectorBox,
+                                     SegmentationPlacementAreaExtractor)
+
+    label = _spanning_crop_label()
+    img = np.zeros((720, 1280, 3), np.uint8)
+    box = BBox(330, 130, 520, 272)
+    ex = SegmentationPlacementAreaExtractor(
+        mm_per_cell=1.5, mm_per_px=None, wall_inset_mm=4.25)
+
+    assert ex.extract(img, box, label_map=label, mm_per_px=0.625) is not None
+    with pytest.raises(BadDetectorBox):
+        ex.extract(img, box, label_map=label, mm_per_px=0.998)
+
+
+def test_the_extent_bound_cannot_be_set_to_never_fire():
+    """An interlock dies by being handed a value it can never trip on."""
+    import pytest
+
+    from plan.placement_area import SegmentationPlacementAreaExtractor
+
+    for bad in (None, (0.0, 180.0), (-1.0, 5.0), (180.0, 81.7),
+                (81.7, float("inf")), 81.7):
+        with pytest.raises((ValueError, TypeError)):
+            SegmentationPlacementAreaExtractor(
+                mm_per_px=0.625, max_cartridge_extent_mm=bad)
+
+
+def test_an_empty_region_has_no_extent_rather_than_a_zero_one():
+    """Zero passes every upper bound. Reporting it would be the guard
+    answering 'fine' without having measured anything."""
+    import numpy as np
+    import pytest
+
+    from plan.placement_area import placeable_extent_mm
+
+    with pytest.raises(ValueError, match="empty"):
+        placeable_extent_mm(np.zeros((40, 40), np.uint8), 0.9)
+
+    one_pixel = np.zeros((40, 40), np.uint8)
+    one_pixel[10, 10] = 1
+    assert placeable_extent_mm(one_pixel, 0.9) == (0.9, 0.9)
+
+
+# ------------------------------------------- honest occupancy cells ----
+
+def test_a_grid_cell_is_free_only_if_all_of_it_is_free():
+    """It used to be free if its CENTRE pixel was, which called a cell
+    placeable while up to half of it was wall - 0.75 mm per edge at
+    mm_per_cell 1.5, in the unsafe direction, and measured to be
+    *producing* placements (placement-feasibility spec section 5,
+    finding 3)."""
+    import numpy as np
+
+    from plan.placement_area import _rasterise_mask
+    from plan.scene import CellState
+
+    # 1 mm/px, 2 mm cells: each cell is exactly 2x2 px. The right-hand
+    # column of every cell is wall, so no cell is wholly free - but every
+    # cell's centre pixel, int(...+1.0), lands on the free column.
+    inside = np.zeros((8, 8), np.uint8)
+    inside[:, 0::2] = 1
+    grid = _rasterise_mask(inside, (0, 0, 8, 8), mm_per_cell=2.0,
+                           mm_per_px=1.0)
+    forbidden = grid.mask_of(CellState.FORBIDDEN)
+    assert forbidden.all(), (
+        "a half-wall cell is not a free cell; this grid is what the "
+        "packer seats an 18650 against")
+
+    # And a wholly free region is still wholly free - the guard must not
+    # have become "forbid everything".
+    grid = _rasterise_mask(np.ones((8, 8), np.uint8), (0, 0, 8, 8),
+                           mm_per_cell=2.0, mm_per_px=1.0)
+    assert not grid.mask_of(CellState.FORBIDDEN).any()
+
+
+def test_a_cell_running_off_the_measured_mask_is_forbidden():
+    """Pixels nobody looked at are not known to be free."""
+    import numpy as np
+
+    from plan.placement_area import _rasterise_mask
+    from plan.scene import CellState
+
+    inside = np.ones((4, 4), np.uint8)
+    grid = _rasterise_mask(inside, (0, 0, 8, 8), mm_per_cell=2.0,
+                           mm_per_px=1.0)
+    forbidden = grid.mask_of(CellState.FORBIDDEN)
+    assert forbidden.sum() > 0, (
+        "cells beyond the mask were reported free, which is the "
+        "'unmeasured means safe' default this project keeps paying for")
+    assert not forbidden[0, 0]
 
 
 def test_both_extractors_accept_the_scale_on_the_same_contract():

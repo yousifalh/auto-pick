@@ -137,7 +137,27 @@ def _rasterise_mask(
     """Rasterise ``inside_mask`` over ``rect`` into an :class:`OccupancyGrid`.
 
     Shared by both extractors so their grids are identically shaped by
-    construction rather than by coincidence.
+    construction rather than by coincidence, and by
+    ``recog.seg_ablation._pack_count`` so its Delta-cells metric
+    quantises exactly the way production does.
+
+    A cell is FREE only if EVERY pixel it covers is free. It used to be
+    free if its CENTRE pixel was, which reported a cell as placeable when
+    up to half of it was wall: at ``mm_per_cell = 1.5`` that dilated the
+    free region by up to 0.75 mm per edge, in the unsafe direction, and
+    docs/superpowers/specs/2026-08-11-placement-feasibility.md section 5
+    finding 3 recorded that it was *producing* placements. Measured over
+    the 30-cartridge corpus (2026-08-11-placement-safety.md): the same 26
+    cells are still placed, in the same 13 cartridges, but two of them
+    stop landing on ground-truth tray wall - the packer simply seats them
+    a pixel or two further inside. Optimism here is not worth anything;
+    it was only ever moving cells outward.
+
+    A cell that runs off the edge of ``inside_mask`` is FORBIDDEN for the
+    same reason: pixels nobody measured are not known to be free. In tree
+    this cannot fire - both callers derive ``rect`` from the mask itself -
+    but "unmeasured" defaulting to "safe" is how the class of defect this
+    change repairs gets in.
     """
     ix1, iy1, ix2, iy2 = rect
     px_per_cell = max(1.0, mm_per_cell / mm_per_px)
@@ -147,13 +167,31 @@ def _rasterise_mask(
     grid = OccupancyGrid(rows=rows, cols=cols, resolution_mm=mm_per_cell)
     h_mask, w_mask = inside_mask.shape
 
-    for r in range(rows):
-        for c in range(cols):
-            ypx = int(iy1 + r * px_per_cell + px_per_cell / 2)
-            xpx = int(ix1 + c * px_per_cell + px_per_cell / 2)
-            inside_bounds = 0 <= ypx < h_mask and 0 <= xpx < w_mask
-            if inside_bounds and inside_mask[ypx, xpx] == 0:
-                grid.set(r, c, CellState.FORBIDDEN)
+    # Cell (r, c) covers pixels [y0, y1) x [x0, x1). At least one pixel
+    # per cell even where px_per_cell puts two cell boundaries on the
+    # same pixel.
+    r_i, c_i = np.arange(rows), np.arange(cols)
+    y0 = (iy1 + r_i * px_per_cell).astype(np.int64)
+    x0 = (ix1 + c_i * px_per_cell).astype(np.int64)
+    y1 = np.maximum(y0 + 1, (iy1 + (r_i + 1) * px_per_cell).astype(np.int64))
+    x1 = np.maximum(x0 + 1, (ix1 + (c_i + 1) * px_per_cell).astype(np.int64))
+
+    # Summed-area table, so the whole-cell test costs four lookups per
+    # cell rather than one per pixel. The per-pixel version of exactly
+    # this arithmetic cost 15.1 ms on a 288x131 crop against FDR O3's
+    # 8 ms per-cartridge planning budget (tests/test_planner.py
+    # ::test_segmentation_extract_arithmetic_stays_under_the_o3_budget).
+    integral = cv2.integral((inside_mask != 0).astype(np.uint8),
+                            sdepth=cv2.CV_32S)
+    y0c, y1c = np.clip(y0, 0, h_mask), np.clip(y1, 0, h_mask)
+    x0c, x1c = np.clip(x0, 0, w_mask), np.clip(x1, 0, w_mask)
+    free_px = (integral[np.ix_(y1c, x1c)] - integral[np.ix_(y0c, x1c)]
+               - integral[np.ix_(y1c, x0c)] + integral[np.ix_(y0c, x0c)])
+    covered = ((y0 >= 0) & (y1 <= h_mask))[:, None] \
+        & ((x0 >= 0) & (x1 <= w_mask))[None, :]
+    whole_cell = (y1 - y0)[:, None] * (x1 - x0)[None, :]
+    grid.grid[~(covered & (free_px == whole_cell))] = \
+        CellState.FORBIDDEN.value
     return grid
 
 
@@ -381,10 +419,23 @@ class PlacementDisagreement(RuntimeError):
 
 
 class BadDetectorBox(PlacementDisagreement):
-    """The detector's cartridge box looks misaligned, not merely low-IoU.
+    """The detector's cartridge box does not describe one cartridge.
 
-    Cartridge material IS visible somewhere in the crop, but not at the
-    crop's centre — exactly the condition
+    Two conditions raise it, and they are complementary — one is about
+    WHERE the crop landed, the other about WHAT it contains:
+
+    1. **The crop centre is on background** while the crop is not empty.
+    2. **The placeable floor is bigger than the largest cartridge**, at
+       the frame's own scale — see
+       :meth:`SegmentationPlacementAreaExtractor
+       .reject_if_not_one_cartridge_floor`. A box spanning a cartridge
+       *and* the loose cells beside it passes (1) — its centre is on real
+       foreground — and the planner then commands a cell onto bare
+       backdrop. (1) alone was measured to miss exactly that, once in 30
+       cartridges, at 100 % overlap with ground-truth non-floor.
+
+    On (1): cartridge material IS visible somewhere in the crop, but not
+    at the crop's centre — exactly the condition
     ``plan.arbitration.centre_component`` already detects and logs a
     warning for. Left to ``arbitrate()`` alone this is indistinguishable
     from a genuinely full cartridge: both reduce to an empty ``P_safe``
@@ -421,6 +472,56 @@ class BadDetectorBox(PlacementDisagreement):
 _DEFAULT_WALL_INSET_MM = 4.25
 
 
+# The OUTER footprint of the largest cartridge in
+# recog/synth3d/assets/catalog.json. The four cataloged `extents_mm` are
+# 62.9x90.9, 80.7x97.0, 62.3x167.8 and 81.7x180.0 mm, and this is their
+# per-axis MAX - the same rule, for the same reason, as
+# _DEFAULT_WALL_INSET_MM above: no asset/SKU identifier crosses the
+# Recognition -> Planning boundary, so one scalar pair has to stand in
+# for every cartridge, and it has to be the one that cannot refuse a real
+# one.
+#
+# The OUTER footprint, deliberately, and not the interior (73.2x171.5) or
+# the placement region (73.2x140.8), even though P_safe is a subset of
+# both. Those tighter bounds are within reach of ordinary segmentation
+# slop: over the 30-cartridge corpus the predicted P_safe overran the
+# 140.8 mm placement-region length on SEVEN instances (worst 147.4 mm),
+# six of them productive and holding 19 of the 25 cells that ship, so a
+# bound there would trade real placements for nothing. Against the outer
+# footprint those 29 good instances clear it by 8 % or more on the short
+# axis and 18 % on the long, and the one bad crop misses by 33 %. A
+# bound that only fires on the physically
+# impossible needs no tolerance term, and a tolerance term is a knob
+# somebody would later tune to make a number move.
+_MAX_CARTRIDGE_EXTENT_MM = (81.7, 180.0)
+
+
+def placeable_extent_mm(mask: np.ndarray, mm_per_px: float
+                        ) -> Tuple[float, float]:
+    """``(short_side, long_side)`` of ``mask``'s min-area rect, in mm.
+
+    ROTATED rather than axis-aligned: the cartridges sit at
+    ``quarter * 90 + jitter`` and a bounding box would grow with the
+    jitter angle, which has nothing to do with how big the cartridge is.
+
+    Raises on an empty mask rather than returning ``(0, 0)``. A zero
+    extent satisfies every upper bound, so a caller using this to decide
+    whether something is too big would silently stop deciding.
+    """
+    pts = cv2.findNonZero(np.asarray(mask, dtype=np.uint8))
+    if pts is None:
+        raise ValueError(
+            "placeable_extent_mm: the mask is empty, so it has no extent. "
+            "An empty region is a different question ('is there anywhere "
+            "to place?') and has a different answer; it must not be "
+            "reported as a region of size zero.")
+    (_centre, (w_px, h_px), _angle) = cv2.minAreaRect(pts)
+    # minAreaRect measures between pixel CENTRES, so a run of n pixels
+    # comes back as n-1 and a single pixel as 0. Add the pixel back.
+    short_px, long_px = sorted((float(w_px) + 1.0, float(h_px) + 1.0))
+    return short_px * float(mm_per_px), long_px * float(mm_per_px)
+
+
 class SegmentationPlacementAreaExtractor:
     """Placement area from a segmenter's label map.
 
@@ -447,7 +548,9 @@ class SegmentationPlacementAreaExtractor:
 
     def __init__(self, mm_per_cell: float = 1.5,
                  mm_per_px: Optional[float] = None,
-                 wall_inset_mm: float = _DEFAULT_WALL_INSET_MM) -> None:
+                 wall_inset_mm: float = _DEFAULT_WALL_INSET_MM,
+                 max_cartridge_extent_mm: Tuple[float, float]
+                 = _MAX_CARTRIDGE_EXTENT_MM) -> None:
         self.mm_per_cell = float(mm_per_cell)
         # FALLBACK scale only. It used to default to 0.625 - "this
         # dataset's actual framing" - and that default was the defect:
@@ -458,6 +561,83 @@ class SegmentationPlacementAreaExtractor:
         # wrong answer.
         self.mm_per_px = None if mm_per_px is None else float(mm_per_px)
         self.wall_inset_mm = float(wall_inset_mm)
+        # Validated here, not read on trust at the point of use. This
+        # bound is a safety interlock, and the way an interlock dies in
+        # this project is by being handed a value that can never fire
+        # (None, inf, a swapped pair) while the code around it keeps
+        # looking like it checks something.
+        try:
+            short_mm, long_mm = (float(v) for v in max_cartridge_extent_mm)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"max_cartridge_extent_mm must be a (short_mm, long_mm) "
+                f"pair, got {max_cartridge_extent_mm!r}. Pass the outer "
+                f"footprint of the largest cartridge this cell handles; "
+                f"there is no 'unbounded' setting, because an unbounded "
+                f"bound is a check that has quietly stopped checking."
+            ) from exc
+        if not (0.0 < short_mm <= long_mm) or long_mm == float("inf"):
+            raise ValueError(
+                f"max_cartridge_extent_mm must be finite and positive "
+                f"with the short side first, got "
+                f"({short_mm!r}, {long_mm!r}).")
+        self.max_cartridge_extent_mm = (short_mm, long_mm)
+
+    # ---- box validity ---------------------------------------------------
+
+    def reject_if_not_one_cartridge_floor(
+        self, safe: np.ndarray, mm_per_px: float,
+    ) -> Tuple[float, float]:
+        """Raise :class:`BadDetectorBox` if ``safe`` is too big to be one
+        cartridge's floor. Returns the measured extent otherwise.
+
+        The second half of the bad-box check, and the half the first one
+        cannot see. ``centre_component``'s test is about WHERE the crop
+        landed - is the crop centre on foreground - and it passes happily
+        on a box that landed on a real cartridge *and* three loose cells
+        beside it, because the centre is still foreground. This one is
+        about WHAT the crop turned out to contain: a placeable floor
+        larger than the largest cartridge that exists is not a cartridge
+        floor, whatever the crop centre is standing on.
+
+        Measured case, ``scene_00014/c25``: the detector returned one box
+        spanning a cartridge and three loose cells (190 x 142 px at
+        0.998 mm/px); the segmenter read the jig backdrop inside that box
+        as a cartridge and its bare panel as `bay`; the planner commanded
+        a cell 100 % onto ground-truth background. Its P_safe measures
+        108.8 x 148.1 mm - it does not fit inside any cartridge in the
+        catalog on its short axis, by 33 %. The 29 other cartridges in
+        that corpus measure at most 75.4 mm across (and 147.4 mm long),
+        and are unaffected.
+        docs/superpowers/specs/2026-08-11-placement-safety.md.
+
+        Needs the frame's scale, which is why it could not have been
+        written before ``mm_per_px`` became a property of the frame
+        (`58dd21d`): at the old fixed 0.625 this same P_safe measured
+        67.5 mm on its short axis and would have passed.
+        """
+        short_mm, long_mm = placeable_extent_mm(safe, mm_per_px)
+        max_short, max_long = self.max_cartridge_extent_mm
+        if short_mm <= 0.0 or long_mm <= 0.0:
+            raise RuntimeError(
+                f"placeable region measured {short_mm} x {long_mm} mm from "
+                f"{int(np.asarray(safe).sum())} non-zero pixels at "
+                f"{mm_per_px} mm/px. A non-empty region cannot have zero "
+                f"extent, and a zero extent passes every bound - this "
+                f"check would be reporting 'fine' without measuring "
+                f"anything.")
+        if short_mm > max_short or long_mm > max_long:
+            raise BadDetectorBox(
+                f"the placeable floor in this crop measures "
+                f"{short_mm:.1f} x {long_mm:.1f} mm at {mm_per_px:.4f} "
+                f"mm/px, which does not fit inside the largest cartridge "
+                f"this cell handles ({max_short:.1f} x {max_long:.1f} mm "
+                f"outer footprint). One cartridge cannot have a floor "
+                f"bigger than the whole cartridge, so this crop is not "
+                f"one cartridge - most likely a detector box spanning a "
+                f"cartridge and whatever is lying next to it. A "
+                f"PERCEPTION failure, not an empty cartridge.")
+        return short_mm, long_mm
 
     def wall_inset_px_at(self, mm_per_px: float) -> int:
         """Wall thickness in pixels at ``mm_per_px``.
@@ -547,6 +727,14 @@ class SegmentationPlacementAreaExtractor:
                 f"({int(derived.sum())} px) do not overlap "
                 f"(IoU {iou:.3f})")
 
+        # Second bad-box gate, on the CONTENTS of the crop rather than on
+        # where its centre landed. Placed after arbitrate() because the
+        # thing being size-checked is the region the planner would
+        # actually pack into, not the raw prediction - and before the
+        # rectangle and the grid are built, so nothing downstream ever
+        # sees an area this rejected.
+        self.reject_if_not_one_cartridge_floor(safe, scale)
+
         x0, y0 = int(xs.min()), int(ys.min())
         x1, y1 = int(xs.max()) + 1, int(ys.max()) + 1
 
@@ -605,4 +793,5 @@ __all__ = [
     "BadDetectorBox",
     "UnknownScale",
     "attach_placement_area",
+    "placeable_extent_mm",
 ]
