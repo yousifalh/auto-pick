@@ -208,6 +208,63 @@ def test_per_class_iou_handles_a_class_absent_from_both():
 # it trained on - with nothing to signal it. seg_training already writes
 # val_instance_counts into every checkpoint for exactly this check.
 
+class _StubDataset:
+    """Only `.samples` is read by compute_val_instance_counts."""
+
+    def __init__(self, samples):
+        self.samples = samples
+
+
+def _one_crop_with_a_background_sliver():
+    """A 40x40 crop that is ALL cartridge except a single background
+    pixel at (1, 1).
+
+    (1, 1) on purpose: a 40 -> 4 nearest resize samples rows/cols
+    {0, 10, 20, 30} on the numpy path and {5, 15, 25, 35} on the cv2
+    path, so this pixel is missed by BOTH and the fixture does not
+    depend on which one is installed. (0, 0) would survive the numpy
+    grid and quietly stop testing anything.
+    """
+    from recog.synth3d.annotate import rle_encode
+
+    cart = np.ones((40, 40), np.uint8)
+    cart[1, 1] = 0
+    anns = [{"class": "cartridge", "category_id": 2,
+             "segmentation": rle_encode(cart),
+             "bbox_xyxy": [0, 0, 40, 40]}]
+    return [({"file_name": "x.png"}, anns, (0, 0, 40, 40))]
+
+
+def test_val_instance_counts_are_computed_at_the_training_loaders_resolution():
+    """The split guard's fingerprint must be built the SAME way
+    seg_training built the one stored in the checkpoint - and training
+    counts off its val DataLoader, whose targets are rasterised at
+    `model.crop_size` and nearest-downsampled to it, not at the crop's
+    native resolution.
+
+    Measured, not assumed: on `configs/segmentation_anchored.yaml`'s val
+    split the two resolutions disagree by exactly one crop
+    (background 124 native vs. 123 at 256), because a sliver of
+    background survives at native size and is lost by the downsample.
+    That one crop made the guard declare the dataset had changed when
+    nothing had changed, and it blocked the in-distribution evaluation
+    outright.
+    """
+    from recog.seg_evaluate import compute_val_instance_counts
+
+    ds = _StubDataset(_one_crop_with_a_background_sliver())
+
+    native = compute_val_instance_counts(ds, [0], out_size=None)
+    downsampled = compute_val_instance_counts(ds, [0], out_size=4)
+
+    assert native["background"] == 1
+    assert downsampled["background"] == 0, (
+        "the corner sliver must not survive the nearest-neighbour "
+        "downsample - if it does, this fixture no longer exercises the "
+        "resolution difference the guard tripped on")
+    assert native["cartridge"] == downsampled["cartridge"] == 1
+
+
 def test_check_split_matches_checkpoint_passes_when_counts_agree(tmp_path):
     from recog.seg_evaluate import check_split_matches_checkpoint
 

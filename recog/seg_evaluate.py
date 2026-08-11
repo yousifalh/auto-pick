@@ -381,15 +381,37 @@ def evaluate(segmenter, full_dataset, val_indices: Sequence[int],
 # split - only to say so, loudly, naming both sets of numbers.
 
 def compute_val_instance_counts(full_dataset, val_indices: Sequence[int],
-                                num_classes: int = 6) -> Dict[str, int]:
+                                num_classes: int = 6,
+                                out_size: Optional[int] = None
+                                ) -> Dict[str, int]:
     """Per-class crop counts for the val split (no jitter, matching
-    evaluate()'s boxes), computed the same way seg_training.instance_counts
-    does: a crop "contains" a class if it has at least one pixel of it."""
+    evaluate()'s boxes): a crop "contains" a class if it has at least one
+    pixel of it.
+
+    `out_size` MUST be the `model.crop_size` the checkpoint was trained
+    at whenever this is fed to `check_split_matches_checkpoint`.
+    seg_training builds its stored counts off the val DataLoader, whose
+    targets are `rasterise_crop(..., out_size=crop_size)` -
+    nearest-downsampled - so counting here at the crop's native
+    resolution compares two different quantities and the guard fires on a
+    dataset that never changed. Measured on
+    `configs/segmentation_anchored.yaml`: background 124 native vs. 123
+    at 256, one crop apart, because a sliver of background survives at
+    native size and is lost by the downsample. `background` is the class
+    this bites, by construction - a crop is the union of its unit's own
+    boxes, so background is only the thin leftover corners and gaps.
+
+    Left defaulting to None rather than to 256: the native map is what
+    `evaluate()` scores against (a jittered union box is not square, so a
+    single scalar mm_per_px cannot describe a resized crop), and silently
+    changing that default would change what a caller asking for "the
+    counts" gets. The guard's call site passes crop_size explicitly.
+    """
     counts = [0] * num_classes
     for idx in val_indices:
         _img_meta, anns, unit_box = full_dataset.samples[idx]
         box = tuple(int(v) for v in unit_box)
-        target = rasterise_crop(anns, box, out_size=None)
+        target = rasterise_crop(anns, box, out_size=out_size)
         for c in range(num_classes):
             if (target == c).any():
                 counts[c] += 1
@@ -744,8 +766,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # does not match what the checkpoint was actually selected against -
     # see check_split_matches_checkpoint's docstring.
     if args.checkpoint:
+        # out_size=crop_size, NOT native: seg_training's stored counts come
+        # off its val DataLoader, which rasterises at crop_size. See
+        # compute_val_instance_counts' docstring.
         val_counts_now = compute_val_instance_counts(
-            full_dataset, val_indices, num_classes=num_classes)
+            full_dataset, val_indices, num_classes=num_classes,
+            out_size=crop_size)
         check_split_matches_checkpoint(args.checkpoint, ds_cfg["coco_path"],
                                        val_counts_now)
 
