@@ -321,15 +321,42 @@ def attach_cartridge_masks(snapshot: Snapshot, image_rgb: np.ndarray, segmenter)
 
 # ---------------------------------------------------------- factory ----
 
-def load_detector(checkpoint: Optional[str], cfg: Optional[dict]) -> Detector:
-    """Return the Faster R-CNN detector if usable, else the heuristic."""
+def load_detector(checkpoint: Optional[str], cfg: Optional[dict],
+                  segmenter=None) -> Detector:
+    """Return the Faster R-CNN detector if usable, else the heuristic.
+
+    ``segmenter`` is the optional second stage
+    (:class:`recog.bay_segmenter.BaySegmenter`, or anything with the same
+    ``segment_batch(crops)`` contract). It rides through to
+    :class:`FasterRCNNDetector`, which calls it once per frame and fills
+    ``Snapshot.cartridge_masks``.
+
+    Passing one is INCOMPATIBLE with the heuristic fallback, and that is
+    raised rather than warned. :class:`HeuristicDetector` has no second
+    stage: it would return a snapshot with empty ``cartridge_masks``,
+    ``SegmentationPlacementAreaExtractor`` would then raise ``ValueError``
+    for every cartridge, and ``plan/planner.py``'s blanket
+    ``except Exception`` would absorb all of them - a pipeline that
+    reports a clean run of zero placements while the model that was
+    supposed to be under test never ran at all. The whole point of
+    wiring the segmenter in is that its absence is visible.
+    """
     from common.logging import get_logger
 
     log = get_logger("recog.inference")
 
     if checkpoint and Path(checkpoint).exists() and _TORCH_AVAILABLE:
         log.info("Loading FasterRCNNDetector from %s", checkpoint)
-        return FasterRCNNDetector(checkpoint, cfg or {})
+        return FasterRCNNDetector(checkpoint, cfg or {}, segmenter=segmenter)
+
+    if segmenter is not None:
+        raise RuntimeError(
+            f"a segmenter was supplied but the detector checkpoint "
+            f"{checkpoint!r} is missing or torch is unavailable "
+            f"(torch available: {_TORCH_AVAILABLE}). HeuristicDetector "
+            "cannot run a second stage, so it would silently produce no "
+            "cartridge masks and every cartridge would be skipped. "
+            "Refusing to run a segmentation config that cannot segment.")
 
     log.warning(
         "No checkpoint at %s (or torch unavailable). Using HeuristicDetector "

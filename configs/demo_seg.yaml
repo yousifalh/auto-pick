@@ -1,0 +1,76 @@
+# End-to-end demo config WITH the trained bay segmenter in the loop.
+#
+# The counterpart to configs/demo.yaml, which is torch-free by design.
+# This one requires torch, a detector checkpoint and a segmenter
+# checkpoint, and it fails loudly if any of them is missing rather than
+# falling back - see main._build_segmenter and recog.inference
+# .load_detector. A silent fallback here would produce a clean-looking
+# run in which the model under test never executed.
+recognition: configs/recognition.yaml
+planning: configs/planning.yaml
+execution: configs/execution.yaml
+
+mode:
+  source: synthetic
+  robot: mock
+  max_cycles: 15
+  log_level: INFO
+  camera_device: 0
+
+  # An empty queue advances to the next frame here instead of ending the
+  # run. PPR 5.4's stop-when-empty is right for a real cell working one
+  # physical scene; `source: synthetic` cycles through UNRELATED renders,
+  # and the segmenter predicts no `bay` on most crops, so the first such
+  # frame would end the run after one cycle. Left at its default (true)
+  # in configs/demo.yaml, which is therefore untouched.
+  stop_on_empty_queue: false
+
+  # BLENDER FRAMES, NOT THE cv2 GENERATOR'S. This is the load-bearing
+  # difference from demo.yaml and not a preference: recog/synth_dataset.py
+  # paints flat green rectangles, the segmenter was trained on
+  # recog/dataset3d_seg, and on those green rectangles it predicts no
+  # `bay` channel at all - zero placement areas, zero picks, and a run
+  # that exits cleanly having demonstrated nothing. main.run() raises
+  # rather than let that happen, but the fix is this path.
+  #
+  # These renders are the segmenter's own TRAINING corpus (its 0.85/0.15
+  # split is internal to recog.seg_dataset and not reproduced here), so
+  # this config demonstrates that the wiring works end to end. It is not
+  # a generalisation measurement - recog.seg_evaluate on a held-out
+  # dataset is, and docs/receipts/seg_eval*.txt are where those numbers
+  # live.
+  img_dir: recog/dataset3d_seg/images
+
+  # Overrides configs/planning.yaml's camera.mm_per_px_x, which is a
+  # placeholder ("Replace with real intrinsics when available") for a
+  # camera that does not exist yet. 0.625 is this dataset's actual
+  # framing: layout.area[0] * 1000 / render.res[0] from
+  # recog/dataset3d_seg/manifest.json, the frozen copy of the generator
+  # config these images were rendered under
+  # (recog.seg_evaluate.resolve_mm_per_px computes it). The same figure
+  # docs/receipts/seg_ablation.txt reports.
+  #
+  # It applies to the planner AND the extractor together - the extractor
+  # turns it into the cartridge wall's erosion radius in pixels, the
+  # planner turns placement rectangles into workspace millimetres, and
+  # the two disagreeing would put cells in the wrong place. Measured
+  # effect of getting it wrong here: at the placeholder 0.38 the erosion
+  # is 11 px instead of 7. That used to matter enormously, because the
+  # extra erosion dropped every arbitration IoU below tau and the gate
+  # then discarded all 8 plannable cartridges; with the gate retired
+  # (FDR v3 13.2.1) both scales yield the same 8.
+  mm_per_px: 0.625
+
+  # PRESENCE of this block is what selects the segmentation path:
+  # main.run() builds the segmenter, hands it to load_detector as the
+  # detector's second stage, and builds the planner with
+  # SegmentationPlacementAreaExtractor instead of the heuristic. The two
+  # are chosen together on purpose - a segmenter with no consumer would
+  # run for nothing, and the segmentation extractor with no segmenter
+  # raises on every cartridge.
+  segmentation:
+    checkpoint: recog/checkpoints/seg/best.pt
+    # Read for model.crop_size / half / num_classes only. These must
+    # match what the checkpoint was trained with; the training config is
+    # the single source for both.
+    config: configs/segmentation.yaml

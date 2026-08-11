@@ -166,3 +166,293 @@ def test_full_cycle_with_a_stub_segmenter_attaches_masks_and_plans():
     assert narrow.width < 0.6 * wide.width, (
         "P_safe must still confine the placement area to the predicted "
         "bay - removing the tau gate must not remove the intersection")
+
+
+# ----------------------------------------- main.py's segmentation wiring ----
+#
+# The stub-segmenter test above builds the extractor and planner BY
+# HAND, so it never touches main.py's own selection logic. These do. The
+# failure they exist to catch is a segmentation config that loads, runs,
+# reports a clean set of statistics and never once invokes the model -
+# which is what main.py did before this wiring existed
+# (`detector.segmenter is None`, `cartridge_masks` empty,
+# `plan.arbitration` never imported).
+
+class _StubSegmenter:
+    """recog.bay_segmenter.BaySegmenter's public contract, no torch."""
+
+    def __init__(self, label_map):
+        self.label_map = label_map
+        self.calls = 0
+        self.crops_seen = 0
+
+    def segment_batch(self, crops):
+        import numpy as np
+        self.calls += 1
+        self.crops_seen += len(crops)
+        out = []
+        for c in crops:
+            h, w = c.shape[:2]
+            lm = np.zeros((h, w), np.int8)
+            src = self.label_map[:h, :w]
+            lm[:src.shape[0], :src.shape[1]] = src
+            out.append(lm)
+        return out
+
+
+def _agreeing_label_map(h: int = 288, w: int = 131):
+    import numpy as np
+
+    from plan.arbitration import CH_BAY, CH_CARTRIDGE
+    lm = np.zeros((h, w), np.int8)
+    lm[5:h - 5, 5:w - 5] = CH_CARTRIDGE
+    lm[12:h - 12, 12:w - 12] = CH_BAY
+    return lm
+
+
+def test_load_detector_forwards_the_segmenter_to_the_detector(
+        tmp_path: Path, monkeypatch):
+    """The seam this whole path was blocked on: load_detector took no
+    segmenter, so FasterRCNNDetector's `segmenter=None` default could
+    never be overridden from main.py, and the second-stage call inside
+    detect() was unreachable in production."""
+    import recog.inference as inference
+
+    captured = {}
+
+    class _FakeFRCNN:
+        def __init__(self, checkpoint, cfg, segmenter=None):
+            captured["checkpoint"] = checkpoint
+            captured["segmenter"] = segmenter
+
+    ckpt = tmp_path / "best.pt"
+    ckpt.write_bytes(b"not really a checkpoint")
+
+    monkeypatch.setattr(inference, "FasterRCNNDetector", _FakeFRCNN)
+    monkeypatch.setattr(inference, "_TORCH_AVAILABLE", True)
+
+    sentinel = object()
+    inference.load_detector(str(ckpt), {}, segmenter=sentinel)
+    assert captured["segmenter"] is sentinel
+
+    # ...and the old two-argument call still works unchanged.
+    inference.load_detector(str(ckpt), {})
+    assert captured["segmenter"] is None
+
+
+def test_load_detector_refuses_a_segmenter_it_cannot_run():
+    """HeuristicDetector has no second stage. Returning it while holding
+    a segmenter would produce empty cartridge_masks, a ValueError per
+    cartridge inside the extractor, and a blanket `except Exception` in
+    plan/planner.py absorbing every one of them - a run that reports
+    zero placements and looks healthy."""
+    from recog.inference import HeuristicDetector, load_detector
+
+    with pytest.raises(RuntimeError, match="cannot run a second stage"):
+        load_detector(None, {}, segmenter=object())
+
+    # No segmenter: the documented fallback is unchanged.
+    assert isinstance(load_detector(None, {}), HeuristicDetector)
+
+
+def test_build_planner_selects_the_extractor_the_config_asks_for():
+    from main import _build_planner
+    from plan.placement_area import (HeuristicPlacementAreaExtractor,
+                                     SegmentationPlacementAreaExtractor)
+
+    plan_cfg = {
+        "battery": {"diameter_mm": 18.5, "length_mm": 65.0},
+        "camera": {"mm_per_px_x": 0.38},
+        "cartridge": {"safety_margin_px": 4},
+        "occupancy_grid": {"resolution_mm_per_cell": 1.5},
+    }
+
+    heuristic = _build_planner(plan_cfg)
+    assert isinstance(heuristic.extractor, HeuristicPlacementAreaExtractor)
+    # The heuristic must NOT be handed label maps - its extract() takes
+    # no **kwargs, and the TypeError would vanish into the planner's
+    # blanket except, unplanning every cartridge forever.
+    assert heuristic._extractor_accepts_label_map is False
+
+    seg = _build_planner(plan_cfg, segmentation=True, mm_per_px=0.625)
+    assert isinstance(seg.extractor, SegmentationPlacementAreaExtractor)
+    assert seg._extractor_accepts_label_map is True, (
+        "selecting the segmentation extractor is pointless if the "
+        "planner will not pass it a label_map")
+
+    # mode.mm_per_px reaches BOTH consumers, or the wall-erosion radius
+    # and the workspace mapping disagree about the same camera.
+    assert seg.cfg.mm_per_px == 0.625
+    assert seg.extractor.mm_per_px == 0.625
+    assert heuristic.cfg.mm_per_px == 0.38
+
+
+def test_build_segmenter_is_absent_or_loud_never_quietly_skipped(
+        tmp_path: Path):
+    from main import _build_segmenter
+
+    # No block -> the torch-free default path, deliberately.
+    assert _build_segmenter({}) is None
+
+    # A block that names nothing is a typo, not a request for the
+    # heuristic path.
+    with pytest.raises(ValueError, match="checkpoint"):
+        _build_segmenter({"config": "configs/segmentation.yaml"})
+
+    with pytest.raises(FileNotFoundError):
+        _build_segmenter({"checkpoint": str(tmp_path / "nope.pt")})
+
+
+@pytest.fixture
+def demo_seg_config(tmp_path: Path) -> Path:
+    """A demo.yaml carrying a mode.segmentation block.
+
+    The checkpoint is a real (empty) file so _build_segmenter's
+    existence check passes; the tests monkeypatch the construction
+    itself, because building a DeepLabv3 here would drag in torch and
+    ~42 MB of COCO weights to assert something about main.py's wiring.
+    """
+    root = tmp_path / "auto-pick"
+    (root / "configs").mkdir(parents=True)
+    (root / "recog" / "dataset" / "images").mkdir(parents=True)
+    (root / "recog" / "dataset" / "annotations").mkdir(parents=True)
+
+    from recog.synth_dataset import generate_dataset
+    generate_dataset(str(root / "recog" / "dataset"), n=3, seed=9,
+                     size=(480, 640))
+
+    ckpt = root / "seg.pt"
+    ckpt.write_bytes(b"")
+
+    (root / "configs" / "recognition.yaml").write_text(
+        "dataset:\n"
+        f"  img_dir: {root}/recog/dataset/images\n"
+        "training:\n  checkpoint_dir: /tmp/nothing\n"
+    )
+    (root / "configs" / "planning.yaml").write_text(
+        "battery: {diameter_mm: 18.5, length_mm: 65.0}\n"
+        "camera: {mm_per_px_x: 0.38, workspace_bounds_mm: "
+        "{x_min: -350, x_max: 350, y_min: -350, y_max: 350}}\n"
+        "cartridge: {safety_margin_px: 4}\n"
+        "occupancy_grid: {resolution_mm_per_cell: 1.5}\n"
+        "motion: {approach_height_mm: 60, insert_height_mm: 2}\n"
+    )
+    (root / "configs" / "execution.yaml").write_text(
+        "kuka: {host: 127.0.0.1, port: 54613, max_retries: 3}\n"
+        "motion: {approach_height_mm: 60, transport_height_mm: 80, "
+        "insert_height_mm: 2, vacuum_level_percent: 80}\n"
+        "simulation: {listen_host: 127.0.0.1, listen_port: 54613, "
+        "drop_probability: 0.0, simulated_move_time_ms_per_100mm: 5}\n"
+    )
+    demo = root / "configs" / "demo_seg.yaml"
+    demo.write_text(
+        "recognition: configs/recognition.yaml\n"
+        "planning: configs/planning.yaml\n"
+        "execution: configs/execution.yaml\n"
+        "mode:\n  source: synthetic\n  robot: mock\n  max_cycles: 2\n"
+        "  log_level: WARNING\n  mm_per_px: 0.625\n"
+        "  stop_on_empty_queue: false\n"
+        "  segmentation:\n"
+        f"    checkpoint: {ckpt.as_posix()}\n"
+    )
+    return demo
+
+
+def _patch_detector(monkeypatch, holder, label_map):
+    """Replace main.load_detector with a torch-free stand-in that runs
+    the SAME second stage FasterRCNNDetector.detect does."""
+    import main as main_mod
+    from common.types import BBox, ClassLabel, Detection, Snapshot
+    from recog.inference import attach_cartridge_masks
+
+    class _StubDetector:
+        def __init__(self, segmenter):
+            self.segmenter = segmenter
+
+        def __call__(self, image_rgb):
+            snap = Snapshot(
+                detections=[
+                    Detection(BBox(100, 100, 231, 388),
+                              ClassLabel.CARTRIDGE, 0.95),
+                    Detection(BBox(20, 20, 40, 80),
+                              ClassLabel.BATTERY, 0.9),
+                ],
+                image_shape=image_rgb.shape[:2],
+            )
+            if self.segmenter is not None:
+                attach_cartridge_masks(snap, image_rgb, self.segmenter)
+            return snap
+
+    def _fake_load_detector(checkpoint, cfg, segmenter=None):
+        assert segmenter is not None, (
+            "main.run must hand the segmenter to load_detector")
+        holder.append(segmenter)
+        return _StubDetector(segmenter)
+
+    monkeypatch.setattr(main_mod, "load_detector", _fake_load_detector)
+    monkeypatch.setattr(
+        main_mod, "_build_segmenter",
+        lambda cfg: _StubSegmenter(label_map) if cfg else None)
+
+
+def test_run_puts_the_segmenter_in_the_loop_and_receipts_it(
+        demo_seg_config: Path, monkeypatch, tmp_path: Path):
+    """The end-to-end claim, asserted rather than assumed: given a
+    mode.segmentation block, main.run builds a segmenter, hands it to
+    the detector, gets label maps back on the Snapshot, and plans from
+    them through SegmentationPlacementAreaExtractor."""
+    holder: list = []
+    _patch_detector(monkeypatch, holder, _agreeing_label_map())
+
+    receipt = tmp_path / "receipts" / "run.txt"
+    stats = main_run(str(demo_seg_config), receipt_path=str(receipt))
+
+    assert holder, "load_detector was never given a segmenter"
+    assert holder[0].calls >= 1, "the segmenter was never invoked"
+    assert stats["cartridge_masks"] >= 1, "no label map reached the planner"
+    assert stats["placement_areas"] >= 1, (
+        "the segmentation extractor produced no placement area, so the "
+        "model ran for nothing")
+
+    # The receipt is generated, not narrated.
+    text = receipt.read_text(encoding="utf-8")
+    assert "SegmentationPlacementAreaExtractor" in text
+    assert f"placement areas        : {stats['placement_areas']}" in text
+    assert "mm_per_px     : 0.625" in text
+
+
+def test_run_raises_when_a_configured_segmenter_plans_nothing(
+        demo_seg_config: Path, monkeypatch):
+    """The exact failure configs/demo_seg.yaml exists to avoid: the
+    segmenter runs on frames it was not trained for, predicts no `bay`,
+    and the pipeline completes with zero placements while looking
+    healthy. An all-background label map stands in for that."""
+    import numpy as np
+
+    holder: list = []
+    _patch_detector(monkeypatch, holder, np.zeros((288, 131), np.int8))
+
+    with pytest.raises(RuntimeError, match="no placement area"):
+        main_run(str(demo_seg_config))
+
+
+def test_torch_free_demo_does_not_build_a_segmenter(
+        demo_config: Path, monkeypatch):
+    """configs/demo.yaml has no mode.segmentation block, and the FDR's
+    reproducibility claim rests on that path staying torch-free. If this
+    wiring ever starts constructing a segmenter unconditionally, this
+    fails."""
+    import main as main_mod
+
+    def _explode(cfg):
+        raise AssertionError(
+            f"the torch-free path must not build a segmenter (got {cfg!r})")
+
+    monkeypatch.setattr(
+        main_mod, "_build_segmenter",
+        lambda cfg: _explode(cfg) if cfg else None)
+
+    stats = main_run(str(demo_config))
+    assert stats["cycles"] >= 1
+    assert stats["cartridge_masks"] == 0
+    assert stats["placement_areas"] >= 1

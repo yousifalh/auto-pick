@@ -76,7 +76,19 @@ python -m recog.synth_dataset --out recog/dataset --n 50
 python main.py --config configs/demo.yaml
 ```
 
-The loop logs per-cycle perception / planning latencies, the queue length, and a summary of placed / pick-failed / place-failed counts at exit.
+The loop logs per-cycle perception / planning latencies, the cartridge / mask / queue counts, and a summary of placed / pick-failed / place-failed counts at exit.
+
+### ...and the same loop with the trained segmenter in it
+
+`configs/demo.yaml` runs the **heuristic** placement-area extractor and no segmenter — that is what keeps it torch-free, and it is the only thing it claims. `configs/demo_seg.yaml` is the other half: it puts the trained bay segmenter into recognition as a second stage and plans from its label maps.
+
+```bash
+python main.py --config configs/demo_seg.yaml --receipt docs/receipts/main_seg_run.txt
+```
+
+The `mode.segmentation` block is what selects that path, and it selects it in both places at once — the detector gets the segmenter, the planner gets `SegmentationPlacementAreaExtractor`. They cannot be configured apart, because either half alone is silent: a segmenter with no consumer runs for nothing, and the segmentation extractor with no segmenter raises on every cartridge into a blanket `except Exception`. For the same reason a missing checkpoint raises instead of falling back, and a run that completes having produced **zero** placement areas is treated as a failed run, not a quiet one.
+
+The frames matter as much as the checkpoint. `demo_seg.yaml` reads Blender renders (`recog/dataset3d_seg`), because the segmenter predicts no `bay` at all on `synth_dataset.py`'s flat green rectangles — pointed at those, it would complete cleanly and demonstrate nothing. Last generated run (`docs/receipts/main_seg_run.txt`): 15 frames, 26 cartridges detected, 26 segmented, **8 placement areas**, 1 pick-and-place executed. Note the last two numbers: the loop executes at most one pose per cycle and a pose also needs a loose battery in the same frame, and FFDH declines most of these bays — see `docs/superpowers/specs/2026-08-11-segmenter-integration.md` for the measurement.
 
 ## Two synthetic generators, two purposes
 
@@ -88,7 +100,7 @@ There are deliberately two synthetic-scene generators, and they are not intercha
 | Interpreter | system Python | Blender's bundled Python |
 | Speed | ~ms per image | ~3.5 s per 1280×720 frame on an RTX 3060 |
 | Fidelity | flat coloured primitives | real CAD geometry, randomised PBR materials, physical lighting |
-| Used by | `main.py`'s software-only demo, the unit tests | training the Faster R-CNN detector |
+| Used by | `main.py`'s software-only demo (`configs/demo.yaml`), the unit tests | training the Faster R-CNN detector and the bay segmenter; `configs/demo_seg.yaml`'s demo frames |
 
 `synth_dataset.py` exists so the end-to-end demo and the test suite can run in seconds with no GPU, no Blender and no CAD. It is a stand-in for a camera, not a source of training data — a detector trained on it learns "grey rectangle on grey background".
 
