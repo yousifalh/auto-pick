@@ -2152,9 +2152,12 @@ limitation permanent rather than pending.**
 
 **The τ calibration is still a null result, and the tray fix moved it
 in the OPPOSITE direction from every previous scale-up — worth
-reporting precisely because it contradicts the earlier trend.** The
-arbitration compares two independent estimates and rejects a cartridge
-whose estimates disagree by more than a threshold τ. Calibrating τ
+reporting precisely because it contradicts the earlier trend.**
+*(Written while the gate was still live; it was deleted from the code in
+commit `5a619fc` — see "τ is retired in the code, not only in this
+document" below. The measurement is retained as the record of why.)* The
+arbitration compared two estimates and rejected a cartridge
+whose estimates disagreed by more than a threshold τ. Calibrating τ
 against a 5 % safety budget, on the tray-fix checkpoint and the same
 126-crop validation split, returned **τ = 0.5715 with a rejected
 fraction of 0.0** over 35 validation cartridges for which a bay was
