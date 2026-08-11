@@ -1049,11 +1049,48 @@ unit-tested in isolation, but its end-to-end behaviour against a real
 KUKA controller was not validated within the project window
 (§10.3, §13.2).
 
+**Which extractor that loop runs, corrected 2026-08-11.** Until commit
+`12134c2` `main.py` ran the §6.2 *heuristic* extractor and nothing else:
+`recog.inference.load_detector` took no `segmenter` argument, so
+`FasterRCNNDetector`'s `segmenter=None` default could not be overridden
+from any configuration, and `_build_planner` hardcoded the heuristic —
+the segmenter of §13.2(5) was unreachable in production and
+`Snapshot.cartridge_masks` was always empty. **Any statement that this
+pipeline demonstrated the segmenter end to end was, before that commit,
+overstated; it is true now, and the distinction is which config is
+being run.** A `mode.segmentation` block now selects the segmentation
+path in both places from one key — the detector gets the segmenter and
+the planner gets `SegmentationPlacementAreaExtractor` — because either
+half alone is silent: a segmenter with no consumer runs for nothing,
+and the segmentation extractor with no segmenter raises per cartridge
+into a blanket handler that reports a clean run of zero placements.
+Every way the new path could no-op therefore raises instead, including
+a completed run that produced zero placement areas.
+`configs/demo_seg.yaml` is the shipped instance, and
+`docs/receipts/main_seg_run.txt` is its tooling-generated receipt: **26
+cartridges detected → 26 segmented → 8 placement areas → 1
+pick-and-place**, at `mm_per_px: 0.625` (this dataset's true framing,
+overriding `planning.yaml`'s 0.38 placeholder). That receipt is
+evidence that the *wiring* works end to end; it is not a generalisation
+measurement, because those frames are the segmenter's own training
+corpus — §13.1.1 and `docs/receipts/seg_eval_*_on_cad_test.txt` are
+where held-out numbers live. **`configs/demo.yaml` is unchanged, still
+runs the heuristic extractor and is still torch-free, and it remains
+what §9.5's and Appendix C's reproducibility claims rest on.**
+
 ### 8.1 Reproducing the smoke test
 
 ```
 python -m recog.synth_dataset --out recog/dataset --n 10
 python main.py --config configs/demo.yaml
+```
+
+The same loop with the trained segmenter in it (needs torch, a
+detector checkpoint, a segmenter checkpoint and Blender renders rather
+than `synth_dataset.py`'s flat rectangles):
+
+```
+python main.py --config configs/demo_seg.yaml --receipt docs/receipts/main_seg_run.txt
 ```
 
 The expected terminal output is a sequence of `cycle=N perc=Xms plan=Yms
@@ -1379,22 +1416,30 @@ the next cycle; the number of retries per cell is bounded by
 A third planner failure mode, **`placement_disagreement`**, is defined
 by the segmentation extractor of §13.2(5) and reads as zero on the
 figures above, because that extractor is not wired into the default
-configuration this benchmark runs. It fires when the two independent
+configuration this benchmark runs. It *used to* fire when the two
 estimates of a cartridge's placement area — the segmenter's `bay`
 channel read directly, and the same area derived by subtracting the
 electronics module and any obstruction from the cartridge footprint —
-disagree by more than a calibrated IoU threshold τ, and it causes the
-planner to skip that cartridge for the cycle rather than pack against
-an area it cannot corroborate. Its subclass **`bad_detector_box`**
+disagreed by more than an IoU threshold τ, skipping that cartridge for
+the cycle rather than packing against an area it could not corroborate.
+**That gate no longer exists: it was deleted from
+`plan/placement_area.py` in commit `5a619fc`, for the reasons in
+§13.2.1, so nothing raises `placement_disagreement` bare any more and
+the counter now reads zero by construction rather than by
+configuration.** The exception type is retained because
+`bad_detector_box` derives from it and the planner still counts that.
+Its subclass **`bad_detector_box`**
 separates a *perception* failure — a detector box whose centre does
 not land on cartridge material — from a cartridge that is genuinely
 full, which is normal operation and is deliberately not counted as a
 fault. The two are counted separately on the planner, and both are
 absorbed by the existing per-cartridge exception handler, so either
 costs one cartridge-cycle of throughput rather than stopping the
-loop. Neither has a measured rate: the τ behind the threshold is
-calibrated but, for the reasons given in §13.2.1, not yet
-informative, so no expected firing rate is quoted here.
+loop. `placement_disagreement` has no rate to measure because it can no
+longer fire; `bad_detector_box` has none measured on this benchmark
+because the segmentation extractor is not in the default configuration
+it runs (`docs/receipts/main_seg_run.txt`, the end-to-end run that does
+use it, reports 0 of each over 26 cartridges).
 
 ### 10.7 Design ablations
 
@@ -1607,6 +1652,34 @@ Pooled over all 836 CAD test crops (selected mean over
 | procedural, wide | 0.6536 | 0.7565 | 0.6280 | 0.5502 | 0.7833 | **0.6794** |
 | CAD control (4 folds) | 0.9032–0.9131 | 0.8530–0.8634 | 0.6320–0.6507 | 0.7439–0.7833 | 0.9387–0.9437 | 0.7989–0.8091 |
 
+**The `bay` row of this table conflates two unrelated quantities and
+understates the result. Read it with the decomposition below, not on its
+own.** A pooled per-class IoU accumulates one union over all 836 crops
+while the instance count beside it (213) counts only the crops that
+*contain* that class, so a model that paints `bay` on a closed cartridge
+is charged against the same number as a model that segments a real bay
+badly. Separated, on the same 836 crops
+(`docs/superpowers/specs/2026-08-11-transfer-gap-diagnosis.md`):
+
+| model | pooled `bay`, all 836 crops | **present-only `bay`**, the 213 crops with a GT bay | **sealed crops given a hallucinated bay** |
+|---|---:|---:|---:|
+| procedural, anchored | 0.6555 | **0.8801** | **136 / 623 = 21.8 %**, 675 460 px |
+| CAD control (each SKU scored by the fold that never saw it) | 0.9009 | **0.9013** | **2 / 623 = 0.3 %**, 722 px |
+
+**On the crops that actually contain a bay, procedural training is
+within 0.021 IoU of the CAD-trained ceiling — not the 0.246 the pooled
+row shows. 91.4 % of the published gap is false-positive `bay` painted
+on sealed cartridges.** It is not a leak of one class: of the 136 sealed
+crops with an invented bay, 92 also predict `electronics` or `battery`
+on the same closed shell, a combination the CAD control produces zero
+times — the model is deciding the *unit is open*. `battery` is the same
+mechanism (0.5593 pooled → **0.6924** present-only, against the control
+composite's 0.7500); `electronics` (0.7541 → 0.7652) and `obstruction`
+(0.6306 → 0.6316) are barely affected and their pooled figures can be
+read as published. Both decompositions come from a read-only harness
+that reuses `recog.seg_evaluate`'s own pixel path and reproduces every
+published pooled figure to four decimal places.
+
 The CAD-trained control is the load-bearing part of the design. Without
 it, a procedural selected mean of 0.68 is ambiguous between "the model
 fails to generalise" and "the procedural trays are unrealistic" — two
@@ -1621,7 +1694,14 @@ the control — and that is not a transfer result: obstruction geometry is
 emitted by a single shared code path (`world.build_obstructions`),
 identical for CAD and procedural scenes, so parity is the expected
 outcome and is reported here as a shared-code artefact rather than as
-evidence.
+evidence. Stated once more because the row invites quotation: **the
+`obstruction` column of the table above is not a transfer result and
+must not be cited as one.** `world.build_obstructions` has a single call
+site and procedural scenes execute the same bytes CAD scenes do, so
+there is no procedural-to-CAD generalisation for that class to perform;
+parity would have been the outcome under any hypothesis, including a
+model that generalises not at all. The load-bearing rows are `bay`,
+`cartridge` and `battery`.
 
 Decision 2's anchored-versus-wide question — whether sampling beyond what
 the real SKUs span helps — **came out null**: 0.6801 vs 0.6794, with no
@@ -1643,10 +1723,109 @@ flagged before the results were read: AnkerPowerCore10000's `battery`
 rests on 14 crops, below the ~24–36-instance density this project treats
 as reportable.
 
+**Corrected 2026-08-11, on measurement rather than re-reading.** Two of
+the explanations above were tested directly and did not survive.
+
+*First, the class-by-class reading — "the shortfall tracks how much of
+each class's geometry the procedural builder invents" — is wrong as
+stated for `bay` and `battery`, the two largest gaps.* Both are
+dominated by the sealed-cartridge false positives decomposed above, not
+by segmentation quality on real bays. It survives unchanged for
+`cartridge` and `electronics`, which have no hallucination component.
+
+*Second, the procedural cell mix is not the cause of the `battery`
+gap.* A purpose-built control was trained to test it: one procedural
+dataset re-rendered with `cell_formats` restricted to `["18650"]` and
+nothing else changed (asserted field by field against the original
+config, 502 scenes at the same seed, the same 848 crops and the same
+721/127 split), one model on the identical 40-epoch schedule from a
+fresh initialisation. Pre-registered before the render: `battery`
+should rise materially toward the control's ~0.78, with roughly +0.15
+the smallest resolvable move at n = 1 model per condition. Measured:
+`battery` **0.5593 → 0.5763, +0.017 of the 0.224 available (7.6 %)** —
+the same order as the 0.009 that separates `anchored` from `wide`, two
+sets differing across *every* sampled tray parameter. **Reported as the
+null it is.** `bay` moved −0.036, entirely inside the hallucination
+channel (675 460 → 838 185 px); present-only it was marginally *better*
+than anchored (0.8839 vs 0.8801). Receipt:
+`docs/receipts/seg_eval_anchored_18650_on_cad_test.txt`.
+
+**The mechanism behind the sealed-cartridge false positives was then
+found, and closing it recovers most of the `bay` gap.** Appearance
+randomisation — the obvious candidate — was ruled out first and not
+run: both pipelines draw from one shared appearance pool through one
+entry point, measured identical to sampling noise on backdrop,
+lighting, exposure, zoom and shell preset across the two datasets' own
+meta files, and training-time photometric augmentation is already
+aggressive. What differed was geometry. `world.build_procedural_tray`
+built the lid as a planar cuboid, so a sealed procedural cartridge is a
+flat slab of one colour under this near-orthographic camera; all four
+Anker lids are barrel-crowned, with a long-edge fillet radius of
+11.10 mm — the entire lid height — and **89 % of their upward-facing
+polygons non-planar against the procedural lid's 0 %**. The rendered
+consequence, measured over each dataset's own sealed crops as
+luminance p95−p05 inside the unit's own mask: median **0.0272
+procedural against 0.2719 CAD, a factor of 10**, while median shell
+*brightness* is essentially identical in both. Hallucination rate rises
+monotonically across quintiles of a sealed shell's own luminance
+gradient (6.4 % → 39.2 %, a 6× spread that holds within every one of
+the seven lighting rigs) — so the model had learned "featureless flat
+top ⇒ closed", true in 614 of its 614 sealed training examples and
+false of a moulded shell.
+
+One procedural set was re-rendered with a **sampled lid crown as the
+single change** — drawn last in `sample_tray` so the rest of the random
+stream is bit-identical, verified at 0 non-crown mismatches across all
+502 trays — and one model trained on the identical schedule. Labels,
+unit keys, kinds, boxes and per-class annotation counts came out
+identical to the flat-lid set, and 99.8 % of sealed `cartridge` masks
+are pixel-identical, so the shape the model sees did not change, only
+the shading inside it. On the same 836 CAD test crops
+(`docs/receipts/seg_eval_anchored_crown_on_cad_test.txt`):
+
+| model | bay | electronics | obstruction | battery | cartridge | selected mean | sealed FP rate |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| procedural, anchored (flat lid) | 0.6555 | 0.7541 | 0.6306 | 0.5593 | 0.8088 | 0.6801 | 136/623 = **21.8 %** |
+| **procedural, crowned lid** | **0.8755** | 0.7819 | 0.6360 | 0.6906 | 0.9120 | **0.7645** | 16/623 = **2.6 %** |
+| CAD control (leave-one-out composite) | 0.9009 | 0.8530 | 0.6341 | 0.7419 | 0.9382 | 0.7960 | 2/623 = 0.3 % |
+
+The pre-registered falsifier was that a model made globally reluctant
+to predict `bay` would show the same headline move. **It did not fire:**
+present-only `bay` *rose*, 0.8801 → **0.8856**, as did open-crop recall
+(0.9538 → 0.9557) and precision (0.9193 → 0.9235); the 6× monotone
+gradient dependence collapsed to approximately flat (0.0–4.0 % across
+all five quintiles) rather than shifting down proportionally; and
+`obstruction`, which lives inside open bays where the crown cannot
+reach it, did not move (0.6306 → 0.6360, inside the noise band). The
+crowned model is slightly **worse** on its own validation split (0.7273
+vs 0.7322) — the gain is out-of-distribution only.
+
+**What this licenses, stated narrowly because the looser sentence is
+what a reader would otherwise take away.** The `[0, 12]` mm crown range
+was chosen *after* measuring the real Anker lids, and their 11.10 mm
+lies inside it. **This is therefore not evidence that "procedural
+training transfers", and must not be quoted as such.** The claim the
+measurement supports is the narrow one: *the missing shading-structure
+coverage was the mechanism behind the `bay` transfer gap, and putting
+that case into the training distribution removes 92 % of the false
+positives it caused.* That is domain randomisation informed by a
+measured coverage gap — the strictly weaker thing §13.2's third
+follow-on describes — not a statement that this model would hold up on
+a shell family nobody measured. And, as everywhere in this subsection,
+**it is synthetic-to-synthetic: none of it is evidence about
+photographs** (§13.2.2). With the hallucination channel closed,
+`electronics` (0.7819 against the composite's 0.8530) and the residual
+`cartridge` gap (0.9120 vs 0.9382) are the largest honest shortfalls
+remaining. Full pre-registration, thresholds and six suspicion checks
+on a large favourable result:
+`docs/superpowers/specs/2026-08-11-sealed-unit-experiment.md`.
+
 Five-class disjointness held at **0 overlapping pixels** across all seven
 datasets generated for this work (5426, 6374, 11450, 15669, 14270, 13328
 and 11040 mask pairs respectively), extending the guarantee previously
-established for CAD-only scenes to procedurally generated geometry.
+established for CAD-only scenes to procedurally generated geometry, and
+again on the two datasets rendered for the corrections above (13 689 and
+13 589 pairs, 0 overlapping).
 
 ### 13.2 Future work
 
@@ -2006,11 +2185,13 @@ zero-tolerance test in practice rather than the tolerance test it is
 specified as. The honest conclusion is unchanged in kind, sharper in
 degree: **"the validation set needs larger errors, not more crops, and
 a more accurate generator produces SMALLER errors, which moves this
-further away, not closer."** Consistent with that, the extractor still
+further away, not closer."** ~~Consistent with that, the extractor still
 defaults to the pre-calibration τ = 0.85 and does not read the
 calibrated value; given that the calibration is uninformative, 0.85 is
 as defensible a choice, but the disconnect is recorded rather than
-left for a reader to discover.
+left for a reader to discover.~~ **Superseded 2026-08-11: there is no
+longer a τ in the extractor at all — see "τ is retired in the code, not
+only in this document" below.**
 
 **The paragraphs above describe τ as uninformative on this split. A
 follow-up measurement establishes something stronger: the gate cannot
@@ -2073,6 +2254,36 @@ track it in either direction of the class-exclusion design.
 unconditionally rather than gating on `iou >= tau`; the gate is inert
 data, not a safety mechanism, and treating it as one would be worse
 than leaving it uncalibrated.
+
+**τ is retired in the code, not only in this document — and the delay
+had a measured cost.** The paragraphs above were written when the
+conclusion had reached the prose and not the source: commit `dee9854`
+changed the documentation and the comments, while
+`plan/placement_area.py` went on evaluating `if iou < self.tau: raise
+PlacementDisagreement`. Three mutually inconsistent values were live at
+once and none of them agreed — the constructor default **0.85** (what
+every in-tree caller actually got), `configs/planning.yaml`'s
+`arbitration.tau: 0.7492` (read by **nothing**, grep-verified), and
+`README.md`'s **0.5715** (which described the YAML value as live).
+Measured on 15 frames of `recog/dataset3d_seg` through the real
+detector and the real segmenter — 26 cartridge crops, 8 carrying a
+predicted `bay` pixel — the gate admitted **3 of those 8** at the code
+default and 6 and 7 at the other two values, and at
+`configs/planning.yaml`'s own `mm_per_px` of 0.38 it admitted **0 of 8**:
+that calibration widens the wall erosion from 7 px to 11 px, shrinking
+`P_derived` until the observed IoU range (0.639–0.848) sits entirely
+below 0.85. **In the project's own configured calibration the gate
+rejected every plannable cartridge it was ever offered, silently, one
+`except PlacementDisagreement: continue` at a time.** Commit `5a619fc`
+deleted the branch, the `self.tau` attribute, the constructor argument
+(*deleted* rather than accepted-and-ignored, so a caller still passing
+it gets a `TypeError` instead of silence) and the dead
+`arbitration.tau` config key. Both rows now read 8 of 8. `P_safe =
+P_direct ∩ P_derived` is applied unconditionally as before and is
+pinned by its own test, so "the gate is gone" cannot quietly become
+"the exclusion is gone"; the consistency IoU is still computed and
+still reported on `PlacementArea.consistency_iou`, and nothing acts on
+it. Record: `docs/superpowers/specs/2026-08-11-segmenter-integration.md`.
 
 **Scope of this conclusion, and the option that was not tested.**
 Everything above is scoped to the current *geometric* family of
@@ -2181,7 +2392,13 @@ the opposite sign a gate needs, traced to the argmax mechanism in
 `plan/arbitration.py` that makes `P_direct` and `P_derived` the same
 read twice rather than independent estimates. `P_safe`'s intersection
 is retained as a geometric constraint; the IoU threshold on top of it
-is not. Not demonstrated: synthetic-to-real
+is not — and as of commit `5a619fc` that is true of the running code
+and not only of this document. Also now demonstrated, and previously
+overstated: the segmenter runs in `main.py`'s end-to-end loop
+(`12134c2`, `configs/demo_seg.yaml`, `docs/receipts/main_seg_run.txt` —
+26 detected, 26 segmented, 8 placement areas, 1 pick-and-place), where
+before it was unreachable under any configuration; see §8. Not
+demonstrated: synthetic-to-real
 transfer — the real-photo comparison now sits at three points (0.211,
 0.232, 0.318) against the 0.218 threshold, from three checkpoints that
 differ in more than just training duration this time (fresh
