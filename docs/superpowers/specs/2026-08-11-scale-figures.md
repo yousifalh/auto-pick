@@ -315,3 +315,36 @@ the spread stated, rather than left pointing at a receipt that no
 longer says that.
 
 ---
+
+## 8. The operating envelope, added to the FDR (§3)
+
+A separate piece of work, from
+`2026-08-11-placement-feasibility.md` §3 and §5, written into
+`docs/FDR_v3.md` **§3** as an operating-envelope statement immediately
+after the six success criteria — the place a scope statement belongs,
+and framed as a specification finding rather than a defect or a to-do.
+
+It states: `AnkerPowerCore20100` and `AnkerPowerCore26800` can be
+certified (≥ 70 mm of longitudinal margin); `AnkerPowerCore13000`
+marginally (1.75 mm, spent by 6.89° of rotation); and
+`AnkerPowerCore10000` **cannot be certified at any perception
+accuracy** — its placement region is 54.9 × 65.0 mm against a
+65.0 × 18.5 mm nominal cell, exactly zero margin, and the axis-aligned
+packer consumes a further 0.32 mm per degree of cartridge rotation
+against ±2° of jig jitter. With ground-truth masks, ground-truth boxes
+and each frame's true scale it places nothing in 10 of 10 instances,
+and the 30-instance set caps at 10 of 30 (12 of 30 with the wall inset
+at 0.0). Neither 18.5 → 18.3 mm nor any wall inset down to 0.0 recovers
+an instance.
+
+The general statement, which is the part that transfers to the next
+cartridge geometry: **a bay packed to exact tolerance cannot be
+certified by a vision system, because certification requires margin to
+absorb a non-zero measurement error and an exact fit offers none.** The
+available responses are specification changes — a smaller nominal
+footprint accepted as documented risk, a placement rectangle that
+follows the cartridge's pose rather than the camera's axes, or the
+`10000` declared out of scope for this cell — not accuracy work.
+
+Nothing in the segmenter, the datasets, the models, the 18.5 mm nominal
+or the wall inset was changed by either piece of work.

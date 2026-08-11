@@ -360,6 +360,71 @@ recogniser is allowed one third of the 3 mm end-to-end budget.
 Requirements outside the six — safety (IEC 60204 Cat-0 E-stop),
 sustainability, and ergonomics — are discussed in §11.
 
+**Operating envelope: the cartridge geometries these criteria can be
+certified over (added 2026-08-11).** The six criteria are properties of
+the system, and the system meets them *within* a set of cartridge
+geometries narrower than the catalogue. That set belongs here rather
+than in §13 because it is a specification finding: it follows from the
+nominal cell footprint and the four measured Anker CAD assemblies alone,
+and no attainable perception or calibration accuracy reaches it.
+
+`configs/planning.yaml` reserves an **18.5 × 65.0 mm** nominal footprint
+— the 18650's CAD-measured 18.3 mm diameter plus a deliberate 0.2 mm
+margin. Each SKU's placement region is its `interior_mm` minus its
+`module_bay_mm` (`recog/synth3d/catalog.json`):
+
+| SKU | placement region | margin on the long axis | rotations that still admit a cell |
+|---|---|---:|---|
+| `AnkerPowerCore10000` | 54.9 × **65.0 mm** | **+0.00 mm** | **exactly 0.00°**, then nothing until 31.8° |
+| `AnkerPowerCore13000` | 73.2 × 66.75 mm | +1.75 mm | 0–6.89°, then 24.9°+ |
+| `AnkerPowerCore20100` | 54.9 × 135.2 mm | +70.20 mm | 0–38.44° |
+| `AnkerPowerCore26800` | 73.2 × 140.8 mm | +75.80 mm | 0–45° (all) |
+
+The `10000`'s bay is *exactly* the nominal cell length: 65.0 against
+65.0, not approximately. A second consumer then takes what is not there.
+The placement rectangle is axis-aligned by construction (§6.2, on the
+sound ground that the camera mount is fixed), but the *cartridge* is
+not: `layout.plan` seats every unit at `quarter × 90° + jitter` with
+±2° of jitter, and a real jig has clearance of the same order. An
+axis-aligned strip of width `w` fits a bay of height `H` rotated by θ
+only where `L(θ) = (H − w·sinθ) / cosθ ≥ 65.0`, so the packer alone
+consumes **18.5·tanθ ≈ 0.32 mm per degree**. Against 0.00 mm of margin
+the first fraction of a degree is terminal, and measured over the ten
+`10000` instances in the 30-cartridge corpus (rotations 0.30°–1.81°) the
+longest axis-aligned strip an *empty* bay admits is 64.45–64.90 mm.
+
+The consequence is unconditional on perception. Feeding **ground-truth**
+label maps through the shipping extractor and the shipping packer at
+each frame's **true** scale — perfect segmentation, perfect detector
+boxes, perfect calibration — `AnkerPowerCore10000` places zero cells in
+**10 of 10** instances at the production 4.25 mm wall inset, and the
+whole 30-instance set reaches **10 of 30**, rising to at most **12 of
+30** with the wall inset taken to 0.0 mm. Tolerance is not the lever
+either: 18.5 → 18.3 mm recovers **0** instances at any calibration, and
+the wall inset recovers **0** all the way down to 0.0 mm — both of those
+rows measured on the real predicted masks and real detector boxes the
+pipeline actually produces, one change at a time, rather than argued
+(`docs/superpowers/specs/2026-08-11-placement-feasibility.md` §3 and
+§5).
+
+**The envelope, stated plainly.** This system can be certified to place
+an 18.5 × 65.0 mm cell into `AnkerPowerCore20100` and
+`AnkerPowerCore26800` cartridges, which carry ≥ 70 mm of longitudinal
+margin and tolerate every jig rotation the packer will meet. It can be
+certified **marginally** on `AnkerPowerCore13000`, whose 1.75 mm is
+spent by 6.9° of rotation. It **cannot** be certified on
+`AnkerPowerCore10000` at any perception accuracy. The general form of
+that last sentence is the part worth carrying to the next cartridge
+geometry: **a bay packed to exact tolerance cannot be certified by a
+vision system, because certification needs margin to absorb a non-zero
+measurement error and an exact fit offers none.** The responses
+available are specification changes rather than accuracy work — a
+smaller nominal footprint accepted as a documented risk, a placement
+rectangle that follows the cartridge's pose instead of the camera's axes
+(§13.2), or `AnkerPowerCore10000` declared out of scope for this cell.
+None of §10.5's verdicts is contingent on which is chosen; the envelope
+they hold over is.
+
 ---
 
 ## 4. System Architecture
@@ -2394,11 +2459,22 @@ fails to admit an 18.3×65.0 mm cell in **either** orientation (short by
 1.9 mm), and `AnkerPowerCore13000` clears by only 1.1 mm — thin enough
 that rendering/annotation discretisation could plausibly erase it.
 Only `AnkerPowerCore20100` and `AnkerPowerCore26800` have real headroom
-(≥69.5 mm). **This is arithmetic from CAD bounding boxes, not a
-measurement against rendered masks**, and the design spec says so
+(≥69.5 mm). **This was arithmetic from CAD bounding boxes, not a
+measurement against rendered masks**, and the design spec said so
 explicitly — it assumes an ideal rectangle eroding uniformly on every
-side, which the actual foreground blob at pixel resolution is not. It
-has not been render-verified and should be before being relied on.
+side, which the actual foreground blob at pixel resolution is not.
+**It has since been render-verified, and it holds** (2026-08-11): run
+against ground-truth label maps through the shipping extractor and
+packer, `AnkerPowerCore10000` admits no cell in 10 of 10 instances and
+`AnkerPowerCore13000` in 7 of 10, and the predicted `L_axis` for an
+empty `10000` bay agrees with the measured free floor to within 0.2 mm
+on every empty, debris-free instance. The verification also found the
+binding constraint to be one the CAD arithmetic did not model — the
+axis-aligned packer's 0.32 mm per degree of cartridge rotation — which
+tightens the conclusion rather than loosening it. §3's operating
+envelope carries the full statement; that is where it belongs, because
+it turned out to be a specification finding about which cartridge
+geometries can be certified at all, not a fact about τ.
 Taken with the correlation result above, it is a second, structurally
 independent reason the 35-crop validation split could never have
 produced a τ worth calibrating: even in a world where the correlation
