@@ -690,12 +690,27 @@ class TraySample:
     tray_floor_mm: float
     cell_format: str
     bay_edge: str
+    # Fillet radius rolled onto the lid's four TOP edges. Defaults to 0.0
+    # (a planar cuboid lid, the geometry every render before 2026-08-11
+    # used) so a caller that predates the field builds exactly what it
+    # always built. See sample_tray and config.TrayRangeCfg.
+    lid_crown_mm: float = 0.0
 
 
 # Minimum clearance (mm) sample_tray guarantees between tray_floor_mm and
 # case_half_height_mm - see that function's docstring for why this is a
 # structural requirement, not a plausibility tuning knob.
 MIN_CAVITY_RIM_CLEARANCE_MM = 1.0
+
+# Largest fraction of the lid's own SHORTEST outer side that the top-edge
+# crown fillet may consume. The bevel rolls in from both opposing edges,
+# so at 0.5 the top plateau collapses to a ridge and beyond it the bevel
+# is self-intersecting - a degenerate mesh, the same failure class as a
+# zero-height cavity cutter, not merely an unusual tray. 0.45 leaves a
+# real plateau on every draw. The measured Anker lids sit at 0.35/0.28/
+# 0.36/0.27 of their own half-width, i.e. 0.18-0.13 of the full short
+# side, comfortably inside this.
+MAX_LID_CROWN_FOOTPRINT_FRAC = 0.45
 
 # Minimum clearance (mm) sample_tray guarantees between a cell's own
 # diameter and the ASSEMBLED shell's full height (2 * case_half_height_mm
@@ -806,11 +821,33 @@ def sample_tray(cfg, rng: random.Random) -> TraySample:
         case_half_height_mm,
         (tray_floor_mm + cell_w_mm + MIN_CELL_HEIGHT_CLEARANCE_MM) / 2.0)
 
+    # DRAWN LAST, deliberately and load-bearingly. The crowned procedural
+    # set built for the sealed-unit experiment must differ from `anchored`
+    # in the crown and NOTHING else; catalog.build_procedural_pool gives
+    # each tray its own seeded Random, so taking this draw after every
+    # other one leaves the whole preceding stream bit-identical between a
+    # (0, 0) config and a (0, 12) one. Move it earlier and every
+    # downstream tray parameter silently resamples, turning a one-variable
+    # experiment into a two-variable one with no error anywhere - pinned
+    # by test_lid_crown_is_drawn_LAST_so_every_other_tray_field_is_identical.
+    #
+    # Clamped rather than range-restricted, for the same reason
+    # case_half_height_mm is: the two limits depend on quantities drawn
+    # ABOVE (the lid's own height and its outer footprint), so no static
+    # range can express them. A crown deeper than the lid would roll past
+    # its own base; one wider than half the shortest side self-intersects.
+    lid_crown_mm = rng.uniform(*cfg.lid_crown_mm_range)
+    ox0, oy0, ox1, oy1 = case_outer
+    lid_crown_mm = min(lid_crown_mm, case_half_height_mm,
+                       MAX_LID_CROWN_FOOTPRINT_FRAC
+                       * min(ox1 - ox0, oy1 - oy0))
+
     return TraySample(
         interior_mm=interior, module_bay_mm=module_bay, case_outer_mm=case_outer,
         wall_mm=wall_mm, case_half_height_mm=case_half_height_mm,
         tray_floor_mm=tray_floor_mm,
-        cell_format=cell_format, bay_edge=edge)
+        cell_format=cell_format, bay_edge=edge,
+        lid_crown_mm=lid_crown_mm)
 
 
 def seated_cell_world_poses(poses: List[Tuple[float, float, float]],

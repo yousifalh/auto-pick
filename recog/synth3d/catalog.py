@@ -350,6 +350,12 @@ def build_tray_entry(sample) -> dict:
         "case_half_height_mm": round(sample.case_half_height_mm, 2),
         "case_wall_mm": round(sample.wall_mm, 2),
         "cell_format": sample.cell_format,
+        # world.build_procedural_tray reads the ENTRY, never the
+        # TraySample, so a field that stops at the dataclass boundary is
+        # this project's documented silent-degradation shape - the lid
+        # would simply keep building flat, with no error anywhere. 0.0
+        # means "planar cuboid lid", the pre-2026-08-11 geometry.
+        "lid_crown_mm": round(sample.lid_crown_mm, 2),
     }
     bay_edge(tuple(entry["interior_mm"]), tuple(entry["module_bay_mm"]))
     return entry

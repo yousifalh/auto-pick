@@ -1079,3 +1079,94 @@ def test_sample_tray_case_half_height_always_fits_the_drawn_cells_diameter():
                 f"floor={s.tray_floor_mm} diam={diam_mm} "
                 f"cell_top={cell_top_mm} "
                 f"2*half_height={2.0 * s.case_half_height_mm}")
+
+
+# ------------------------------------------------- lid crown (sealed unit) --
+#
+# Why this exists: measured 2026-08-11, the four Anker lids are BARREL-
+# CROWNED - long-edge fillet radius 11.10mm = the entire lid height, and
+# 89% of each lid's upward-facing polygons have z-normal < 0.95 - while
+# world.build_procedural_tray's lid is a planar cuboid (0%). A sealed
+# procedural cartridge therefore renders as a featureless flat rectangle
+# (internal luminance p95-p05 median 0.0272) where a sealed CAD one has a
+# dark edge falloff framing a bright crown (0.2719, 10x). See
+# docs/superpowers/specs/2026-08-11-sealed-unit-experiment.md.
+
+def test_lid_crown_range_defaults_to_zero_so_existing_configs_are_unchanged():
+    """A config written before the crown existed must sample exactly the
+    geometry it always did - the default range is degenerate, so the
+    drawn crown is 0.0 and world.build_procedural_tray's bevel is skipped
+    entirely."""
+    from recog.synth3d.bay import sample_tray
+    cfg = Config().tray_anchored
+    assert cfg.lid_crown_mm_range == (0.0, 0.0)
+    for seed in range(200):
+        assert sample_tray(cfg, _random.Random(seed)).lid_crown_mm == 0.0
+
+
+def test_lid_crown_is_drawn_LAST_so_every_other_tray_field_is_identical():
+    """The experiment's whole design rests on this: the crowned procedural
+    set must differ from `anchored` in the crown and NOTHING else. If the
+    crown draw were taken anywhere but last it would shift the rng stream
+    and silently resample every downstream tray parameter, turning a
+    one-variable experiment into a two-variable one with no error
+    anywhere."""
+    import dataclasses
+    from recog.synth3d.bay import sample_tray
+    flat = Config().tray_anchored
+    crowned = dataclasses.replace(flat, lid_crown_mm_range=(0.0, 12.0))
+    moved = 0
+    for seed in range(500):
+        a = sample_tray(flat, _random.Random(seed))
+        b = sample_tray(crowned, _random.Random(seed))
+        for f in dataclasses.fields(a):
+            if f.name == "lid_crown_mm":
+                continue
+            assert getattr(a, f.name) == getattr(b, f.name), (
+                f"seed={seed}: {f.name} moved when only the crown range "
+                f"changed - the crown draw is not last")
+        moved += b.lid_crown_mm > 0.0
+    assert moved > 400, (
+        f"only {moved}/500 draws produced a non-zero crown - the range "
+        f"is not actually being sampled")
+
+
+def test_lid_crown_is_clamped_to_the_lid_height_and_its_own_footprint():
+    """A bevel wider than the lid is deep or half its shortest side is a
+    degenerate boolean-shaped failure, not an unusual tray - the same
+    class world.build_procedural_tray's cavity-cutter clamp already
+    guards. Clamp here, bpy-free, where it can be tested."""
+    import dataclasses
+    from recog.synth3d.bay import MAX_LID_CROWN_FOOTPRINT_FRAC, sample_tray
+    for base in (Config().tray_anchored, Config().tray_wide):
+        cfg = dataclasses.replace(base, lid_crown_mm_range=(0.0, 40.0))
+        for seed in range(2000):
+            s = sample_tray(cfg, _random.Random(seed))
+            ox0, oy0, ox1, oy1 = s.case_outer_mm
+            short = min(ox1 - ox0, oy1 - oy0)
+            assert 0.0 <= s.lid_crown_mm <= s.case_half_height_mm + 1e-9, (
+                f"seed={seed} crown={s.lid_crown_mm} exceeds the lid's own "
+                f"height {s.case_half_height_mm}")
+            assert s.lid_crown_mm <= MAX_LID_CROWN_FOOTPRINT_FRAC * short + 1e-9, (
+                f"seed={seed} crown={s.lid_crown_mm} exceeds "
+                f"{MAX_LID_CROWN_FOOTPRINT_FRAC} x the lid's shortest side "
+                f"{short}")
+
+
+def test_build_tray_entry_carries_lid_crown_mm_to_the_bpy_side():
+    """world.build_procedural_tray reads the entry, not the TraySample -
+    a field that stops at the dataclass boundary is this project's
+    documented silent-degradation shape (a renamed catalog key that
+    quietly stopped building geometry)."""
+    import dataclasses
+    from recog.synth3d.bay import sample_tray
+    from recog.synth3d.catalog import build_tray_entry
+    cfg = dataclasses.replace(Config().tray_anchored,
+                              lid_crown_mm_range=(0.0, 12.0))
+    s = sample_tray(cfg, _random.Random(3))
+    entry = build_tray_entry(s)
+    assert "lid_crown_mm" in entry
+    assert entry["lid_crown_mm"] == round(s.lid_crown_mm, 2)
+    flat = build_tray_entry(sample_tray(Config().tray_anchored,
+                                        _random.Random(3)))
+    assert flat["lid_crown_mm"] == 0.0

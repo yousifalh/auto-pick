@@ -790,6 +790,147 @@ def _assert_procedural_tray_geometry(entry: dict, case, lid, cell) -> None:
         f"case_half_height_mm) - it would not fit inside the sealed "
         f"'assembled' shell")
 
+    # ---- 6/7/8. the lid's crown -------------------------------------- #
+    #
+    # `_crown_lid` is bpy-only and unreachable from pytest, so these three
+    # are its entire evidence. They run on EVERY tray built, not in a test.
+    crown_mm = entry["lid_crown_mm"]
+    assert 0.0 <= crown_mm <= half_h_mm + tol, (
+        f"lid_crown_mm ({crown_mm}) is not within [0, case_half_height_mm="
+        f"{half_h_mm}] - bay.sample_tray's clamp did not reach the entry")
+
+    # 6. The crown must not have moved the lid's AABB. Bevelling a cube's
+    #    top edges leaves every face CENTRE where it was, so the footprint
+    #    check above and this height check must both still bind exactly -
+    #    if either moves, the bevel ran on the wrong edges.
+    assert math.isclose(mm(lid_hi.z), assembled_top_mm, abs_tol=tol), (
+        f"lid top z={mm(lid_hi.z):.2f}mm != 2 * case_half_height_mm "
+        f"({assembled_top_mm:.2f}mm) - the crown moved the lid's own "
+        f"height, which it must not")
+
+    top_z = max(v.z for v in (lid.matrix_world @ v.co for v in lid.data.vertices))
+    plateau = [lid.matrix_world @ v.co for v in lid.data.vertices
+               if abs((lid.matrix_world @ v.co).z - top_z) <= 1e-6]
+    px = mm(max(p.x for p in plateau) - min(p.x for p in plateau))
+    py = mm(max(p.y for p in plateau) - min(p.y for p in plateau))
+    upward = [p for p in lid.data.polygons if p.normal.z > 0.05]
+    rolled = sum(1 for p in upward if p.normal.z < 0.95)
+
+    if crown_mm <= 0.0:
+        # 7. A zero crown must reproduce the pre-2026-08-11 lid EXACTLY -
+        #    six faces, none of them rolled. This is what lets the crowned
+        #    render be attributed to the crown and to nothing else.
+        assert len(lid.data.polygons) == 6 and rolled == 0, (
+            f"lid_crown_mm is 0 but the lid has {len(lid.data.polygons)} "
+            f"polygons ({rolled} rolled), not the plain 6-face cuboid a "
+            f"zero crown must leave untouched")
+    else:
+        # 8. The crown is REAL and has the sampled radius: the top plateau
+        #    is inset by exactly `crown_mm` on all four sides, and the roll
+        #    actually produced non-planar upward-facing geometry (the
+        #    measured 89%-of-faces property the four Anker lids have and
+        #    the flat procedural lid did not).
+        want_x, want_y = (ox1 - ox0) - 2 * crown_mm, (oy1 - oy0) - 2 * crown_mm
+        assert math.isclose(px, want_x, abs_tol=tol) \
+            and math.isclose(py, want_y, abs_tol=tol), (
+            f"crowned lid top plateau {px:.2f}x{py:.2f}mm != "
+            f"{want_x:.2f}x{want_y:.2f}mm (case_outer inset by "
+            f"lid_crown_mm={crown_mm}) - the bevel did not roll the "
+            f"radius it was given")
+        # Stated in the SAME terms as the measurement that motivated the
+        # crown: 89% of each Anker lid's upward-facing polygons have a
+        # z-normal below 0.95, against the planar procedural lid's 0%.
+        # A fraction, not a face count - the first version of this
+        # assertion demanded 4 * _CROWN_SEGMENTS and fired on the smoke
+        # render at 40 of 49, because the one or two segments nearest the
+        # plateau are within 0.95 of vertical by construction (a
+        # 12-segment quarter-round steps 7.5 degrees at a time). The count
+        # is also independent of the radius, so only the fraction says
+        # anything about whether the roll is real.
+        assert len(upward) and rolled >= 0.5 * len(upward) \
+            and rolled >= 2 * _CROWN_SEGMENTS, (
+            f"crowned lid has {rolled} non-planar upward-facing faces of "
+            f"{len(upward)}; a genuine {_CROWN_SEGMENTS}-segment roll on "
+            f"four edges leaves the majority of them rolled - the lid is "
+            f"still effectively flat, which is the exact defect this "
+            f"crown exists to remove")
+
+
+# Segments in the lid's crown fillet. 12 puts each facet under a pixel at
+# the generator's framing (a cartridge spans ~100-250 px and the crown
+# covers at most 45% of its short side), so the roll reads as a smooth
+# gradient rather than as banding once the bevel faces are shade-smoothed.
+_CROWN_SEGMENTS = 12
+
+
+def _crown_lid(lid, crown_m: float) -> None:
+    """Roll a fillet of radius `crown_m` (metres) onto the lid's four TOP
+    edges, in place. A no-op at 0.0, which is the pre-2026-08-11 geometry
+    and the default every existing config still samples.
+
+    Why the lid and only the lid: `config.VARIANTS` keeps `case_lid` in
+    the `assembled` variant and drops it from `open_case`, so this touches
+    the SEALED population and nothing else. An open procedural unit's
+    pixels are unchanged by construction, which is what makes any move in
+    present-only `bay` interpretable rather than confounded.
+
+    Why the top edges and not all twelve: the lid's base has to stay flush
+    on the case's own rim (`_assert_procedural_tray_geometry` check 4
+    measures exactly that), and its four vertical edges are the sealed
+    unit's silhouette, which the diagnosis already showed is not where the
+    failure lives.
+
+    Bevelling a cube's top edges leaves the AABB alone - the face centres
+    do not move - so every existing footprint/height assertion still binds
+    unchanged. `_assert_procedural_tray_geometry` adds three more that
+    bind on THIS function's output specifically (see its checks 6-8),
+    because nothing here is reachable from pytest.
+    """
+    if crown_m <= 0.0:
+        return
+    import bmesh
+
+    bm = bmesh.new()
+    bm.from_mesh(lid.data)
+    bm.verts.ensure_lookup_table()
+    bm.edges.ensure_lookup_table()
+
+    eps = 1e-6
+    top_z = max(v.co.z for v in bm.verts)
+    top_verts = [v for v in bm.verts if abs(v.co.z - top_z) <= eps]
+    top_edges = [e for e in bm.edges
+                 if all(abs(v.co.z - top_z) <= eps for v in e.verts)]
+    # A freshly-added cube has exactly 8 verts and 12 edges, 4 of each on
+    # the top face. Anything else means this function is being handed
+    # something other than build_procedural_tray's own primitive, and
+    # bevelling it would silently produce a shape nothing has measured.
+    assert len(top_verts) == 4 and len(top_edges) == 4, (
+        f"_crown_lid expected a 4-vert/4-edge top face on the lid "
+        f"primitive, measured {len(top_verts)}/{len(top_edges)}")
+
+    try:
+        bmesh.ops.bevel(bm, geom=top_edges + top_verts, offset=crown_m,
+                        offset_type="OFFSET", segments=_CROWN_SEGMENTS,
+                        profile=0.5, affect="EDGES")
+    except TypeError:               # pragma: no cover - older bmesh API
+        bmesh.ops.bevel(bm, geom=top_edges + top_verts, offset=crown_m,
+                        offset_type="OFFSET", segments=_CROWN_SEGMENTS,
+                        profile=0.5)
+    bm.to_mesh(lid.data)
+    bm.free()
+
+    # Smooth ONLY the crown. Shading the whole object smooth would round
+    # the four vertical edges into the sides and turn a moulded slab into
+    # a melted one; leaving the crown flat-shaded would render 12 hard
+    # specular steps where a real fillet gives one continuous sweep.
+    # Per-polygon `use_smooth` is the version-stable way to say that (the
+    # auto-smooth operator/flag has moved twice across 4.x/5.x). The six
+    # original faces are exactly the axis-aligned ones.
+    for poly in lid.data.polygons:
+        n = poly.normal
+        poly.use_smooth = max(abs(n.x), abs(n.y), abs(n.z)) < 0.999
+    lid.data.update()
+
 
 def build_procedural_tray(entry: dict) -> Dict[str, list]:
     """Bare boolean-cut geometry for one procedural tray: `case` (a
@@ -863,6 +1004,7 @@ def build_procedural_tray(entry: dict) -> Dict[str, list]:
     lid.name = "ProcCase_top"
     lid.scale = (w_m, h_m, half_h)
     bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+    _crown_lid(lid, entry["lid_crown_mm"] / 1000.0)
 
     # --- cell: one cylinder template at the sampled format's own
     # radius/length, resting ON THE CAVITY FLOOR - not parked outside the

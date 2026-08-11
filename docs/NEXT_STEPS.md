@@ -195,6 +195,31 @@ is the expected result and is **not** evidence of transfer. Read the
 > measurement, correlates and the ruled-out confounds:
 > `docs/superpowers/specs/2026-08-11-transfer-gap-diagnosis.md`; receipt
 > `docs/receipts/seg_eval_anchored_18650_on_cad_test.txt`.
+>
+> **Acted on, 2026-08-11 — the sealed-unit false positives are 92 % closed.**
+> The cause was measured and it is **not** appearance randomisation (the
+> procedural and CAD pipelines draw from one shared pool, verified identical
+> to sampling noise on backdrop, lighting, exposure, zoom and shell preset).
+> It is that `world.build_procedural_tray` built the lid as a planar cuboid
+> while all four Anker lids are barrel-crowned — long-edge fillet radius
+> 11.10 mm, 89 % of upward-facing polygons non-planar against the procedural
+> lid's 0 % — so a closed cartridge with any top-face shading structure was
+> absent from training and the model had learned "featureless flat top ⇒
+> closed". One procedural set was re-rendered with a sampled lid crown as the
+> single change (labels, unit boxes and 99.8 % of sealed `cartridge` masks
+> pixel-identical to `anchored`) and one model trained on the same 40-epoch
+> schedule. On the same 836 crops: **sealed false-positive rate 21.8 % →
+> 2.6 %** (control 0.3 %), pooled `bay` **0.6555 → 0.8755**, `cartridge`
+> 0.8088 → 0.9120, `battery` 0.5593 → 0.6906, selected mean 0.6801 → 0.7645;
+> present-only `bay` rose 0.8801 → 0.8856 and open-crop recall rose, so this
+> is not a threshold shift. **This is domain randomisation informed by a
+> measured coverage gap, not a transfer claim** — the crown range was chosen
+> after measuring the CAD, and it remains synthetic-to-synthetic throughout.
+> `electronics` (0.7819 vs 0.8530) and `cartridge` (0.9120 vs 0.9382) are now
+> the largest honest gaps. Full measurement, the pre-registered thresholds and
+> six suspicion checks on a large favourable result:
+> `docs/superpowers/specs/2026-08-11-sealed-unit-experiment.md`; receipt
+> `docs/receipts/seg_eval_anchored_crown_on_cad_test.txt`.
 
 ### Leave-one-SKU-out: each control scored on the SKU it never saw
 

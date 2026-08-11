@@ -261,6 +261,26 @@ class TrayRangeCfg:
     # 4/4 measured SKUs); wide samples freely among all four edges,
     # including physically implausible ones. False = anchored's rule.
     free_bay_edge: bool = False
+    # Fillet radius, in mm, rolled onto the four TOP edges of the lid -
+    # the only part of a procedural cartridge a SEALED unit shows the
+    # camera. Default (0, 0) is degenerate on purpose: a config written
+    # before this field existed samples 0.0 and world.build_procedural_
+    # tray skips the bevel entirely, so the lid is the same planar cuboid
+    # it always was.
+    #
+    # It exists because the four measured Anker lids are not planar. Off
+    # the glTF, all four: long-edge fillet radius 11.10mm - the ENTIRE
+    # lid height, 27-36% of the half-width - and 89% of each lid's
+    # upward-facing polygons have a z-normal below 0.95 (median 0.69),
+    # against the procedural cuboid's 0%. Rendered, a sealed procedural
+    # crop's internal luminance spread (p95-p05 over the unit's own
+    # cartridge mask) has median 0.0272 where a sealed CAD crop's has
+    # 0.2719 - 10x, and the ONE appearance axis measured where the
+    # procedural sealed population fails to cover the CAD one; backdrop,
+    # lighting, exposure, zoom, shell preset and median shell brightness
+    # are all already matched to sampling noise. See
+    # docs/superpowers/specs/2026-08-11-sealed-unit-experiment.md.
+    lid_crown_mm_range: Tuple[float, float] = (0.0, 0.0)
 
 
 def _wide_tray_defaults() -> "TrayRangeCfg":
@@ -315,7 +335,7 @@ _TUPLE_FIELDS = {"res", "area", "margin_range", "shift_range", "jig_depth",
                  "seated_frac", "cell_formats", "n_cols_range",
                  "n_rows_range", "pitch_mm_range", "wall_mm_range",
                  "bay_margin_mm_range", "case_half_height_mm_range",
-                 "tray_floor_mm_range"}
+                 "tray_floor_mm_range", "lid_crown_mm_range"}
 
 
 def default_config_path() -> Path:
