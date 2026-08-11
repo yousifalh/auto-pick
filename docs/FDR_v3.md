@@ -46,7 +46,11 @@ and roughly twice the 0.40 of the green-channel heuristic baseline
 included for pipeline integration. The deterministic FFDH bin-packer
 runs in under 0.2 ms p95 (200×150 mm strip, 80 candidate items),
 two orders of magnitude under the 8 ms allotted by the per-cycle
-budget. End-to-end the perception + planning stack consumes a
+budget. (Since 2026-08-11 the planner runs FFDH as one competing arm
+of `common.packing.pack_best_effort` rather than alone, at 3.4 ms mean
+and 4.6 ms worst on the same bench masks — still inside the 8 ms
+budget, no longer by two orders of magnitude. See the scope note
+opening §6.3.1.) End-to-end the perception + planning stack consumes a
 median 6 ms per cycle, leaving the 50 ms PPR overall budget
 dominated by the simulated robot round-trip. The mock-driven
 verification suite contains 102 passing tests and reaches 86 %
@@ -606,7 +610,71 @@ planned and already-placed cells, and rejects any overlap. The same code
 serves both the initial plan and the incremental replan that follows a
 cell flip to FORBIDDEN.
 
+**Superseded in part, 2026-08-11: FFDH is no longer the only packer the
+planner runs.** `first_fit_decreasing` is unchanged — it is still the
+algorithm §6.3.1 formalises and measures — but both planner call sites
+(`plan.planner.Planner._pack_cartridge`, `plan.bin_packing.pack_cartridge`)
+now call `common.packing.pack_best_effort`, which competes FFDH against
+two obstacle-tolerant arms and returns whichever placed most. The reason
+and the measurement are in the scope note that opens §6.3.1.
+
 #### 6.3.1 Forbidden-mask FFDH: pseudocode, analysis, and empirical bound
+
+> **Scope note added 2026-08-11 — this subsection is accurate *about
+> FFDH* and is no longer complete *about the planner*.** Everything below
+> describes `common.packing.first_fit_decreasing`, which is frozen: the
+> pseudocode still matches it line for line, and the `n_aware` / `n_naive`
+> columns of `docs/receipts/forbidden_bench.csv` regenerate byte-identical
+> after the change described here (verified by diff), so no measurement in
+> this subsection moved. What changed is that FFDH is no longer what the
+> planner runs, and the reason is a defect this subsection's framing hides.
+>
+> FFDH opens its first shelf at `y = 0` and every later shelf at the top
+> of the previous one — **it never scans the shelf origin in y** — while
+> `NextFreeX` collapses the candidate shelf's whole row band, so one
+> mostly-blocked row poisons every column in that band. Together, a
+> forbidden region lying in the first shelf's row band kills the entire
+> pack. Measured on a real frame rather than argued: `scene_00005` handed
+> the packer a 62 × 123 cell grid that is **93 % free** and contains a
+> clear **112 × 48 mm** rectangle, and FFDH placed **zero** 18.5 × 65 mm
+> cells. The offending row is row 0 — the cartridge wall the segmentation
+> extractor of §13.2(5) rasterises — and 79 of the 80 admissible shelf
+> origins on that grid would have accepted an upright cell, the first at
+> `y = 1.5 mm`.
+>
+> The planner now calls `common.packing.pack_best_effort`: unmodified
+> FFDH, plus a shelf-origin-scanning arm and a shelf-free grid-greedy
+> arm, taking the maximum. Ties go to the earliest arm, so **`best ≥
+> FFDH` holds by construction on every instance** — this change cannot
+> regress a case nobody re-measured. On 30 real packing instances from
+> `recog/dataset3d_seg`, the 7 that can hold a cell at all go from **8 to
+> 17 cells placed** with no instance losing any (the other 23 are
+> cartridges too small for an 18.5 × 65 mm cell in either orientation — a
+> perception/geometry fact, not a packer one). On this subsection's own
+> benchmark, `docs/receipts/forbidden_bench.txt` now reports both arms:
+> the shipping packer places **14.55** at 2.5 % coverage against FFDH's
+> 14.28, and the material movement is at 10–15 % coverage (2.60 → 5.53
+> and 0.57 → 2.85), which is where the ceiling actually was. Latency
+> rises from ~0.9 ms to 3.4 ms mean / 4.6 ms worst on bench masks and
+> 1.9 ms on the worst real cartridge — still inside the 8 ms O3 budget of
+> §10.4, but no longer with the two orders of magnitude §13.1(3) quotes
+> for FFDH alone.
+>
+> One sentence later in this subsection is stale in consequence and is
+> corrected here rather than edited in place: "the synthetic dataset's
+> cartridges have effectively zero forbidden-cell coverage (the generator
+> does not render PCB components inside cartridge interiors)" described
+> the pre-tray-interior generator. Since commits `27cbd97`..`9fcf136` the
+> generator does seat an electronics module and obstructions on a real
+> cavity floor, and the 7 capable real instances above carry 3.1–19.3 %
+> forbidden coverage.
+>
+> `first_fit_decreasing` keeps its signature, its behaviour and its
+> export, and `recog.synth3d` deliberately still calls it, so no training
+> corpus moves. Full diagnosis, per-arm results, the fuzz and
+> strip-bound hazards, and the net that re-checks every returned
+> placement against the mask:
+> `docs/superpowers/specs/2026-08-11-packing-ceiling.md`.
 
 The forbidden-mask extension is the project's principal algorithmic
 contribution. The algorithm consumes a binary occupancy grid alongside
@@ -1489,7 +1557,14 @@ falsify it.
 orders of magnitude of headroom, with an invariant test suite checking
 no-overlap, forbidden-mask respect, and rotation correctness, and a
 quantitative rotation ablation (§10.7) showing 0–57 % cell-placement
-gain depending on strip tightness. (4) A binary EthernetKRL client
+gain depending on strip tightness. (Contributions (2) and (3) describe
+`first_fit_decreasing`, which is unchanged and still measured as
+reported. As of 2026-08-11 the planner calls it as one arm of
+`common.packing.pack_best_effort` rather than on its own, because FFDH
+never scans its shelf origin in y and a single forbidden row band can
+therefore void an otherwise 93 %-free grid; the headroom against the
+8 ms budget narrows to 4.6 ms worst-case in consequence. See the scope
+note opening §6.3.1.) (4) A binary EthernetKRL client
 implementation with CRC-16/MODBUS trailer, three-attempt retry with
 heartbeat-interval (50 ms) backoff, and a heartbeat + E-stop discipline aligned with
 IEC 60204 Category-0; the implementation is software-complete but
@@ -2437,7 +2512,7 @@ I = Inspection.
 | O3   | Queue rebuild ≤ 8 ms median        | T+A · `bench_cycles.py`, Figure 4                                  | Pass — 3 ms median   |
 | O3.a | FFDH no-overlap invariant          | T · `_assert_no_overlaps` in `test_bin_packing.py`                 | Pass                 |
 | O3.b | FFDH rotation gain quantified      | T+A · `ffdh_ablation.csv`, Figure 7                                | Pass — 0–57 % gain   |
-| O3.c | Forbidden-mask FFDH benchmarked    | T+A · `forbidden_bench.csv`, `forbidden_bench.py`, §6.3.1          | Pass — beats baseline ≤ 10 % coverage |
+| O3.c | Forbidden-mask FFDH benchmarked    | T+A · `forbidden_bench.csv`, `forbidden_bench.py`, §6.3.1          | Pass — beats baseline ≤ 10 % coverage; the receipt's third block benchmarks `pack_best_effort`, the arm set the planner now runs (§6.3.1 scope note) |
 | O4   | Recover from single pick failure   | (lab access not obtained — §10.3, §13.2)                           | **Not tested**       |
 | O5   | Deterministic queue, row-major     | T · `tests/test_planner.py`                                        | Pass                 |
 | O6   | Branch coverage ≥ 70 %             | I · `pytest-cov.txt`                                               | Pass — 86 %          |
