@@ -178,6 +178,24 @@ something the procedural pipeline had to generalise to, so parity there
 is the expected result and is **not** evidence of transfer. Read the
 `bay`/`cartridge`/`battery` gaps as the actual answer.
 
+> **Superseded in part, 2026-08-11.** The class-by-class reading above —
+> "the shortfall tracks how much of each class's geometry the procedural
+> tray builder invents" — was diagnosed directly and **is wrong as stated
+> for `bay` and `battery`**, the two largest gaps. Both are dominated by
+> false positives on *sealed* cartridges, not by segmentation quality on
+> real bays: restricted to the 213 crops whose ground truth contains a bay,
+> the procedural model pools to **0.8801** against the CAD control's
+> **0.9013** (0.021 apart, not 0.246), and 91 % of the published gap is the
+> 675 460 px of `bay` it paints on closed shells, where the control paints
+> 722 px. `battery` is the same mechanism (0.5593 → 0.6924 present-only).
+> The cell-format explanation offered for `battery` two bullets up was
+> tested with a purpose-built 18650-only procedural model and **came out
+> null** (+0.017 of the 0.224 available). `cartridge` and `electronics`
+> keep the original reading — they have no hallucination component. Full
+> measurement, correlates and the ruled-out confounds:
+> `docs/superpowers/specs/2026-08-11-transfer-gap-diagnosis.md`; receipt
+> `docs/receipts/seg_eval_anchored_18650_on_cad_test.txt`.
+
 ### Leave-one-SKU-out: each control scored on the SKU it never saw
 
 For SKU *X*, `control_X` was trained on the other three SKUs only, so on
@@ -249,7 +267,13 @@ Reported rather than tuned away:
   models** (0.5593/0.5502) while all four CAD controls clear it
   (0.7439–0.7833). Here the control *does* separate the two
   explanations: this one is the procedural trays, specifically their
-  three-cell-format mix against an 18650-only CAD test set.
+  three-cell-format mix against an 18650-only CAD test set. **The
+  cell-format half of that sentence was tested on 2026-08-11 and is
+  false** — an 18650-only procedural model, one variable changed, scored
+  `battery` 0.5763, +0.017 of the 0.224 available. The real mechanism is
+  false-positive `battery` on sealed cartridges; present-only, the
+  procedural figure is 0.6924 against the control's 0.7500. See
+  `docs/superpowers/specs/2026-08-11-transfer-gap-diagnosis.md`.
 
 ### Regression checks
 

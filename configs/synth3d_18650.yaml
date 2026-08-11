@@ -1,0 +1,649 @@
+# Synthetic 3-D scene generation - 18650-ONLY PROCEDURAL VARIANT.
+#
+# Byte-identical to configs/synth3d.yaml except for ONE line:
+# `tray_anchored.cell_formats`, which is ["18650"] here instead of
+# ["18650", "21700", "26650"]. Verify with:
+#     git diff --no-index configs/synth3d.yaml configs/synth3d_18650.yaml
+#
+# Why it exists (transfer-gap diagnosis, 2026-08-11): the anchored/wide
+# procedural training sets mix three cell formats while all four Anker CAD
+# assemblies are 18650-only, so the procedural models spend capacity on two
+# formats that never appear in the CAD test set. That is a distribution
+# mismatch the experiment's own design introduced, and it is the leading
+# candidate explanation for the `battery` gap (0.5593 procedural vs
+# 0.7439-0.7833 CAD control on the same 836 crops - see
+# docs/NEXT_STEPS.md "The generalisation measurement"). This config renders
+# the one-variable-changed control for that hypothesis.
+#
+# `tray_wide` is deliberately left at all three formats: nothing in this
+# diagnosis renders a wide set, and editing an unused section would put a
+# second difference between this file and the one it is a control for.
+#
+# Authored here; `python -m recog.sync_config --config
+# configs/synth3d_18650.yaml` transcribes this to
+# configs/synth3d_18650.json, which is what Blender reads (Blender's
+# bundled Python has no PyYAML).
+
+render:
+  res: [1280, 720]          # matches recog/dataset so both sources interchange
+  samples: 192
+  adaptive_threshold: 0.01
+  denoise: true
+  device: GPU               # OPTIX on the RTX 3060; falls back to CPU
+  view_transform: AgX
+  # MEASURED, over 30 scenes covering all 5 backdrops x 3 lighting presets
+  # (see .superpowers/sdd/2026-08-05-blender-synthetic-dataset/tuning-report.md).
+  # exposure is applied by the view transform, not by Cycles, so one render can
+  # be written out at many exposures and the sweep below is exact rather than
+  # sampled:
+  #
+  #   EV     obj px >0.98   frame >0.98   backdrop spread   boxes under 0.05
+  #   -1.5      6.1%           2.5%           0.39               21.2%
+  #   -2.5      0.9%           0.7%           0.48               15.8%
+  #   -3.5      0.04%          0.00%          0.53               15.4%
+  #   -4.5      0.01%          0.00%          0.54               17.5%
+  #
+  # Below -3.5 nothing more is won: clipping is already gone, the spread has
+  # flattened, and the low-contrast fraction turns back UP because the dark end
+  # starts colliding instead (conveyor_belt against cell_black/shell_black).
+  # -3.5 is that turning point.
+  #
+  # THIS IS NOW ONLY THE FALLBACK. `param_space.exposure` samples a per-scene
+  # value and generate3d hands it to render.render_beauty; this constant is
+  # what gets used when a config omits `param_space.exposure` entirely. It is
+  # deliberately still the measured optimum, so dropping the param_space entry
+  # restores exactly the old behaviour.
+  exposure: -3.5
+  max_bounces: 12
+  clamp_indirect: 10.0
+  film_transparent: false
+  persistent_data: true
+
+layout:
+  area: [0.80, 0.45]        # metres; 16:9 to match render aspect, no wasted frame
+  mode: scatter
+  pad: 0.008
+  max_tries: 500
+  jitter_deg: 2.0           # hard cap on off-axis tilt; keeps footprints AABB
+  allow_90s: true
+  # Largest padded-footprint IoU two scatter-placed parts may share. 0 is the
+  # exact non-overlap this solver always guaranteed, and it is what made
+  # filter.min_visibility a threshold with nothing to threshold and made the
+  # synthetic validation metric saturate at mAP 1.0 within 0-5 epochs. Real
+  # trays hold cells shoulder to shoulder.
+  #
+  # The threshold is on the PADDED footprint (layout.pad is 8 mm), so it is not
+  # the fraction of one part hidden by another. MEASURED over 400 seeded
+  # layouts, as the raw part overlap expressed as a fraction of the smaller
+  # part's footprint:
+  #
+  #   max_overlap_iou   scenes with a raw overlap   median   max
+  #        0.00                   0 %                 -       -
+  #        0.05                 1.8 %               0.050   0.240
+  #        0.10                 6.3 %               0.230   0.857
+  #        0.15                 7.8 %               0.230   0.895
+  #        0.20                10.3 %               0.365   1.000
+  #        0.30                10.8 %               0.317   1.000
+  #        0.40                10.8 %               0.317   1.000
+  #
+  # 0.20 is where the curve flattens: above it the solver draws positions
+  # uniformly and simply does not land on another part more often, so a larger
+  # threshold buys nothing. It is also where the median overlap becomes real
+  # occlusion (a third of the smaller part) rather than a shaved corner.
+  max_overlap_iou: 0.20
+  # 0.002, not the old 0.004. The jig is the in-distribution half of the set
+  # and the reference photos show cells sitting in a pocket row separated by a
+  # thin printed wall, not by 11 mm of plate: with 4 mm of clearance and a 3 mm
+  # wall, adjacent cells sat 11 mm apart, 60% of a cell diameter. 2 mm is the
+  # tightest value that is still safe, not an arbitrary reduction - a
+  # 81.7 x 180 mm power bank turned by the 1.0 degree jig_jitter_deg grows its
+  # AABB by 1.57 mm on the short axis, so at 1.5 mm of clearance a jittered
+  # part would push through its own pocket wall. Adjacent cells are now 7 mm
+  # apart. The wall itself is left at 3 mm: it is what keeps each pocket's
+  # boolean cutter separate, and at 0 the recesses merge into one trough.
+  jig_clearance: 0.002      # metres of pocket margin around each part
+  jig_jitter_deg: 1.0       # smaller than scatter: must stay inside the pocket
+  jig_depth: [0.006, 0.012]
+  jig_wall: 0.003           # metres of plate material left between pockets
+  # Fraction of open cartridges that get cells seated in the bay, and how
+  # full those bays are. The deployed robot fills a cartridge one cell at a
+  # time, so its camera sees partly-filled bays for most of every run; a
+  # generator that only ever produced empty or sealed cases would never show
+  # the segmenter the exact case it exists to handle.
+  p_seated: 0.5
+  seated_frac: [0.15, 0.85]
+
+camera:
+  ortho: true
+  height: 0.90
+  margin_range: [1.02, 1.10]
+  shift_range: [-0.006, 0.006]
+  focal: 50.0
+
+filter:
+  # 500, not the old 80. Both of these were dead thresholds until
+  # param_space.zoom landed: with the camera always framing the whole layout
+  # area, nothing was ever cropped, and the smallest silhouette in the whole
+  # 1000-image set measured 1037 px against a limit of 80.
+  #
+  # Truncation makes them live, and unbounded: a part clipped to a corner of
+  # the frame can leave arbitrarily few pixels, and the resulting box is far
+  # smaller than any WHOLE part - so it lands below the smallest anchor no
+  # matter how the anchors are tuned. MEASURED over 1245 boxes from 150
+  # zoom-varied scenes: the smallest un-cropped silhouette was 1037 px and the
+  # 1st percentile 1054, while cropped ones reached 488. 500 keeps every
+  # un-cropped box with better than 2x headroom - including the smallest cells
+  # at the top of the zoom range - and floors the box size at sqrt(500) = 22 px
+  # sqrt(area), which the 40 px smallest anchor covers at better than 0.5
+  # centred IoU.
+  #
+  # It is a PIXEL count and does not travel with `--res`. At the production
+  # 1280x720 it drops nothing legitimate (177 boxes before this change against
+  # 185 after, over the same 24 scenes); at a `--res 640 360` dev run each part
+  # covers a quarter of the pixels and the same 48 scenes went from 365 boxes
+  # to 266. generate3d warns about that rather than rescaling the threshold,
+  # because a dev run that silently disagreed with production about which parts
+  # exist is the harder bug to find.
+  min_px: 500
+  min_side: 6
+  # Longest box side over shortest. Truncation is again the reason: a part
+  # cropped along its length leaves a strip whose aspect is a property of where
+  # the frame edge fell rather than of the object, and `model.anchor_ratios` is
+  # tuned to the parts' OWN aspect ratios, so nothing can ever match it.
+  #
+  # MEASURED on the same 1245 boxes: every box above 3.7 was truncated, the
+  # widest un-cropped box was 3.68 (the 18650's own 65.0/18.3 = 3.55 plus
+  # rotation jitter and antialiasing), and the four above 4.0 ran 4.6, 5.1, 6.9
+  # and 9.8 - scoring 0.34-0.45 best-centred-IoU against every anchor set
+  # tried, including sets that put every other box above 0.5. 4.0 sits in the
+  # empty band between the two populations.
+  #
+  # 0 disables the check, which is the dataclass default, so a config written
+  # before this filter existed behaves exactly as it did.
+  max_aspect: 4.0
+  # Now MEASURABLE, and still never the binding filter. Keeping it, and
+  # keeping it at 0.25, is a decision backed by the measurement below rather
+  # than an oversight.
+  #
+  # Until layout.max_overlap_iou existed this was a threshold with nothing to
+  # threshold: both solvers guaranteed exact AABB non-overlap, so no LABELLED
+  # instance could occlude another and every one measured exactly 1.0. With
+  # overlap at 0.20, measured over 90 scatter scenes run with --visibility
+  # (698 kept annotations, 557 of them non-merged and therefore measured):
+  #
+  #   visible_fraction < 1.00   11 boxes (1.97%)
+  #                    < 0.95    8 boxes (1.44%)
+  #                    < 0.90    5 boxes (0.90%)
+  #                    < 0.75    1 box   (0.18%)
+  #                    < 0.50    0
+  #                    < 0.25    0        <- the threshold
+  #
+  # The deepest occlusion in the corpus leaves 74.8% of the part visible,
+  # three times this threshold, so it would drop nothing. That is not because
+  # the overlap is timid - it is because anything occluded hard enough to
+  # approach 0.25 has already lost most of its silhouette and is caught by
+  # `min_px` first (30 such drops in the same run), or is hidden completely and
+  # never appears in np.unique at all. 0.25 stays as the backstop for the case
+  # where a part is mostly hidden but still large on screen.
+  #
+  # annotate.merge_group_boxes still hard-codes visible_fraction = None on
+  # every merged box, so this cannot apply to a `cartridge` (141 of the 698
+  # boxes above). DELIBERATELY NOT FIXED: the members' fractions are over their
+  # own isolated silhouettes and do not compose into the group's - shell top
+  # and shell bottom occlude each other - so a correct group fraction needs a
+  # further isolated render per merge group, on a code path (--visibility) that
+  # production runs never enable because it costs one extra index render per
+  # instance. It would buy a number that the measurement above says would not
+  # change a single label.
+  min_visibility: 0.25
+  drop_truncated: false
+
+obstruction:
+  # Foreign matter in the bays. IMG_4426 has thermal adhesive, foam pads,
+  # tape crosses and printed labels in every opened case; none of it is in
+  # the CAD. p_none keeps clean bays in the distribution too.
+  p_none: 0.40
+  n_adhesive: [0, 6]
+  n_foam: [0, 1]
+  n_tape: [0, 2]
+  n_label: [0, 1]
+  adhesive_frac: [0.04, 0.14]
+  foam_frac: [0.15, 0.35]
+  tape_frac: [0.05, 0.12]
+  label_frac: [0.10, 0.22]
+
+# Procedural cartridge-tray family (spec #2, design spec Sec3.1/Sec5.2).
+# Anchored: "within and slightly beyond" what the four Anker assemblies
+# span (Decision 2). Measured anchors (catalog.json, all four SKUs):
+# wall 3.70-4.25mm, module-bay depth 19.45-30.75mm, case half-height
+# 11.1mm (all four, n=1 - a modest jitter band, not a wide draw),
+# tray_floor_mm 1.95mm (all four).
+tray_anchored:
+  # THE ONE CHANGED LINE. See this file's header.
+  cell_formats: ["18650"]
+  n_cols_range: [3, 5]
+  n_rows_range: [1, 2]
+  pitch_mm_range: [0.5, 2.0]
+  wall_mm_range: [3.3, 4.7]
+  bay_margin_mm_range: [17.0, 34.0]
+  case_half_height_mm_range: [10.5, 11.7]
+  tray_floor_mm_range: [1.6, 2.3]
+  free_bay_edge: false
+
+# Wide: well outside the anchored span - unusual aspect ratios, thicker
+# and thinner walls, denser packing, and a module bay allowed on any
+# edge, including ones no real SKU shows.
+tray_wide:
+  cell_formats: ["18650", "21700", "26650"]
+  n_cols_range: [2, 8]
+  n_rows_range: [1, 4]
+  pitch_mm_range: [0.3, 6.0]
+  wall_mm_range: [1.5, 9.0]
+  bay_margin_mm_range: [6.0, 60.0]
+  case_half_height_mm_range: [4.0, 28.0]
+  tray_floor_mm_range: [0.8, 4.5]
+  free_bay_edge: true
+
+param_space:
+  n_assemblies: [1, 4]
+  layout_mode:
+    scatter: 0.7            # domain randomization: learn shape, not context
+    jig: 0.3                # in-distribution coverage of the real fixture
+  backdrop: [concrete, brushed_metal, fabric, paper, conveyor_belt]
+  lighting: [overcast_softbox, harsh_inspection, warm_indoor,
+             fluorescent_factory, high_bay_led, dim_workshop, mixed_daylight]
+  # Per-scene exposure, in stops, applied by the view transform. Sampled here
+  # rather than fixed at render.exposure because a single value tone-maps every
+  # scene identically: measured over 20 scenes at the old fixed -3.5, the spread
+  # of mean frame luminance was 0.170 and essentially ALL of it came from the
+  # backdrop (fabric/belt 0.26-0.40, paper/concrete/metal 0.63-0.79) rather than
+  # from anything to do with light level. Nothing was dark; the darkest whole
+  # frame in the set measured 0.258.
+  #
+  # The range is deliberately ASYMMETRIC about the old -3.5. There is almost no
+  # headroom upward - the brightest scenes already measured 0.79 mean and the
+  # measured sweep puts clip_obj at 0.14% by -3.0 and 0.92% by -2.5 - so the
+  # room to widen is downward, which is also what was actually asked for.
+  #
+  # The bottom end is -5.2, not the -5.8 first tried. -5.8 was measured as too
+  # far: it does not blow anything out, but stacked on the darkest rig and the
+  # darkest backdrop it drove object-to-background contrast under one 8-bit
+  # level, which is annotated noise rather than a dark scene. See the note on
+  # `dim_workshop`. -5.2 is still 1.7 stops under the old fixed -3.5.
+  exposure: [-5.2, -3.2]
+
+  # Per-scene camera framing multiplier, applied to `ortho_scale` on top of
+  # `camera.margin_range`. LARGER zoom = wider view = SMALLER parts.
+  #
+  # Without it the training set was effectively single-scale. MEASURED over the
+  # previous 1000-image set: battery sqrt(area) p05 50.9 / p50 53.3 / p95 56.2
+  # px, a p95/p05 ratio of 1.10, because every 18650 is identical geometry and
+  # the camera framed a fixed 0.80 x 0.45 m area with only margin_range's
+  # 1.02-1.10 of jitter. Real batteries at the min_size=500 inference scale
+  # span 43-65 px, a ratio of 1.51, and per-image AP on the real photos tracks
+  # the gap monotonically (65px -> AP 1.000, 54px -> 1.000, 46px -> 0.857,
+  # 43px -> 0.380). The control is the `cartridge` class: four different CAD
+  # models give it a 1.69 training ratio and its AP stays high at every scale,
+  # including on the image where the cells around it are missed.
+  #
+  # MEASURED with this 0.75-1.60 range over 300 scenes (two independent seeds,
+  # 2434 boxes, 1280x720, --no-render): battery sqrt(area) p05 34.9 / p50 45.8
+  # / p95 64.9 px, min 29.0 max 74.1 - a p95/p05 ratio of 1.86, covering the
+  # real 1.51 with headroom at both ends. Truncated annotations went 0 of 8542
+  # to 66 of 2434 (2.71%), against 2 of 80 (2.5%) in the real photos.
+  #
+  # COUPLED to model.anchor_scales in configs/recognition.yaml. The top of this
+  # range is what sets the SMALLEST box and therefore the smallest anchor;
+  # widening it without retuning the anchors recreates the mismatch that once
+  # left 20% of boxes below 0.5 best-IoU. generate3d prints an anchor check at
+  # the end of every run.
+  zoom: [0.75, 1.60]
+
+  # Probability that a scatter scene may place parts touching or occluding,
+  # up to layout.max_overlap_iou. Per-scene rather than global so the set keeps
+  # a majority of unambiguous, fully-visible examples alongside the crowded
+  # ones - a detector that has only ever seen crowded trays has no clean
+  # silhouette to learn from. This one is a judgement, not a measurement: the
+  # solver's own hit rate already keeps real overlap to about a tenth of
+  # scatter scenes, so a low probability here would make it vanishingly rare.
+  overlap_prob: 0.5
+
+# Which materials each CAD role may draw from.
+role_materials:
+  case: [shell_white, shell_black, shell_navy, shell_alu]
+  case_lid: [shell_white, shell_black, shell_navy, shell_alu]
+  # The inner cell holder (task 3b): same moulded plastic as the shell it
+  # ships inside, so it draws from the same preset list. Only visible in
+  # the `assembled` variant, where it is fully enclosed by the shell/lid
+  # anyway - listed explicitly rather than relying on materials.for_role's
+  # case fallback so a role with a real name has a real (not borrowed)
+  # config entry.
+  case_liner: [shell_white, shell_black, shell_navy, shell_alu]
+  cell: [cell_green, cell_blue, cell_black, cell_nickel, cell_purple, cell_grey]
+
+# Ranges are [low, high], sampled per instance, so no two renders share a
+# surface. Colours are [[r,g,b] low, [r,g,b] high] in linear space.
+#
+# `luma_ref` is the MEASURED display-referred luminance a part of this preset
+# renders at, under `render.exposure`, as the median over the part's own mask
+# pixels across 30 scenes spanning all 5 backdrops and all 3 lighting presets.
+# It is not derivable from `color`: shell_navy's albedo (0.084 luma) is barely
+# twice cell_black's (0.040) yet it renders more than twice as bright (0.589 vs
+# 0.249), because a flat shell facing an overhead softbox is dominated by its
+# clearcoat sheen while a cylinder's median pixel has curved away from the
+# light. materials.for_role uses these to keep a part off a backdrop it would
+# disappear into; re-measure them if exposure, lighting or the colours move.
+materials:
+  shell_white:
+    color: [[0.68, 0.68, 0.67], [0.86, 0.86, 0.84]]
+    luma_ref: 0.788
+    metallic: [0.0, 0.10]
+    roughness: [0.30, 0.55]
+    coat: [0.15, 0.55]
+    wear: [0.05, 0.30]
+  shell_black:
+    color: [[0.015, 0.015, 0.018], [0.055, 0.055, 0.06]]
+    luma_ref: 0.436
+    metallic: [0.0, 0.15]
+    roughness: [0.28, 0.60]
+    coat: [0.15, 0.60]
+    wear: [0.05, 0.40]
+  shell_navy:
+    color: [[0.03, 0.05, 0.13], [0.07, 0.11, 0.24]]
+    luma_ref: 0.589
+    metallic: [0.0, 0.12]
+    roughness: [0.30, 0.55]
+    coat: [0.15, 0.55]
+    wear: [0.05, 0.30]
+  shell_alu:
+    color: [[0.55, 0.56, 0.58], [0.74, 0.75, 0.77]]
+    luma_ref: 0.835
+    metallic: [0.85, 1.0]
+    roughness: [0.20, 0.45]
+    coat: [0.0, 0.0]
+    wear: [0.10, 0.45]
+  cell_green:
+    color: [[0.06, 0.30, 0.07], [0.14, 0.42, 0.13]]
+    luma_ref: 0.54
+    metallic: [0.05, 0.25]
+    roughness: [0.28, 0.48]
+    coat: [0.20, 0.60]
+    wear: [0.05, 0.35]
+  cell_blue:
+    color: [[0.04, 0.12, 0.38], [0.10, 0.22, 0.55]]
+    luma_ref: 0.467
+    metallic: [0.05, 0.25]
+    roughness: [0.26, 0.46]
+    coat: [0.20, 0.60]
+    wear: [0.05, 0.35]
+  cell_black:
+    color: [[0.02, 0.02, 0.024], [0.06, 0.06, 0.065]]
+    luma_ref: 0.249
+    metallic: [0.0, 0.20]
+    roughness: [0.32, 0.58]
+    coat: [0.10, 0.50]
+    wear: [0.05, 0.40]
+  cell_nickel:
+    color: [[0.62, 0.63, 0.65], [0.80, 0.81, 0.83]]
+    luma_ref: 0.428
+    metallic: [0.95, 1.0]
+    roughness: [0.12, 0.35]
+    coat: [0.0, 0.0]
+    wear: [0.05, 0.45]
+  # Purple and grey wraps are both visible in the real photos (IMG_4426).
+  cell_purple:
+    color: [[0.26, 0.16, 0.42], [0.42, 0.28, 0.62]]
+    luma_ref: 0.544
+    metallic: [0.05, 0.25]
+    roughness: [0.28, 0.50]
+    coat: [0.20, 0.60]
+    wear: [0.05, 0.35]
+  cell_grey:
+    color: [[0.38, 0.38, 0.40], [0.58, 0.58, 0.60]]
+    luma_ref: 0.655
+    metallic: [0.05, 0.30]
+    roughness: [0.30, 0.55]
+    coat: [0.10, 0.50]
+    wear: [0.05, 0.40]
+
+# "image": path to a texture, or null to use the procedural generator.
+#
+# `color` is the two ends of the procedural texture's colour ramp, in LINEAR
+# space - the surface's albedo range. It used to be a hard-coded palette inside
+# world.py, which made the single most important property of a backdrop the one
+# thing you could not see or change from the config.
+#
+# `luma_ref` is the MEASURED display-referred luminance a part standing on this
+# backdrop has to compete with, under `render.exposure` above: the median over
+# the ring of pixels immediately outside each labelled box. That ring is mostly
+# backdrop but occasionally a neighbouring part, which is deliberate - it is
+# what the object actually has to stand out from. Whole-frame background
+# medians run higher (concrete 0.64, paper 0.66, brushed_metal 0.83, fabric
+# 0.41, conveyor_belt 0.32) because the ring includes contact shadow.
+#
+# It is what the material draw is kept away from (see materials.MIN_LUMA_DELTA).
+# It is a measurement, not an authored value, so re-measure it if the exposure,
+# the lighting presets or these colours change materially. The procedure is in
+# .superpowers/sdd/2026-08-05-blender-synthetic-dataset/tuning-report.md.
+backdrops:
+  concrete:
+    image: null
+    proc: concrete
+    color: [[0.22, 0.22, 0.215], [0.46, 0.455, 0.44]]
+    luma_ref: 0.458
+    uv_scale: [1.5, 4.0]
+    brightness: [-0.06, 0.06]
+    roughness: [0.55, 0.85]
+    bump: [0.05, 0.25]
+  brushed_metal:
+    image: null
+    proc: brushed
+    color: [[0.30, 0.305, 0.31], [0.52, 0.525, 0.535]]
+    luma_ref: 0.815
+    uv_scale: [2.0, 6.0]
+    brightness: [-0.04, 0.08]
+    roughness: [0.35, 0.55]
+    bump: [0.02, 0.10]
+  # Authored as dark navy cloth and rendering as mid-grey: at the old exposure
+  # it measured 0.488, three hundredths from concrete's 0.458, so two of the
+  # five backdrops were the same tone and the axis carried no variety. Darkened
+  # to what the name says it is, which also moves it out of the middle of the
+  # cell colours (0.43-0.66), where it was responsible for 21 of the 37
+  # low-contrast boxes on its own.
+  fabric:
+    image: null
+    proc: fabric
+    color: [[0.05, 0.06, 0.08], [0.12, 0.135, 0.165]]
+    luma_ref: 0.433
+    uv_scale: [6.0, 18.0]
+    brightness: [-0.05, 0.05]
+    roughness: [0.70, 0.95]
+    bump: [0.10, 0.35]
+  # Kraft rather than bleached white. At 0.76-0.90 albedo this sat directly on
+  # top of shell_white (0.68-0.86) and shell_alu (0.55-0.77) - the two most
+  # realistic case colours - so a white shell on paper was correctly labelled
+  # and invisible. Darkening it is what lets those two shells still be drawn
+  # here at all instead of being excluded by the contrast rule below.
+  paper:
+    image: null
+    proc: paper
+    color: [[0.44, 0.42, 0.37], [0.54, 0.51, 0.45]]
+    luma_ref: 0.689
+    uv_scale: [1.0, 3.0]
+    brightness: [-0.03, 0.10]
+    roughness: [0.60, 0.90]
+    bump: [0.01, 0.08]
+  conveyor_belt:
+    image: null
+    proc: belt
+    color: [[0.035, 0.035, 0.038], [0.115, 0.115, 0.12]]
+    luma_ref: 0.233
+    uv_scale: [3.0, 8.0]
+    brightness: [-0.08, 0.02]
+    roughness: [0.50, 0.80]
+    bump: [0.15, 0.45]
+
+# Two kinds are in play here.
+#
+# `camera_softbox` hangs the lamp at the camera. Under this top-down camera
+# that makes the light coaxial with the view: shading is flat and every cast
+# shadow falls exactly behind the object that cast it, hidden from the camera.
+# All three original rigs are that kind, so the dataset contained no visible
+# cast shadow at all, while the reference factory photos are full of them.
+#
+# `off_axis` places the lamp at a drawn (azimuth, elevation, distance) and aims
+# it at the origin - see recog/synth3d/lightrig.py. Azimuth spans the full
+# circle and elevation spans each rig's own band, so shadow direction and
+# shadow length both vary scene to scene.
+#
+# Energies are NOT comparable between the two kinds. A camera_softbox sits
+# ~0.87 m above the parts; an off_axis lamp sits 1.0-2.6 m away and strikes a
+# horizontal surface at an angle, so it needs roughly (d/0.87)^2 / cos(90-el)
+# times the power for the same illuminance - a factor of 3 to 8. The numbers
+# below were calibrated by rendering, not derived.
+#
+# `tint` is a per-channel multiplier applied on top of the blackbody colour.
+# It exists because real fluorescent tubes are not blackbody radiators - they
+# are mercury discharge behind a phosphor, with a spike near 546 nm - so a
+# fluorescent-lit factory has a green cast that no colour temperature can
+# reproduce. Without it, every illuminant in the training set lies on the
+# Planckian locus and every real fluorescent photo is off-model.
+lighting:
+  overcast_softbox:
+    kind: camera_softbox
+    energy: [120.0, 260.0]
+    size: [0.9, 1.6]
+    kelvin: [5600, 6800]
+    offset: [0.0, 0.10]
+    world_strength: [0.25, 0.55]
+    world_kelvin: [6000, 8000]
+    hdri: null
+    hdri_strength: [0, 0]
+    hdri_rotation: [0, 0]
+  harsh_inspection:
+    kind: camera_softbox
+    energy: [80.0, 150.0]
+    size: [0.10, 0.25]
+    kelvin: [5000, 6000]
+    offset: [0.0, 0.05]
+    world_strength: [0.02, 0.12]
+    world_kelvin: [5500, 7000]
+    hdri: null
+    hdri_strength: [0, 0]
+    hdri_rotation: [0, 0]
+  warm_indoor:
+    kind: camera_softbox
+    energy: [140.0, 300.0]
+    size: [0.4, 0.9]
+    kelvin: [2900, 3800]
+    offset: [0.05, 0.22]
+    world_strength: [0.15, 0.40]
+    world_kelvin: [3200, 4500]
+    hdri: null
+    hdri_strength: [0, 0]
+    hdri_rotation: [0, 0]
+
+  # ---------------------------------------------------------------- off-axis --
+
+  # Rows of overhead fluorescent tubes: the default light of every older
+  # factory floor. Large source and a high elevation, so shadows are present
+  # but soft and short; a healthy world_strength stands in for the bounce off
+  # pale walls and ceiling that makes such a space fairly even. 4000-5000K with
+  # the green cast that gives fluorescent-lit photographs their characteristic
+  # look.
+  fluorescent_factory:
+    kind: off_axis
+    energy: [700.0, 1300.0]
+    size: [1.2, 2.2]
+    kelvin: [4000, 5000]
+    # Softened from [0.95, 1.06, 0.93]: stacked on a 4000-5000K blackbody that
+    # read frankly olive rather than as the slight green a real tube gives.
+    tint: [0.96, 1.045, 0.95]
+    azimuth: [0, 360]
+    elevation: [55, 80]
+    distance: [1.6, 2.4]
+    world_strength: [0.30, 0.60]
+    world_kelvin: [4200, 5200]
+    hdri: null
+    hdri_strength: [0, 0]
+    hdri_rotation: [0, 0]
+
+  # Modern high-bay LED: brighter, cooler and much more compact than a tube,
+  # so the shadows have hard edges. The low world_strength is what makes them
+  # hard - a small source with a lot of ambient fill still reads soft, because
+  # the ambient lifts the shadow interior back up.
+  high_bay_led:
+    kind: off_axis
+    energy: [1400.0, 2600.0]
+    size: [0.25, 0.60]
+    kelvin: [5000, 6500]
+    azimuth: [0, 360]
+    elevation: [50, 78]
+    distance: [1.8, 2.6]
+    world_strength: [0.05, 0.18]
+    world_kelvin: [5500, 7000]
+    hdri: null
+    hdri_strength: [0, 0]
+    hdri_rotation: [0, 0]
+
+  # The dark setting. A single warm bulb low down in a corner: low light level,
+  # long shadows, high contrast.
+  #
+  # What makes this rig dark is the LOW ELEVATION and the near-absent ambient,
+  # not a low energy. That distinction was measured, not assumed. An earlier
+  # draft used energy [90, 260] with world_strength [0.005, 0.04], which is
+  # about 1.8 stops under the other rigs. On its own that looked right - but
+  # exposure is sampled per scene and multiplies it, so dim_workshop on
+  # conveyor_belt at the bottom of the exposure range rendered as a black
+  # frame: over 8 such scenes the median object-to-background luminance
+  # difference was 0.9-1.6 of 255 levels in four of them, i.e. under the 8-bit
+  # quantisation floor. Those images still carry full annotations, so they ask
+  # the detector to find objects in pure noise - actively worse than dropping
+  # them. Energy raised so the darkness comes mostly from the light's
+  # GEOMETRY, which exposure cannot stack with, rather than from
+  # underexposure, which it can.
+  #
+  # [300, 750] was the other end of that mistake: it made the rig no longer
+  # dim at all - on concrete it measured 0.653 mean frame luminance, brighter
+  # than overcast_softbox on the same backdrop. [170, 420] is the middle that
+  # measured well on both guardrails at once.
+  dim_workshop:
+    kind: off_axis
+    energy: [170.0, 420.0]
+    size: [0.15, 0.50]
+    kelvin: [2700, 3600]
+    azimuth: [0, 360]
+    elevation: [18, 42]
+    distance: [1.0, 1.8]
+    world_strength: [0.012, 0.055]
+    world_kelvin: [3000, 4500]
+    hdri: null
+    hdri_strength: [0, 0]
+    hdri_rotation: [0, 0]
+
+  # Daylight through a window plus warm interior fill. Worth having because it
+  # is the one rig here that breaks the single-illuminant assumption: the two
+  # lamps differ by roughly 3500K and always arrive from different sides
+  # (fill_azimuth_offset is an offset from the key, not an independent draw),
+  # so one face of a part is lit cool and another warm at the same time. A
+  # detector trained only on single-illuminant scenes can learn to treat
+  # "colour of the lit face" as a material property, which it is not.
+  mixed_daylight:
+    kind: off_axis
+    energy: [600.0, 1200.0]
+    size: [1.0, 2.0]
+    kelvin: [6000, 7800]
+    azimuth: [0, 360]
+    elevation: [22, 45]
+    distance: [1.6, 2.4]
+    fill_energy: [150.0, 400.0]
+    fill_size: [0.8, 1.6]
+    fill_kelvin: [2700, 3400]
+    fill_azimuth_offset: [110, 250]
+    fill_elevation: [45, 75]
+    fill_distance: [1.2, 2.0]
+    world_strength: [0.10, 0.30]
+    world_kelvin: [5000, 7500]
+    hdri: null
+    hdri_strength: [0, 0]
+    hdri_rotation: [0, 0]
