@@ -2539,6 +2539,60 @@ while guessing costs a misplaced lithium cell. It now returns empty,
 and a distinct `BadDetectorBox` exception separates a perception
 failure from a genuinely full cartridge (§10.6).
 
+**What that fix left behind is two grazed wall contacts, and the
+obvious remedy for them was measured and rejected rather than
+overlooked.** Re-measured end to end on the same 30-cartridge,
+60-frame corpus as §3's envelope — the shipping detector, segmenter,
+extractor and packer, every frame at its own ground sample distance,
+scoring the 18.5 × 65.0 mm footprint centred where `Planner._build_pose`
+commands it — **25 commanded placements overlap ground-truth non-floor
+material twice, by 8.3 % and 5.2 %**, against 5 of 26 before `0d7d204`.
+Both are one cartridge's left tray wall in a single frame
+(`scene_00033/c57`). The remaining planner-side lever is to demand N mm
+of predicted free floor all round the footprint before a pose is
+committed. It was swept on that corpus rather than argued about:
+
+| clearance | instances with ≥ 1 cell | cells | overlaps > 5 % | worst |
+|---|---:|---:|---:|---:|
+| **0.0 mm (ships)** | **12** | **25** | **2** | **8.3 %** |
+| 1.5 mm | 10 | 21 | **3** | 7.8 % |
+| 3.0 mm | 5 | 13 | **2** | 8.5 % |
+
+**The decision is to keep 0.0 mm and change no code.** 3.0 mm is
+strictly dominated — twelve fewer cells for the same two overlaps — and
+1.5 mm is worse on both axes at once, giving up four cells while
+*creating* a third overlap; 1.0 and 2.0 mm were measured too and move
+nothing. No setting of this margin buys safety, and the count never
+reaches zero at any of them. That is not a tuning failure but the wrong
+instrument. A clearance margin assumes the boundary is known and
+*tight*; here the predicted bay boundary sits 1–2 px **over** the wall,
+so the boundary is in the wrong *place*, and insetting uniformly from a
+wrong boundary shrinks the placeable region without moving the error —
+which is also why it is `wall_inset_mm` under a second name. Nor can any
+other planner-side guard catch it, because every guard the planner has —
+`P_safe`, a clearance inset, an overlap test against the predicted
+classes — is derived from the same prediction that is wrong: measured,
+four of the five original offenders lie **100.0 %** inside the predicted
+free floor, and the fifth (0.975) sits between two placements that are
+perfectly safe, so no threshold separates them in either direction.
+**This is structurally the same defect that retired τ above** — two
+quantities derived from one argmax label map cannot disagree
+informatively — and that parallel is the transferable part: where the
+segmenter labels wall as floor, every downstream check computed from
+that label map agrees with it.
+
+**The residual is therefore a segmentation-accuracy limit, not a
+planning defect, and the two mitigations that would work are the two
+using information the prediction does not contain**: reducing the
+segmenter's own boundary displacement on `bay` (1.226 mm,
+`docs/receipts/seg_eval.txt` — the quantity these two grazes are made
+of), or verifying contact at placement time by force rather than by
+camera, which is §13.2(6)'s wrist force-torque upgrade — the standard
+robotics answer, and the one that holds regardless of what the camera
+believed. Full measurement, including the two
+planner-side guards that reject nothing:
+`docs/superpowers/specs/2026-08-11-placement-safety.md` §2.3–§2.4.
+
 **A methodological note, in the spirit of §6.3.1.** The arbitration
 was near-vacuous when first measured. The synthetic bay proxy tiled
 the cartridge's whole top face including its wall tops, leaving no

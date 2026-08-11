@@ -719,6 +719,41 @@ specifically, neither sample size nor error size is the binding
 constraint any more — τ is retired as a confidence gate outright,
 independent of what a larger or harder split would show.
 
+### 6. Two commanded placements still graze a tray wall — and the obvious fix is measured and REJECTED, not pending
+
+**Do not re-propose a planner-side clearance margin for this.** Measured
+end to end on the 30-cartridge / 60-frame corpus at each frame's true
+scale, after `0d7d204`'s two placement-safety changes: **25 commanded
+placements overlap ground-truth non-floor material twice, by 8.3 % and
+5.2 %** (5 of 26 before), both on `scene_00033/c57`'s left tray wall in
+one frame. Demanding N mm of predicted free floor all round the
+footprint was swept, and 0.0 mm is what ships:
+
+| clearance | instances with ≥ 1 cell | cells | overlaps > 5 % | worst |
+|---|---:|---:|---:|---:|
+| **0.0 mm (ships)** | **12** | **25** | **2** | **8.3 %** |
+| 1.5 mm | 10 | 21 | **3** | 7.8 % |
+| 3.0 mm | 5 | 13 | **2** | 8.5 % |
+
+3.0 mm is strictly dominated — **12 fewer cells for the same 2
+overlaps** — and 1.5 mm is worse on both axes at once, losing 4 cells
+while *creating* a third overlap. (1.0 and 2.0 mm were measured too and
+change nothing.) The reason no setting works is that the margin is the
+wrong instrument: it assumes the boundary is known but tight, and here
+the predicted bay boundary sits 1–2 px *over* the wall — the boundary is
+in the wrong place, so insetting uniformly from it shrinks the placeable
+region without moving the error. No other planner-side guard reaches it
+either: `P_safe`, a clearance inset and a predicted-class overlap test
+are all derived from the same prediction that is wrong, and four of the
+five original offenders measure **100.0 % inside the predicted free
+floor**. **This is the same structural defect that retired τ** (item 4
+above — two estimates derived from one argmax label map cannot disagree
+informatively). It is therefore a **segmentation-accuracy limit, not a
+planning defect**, and the two mitigations that would work are recorded
+as this item's next steps in Step 5 below. Measurement:
+`docs/superpowers/specs/2026-08-11-placement-safety.md` §2.3–§2.4;
+decision and rationale: FDR §13.2.1.
+
 ---
 
 ## What to do, in order
@@ -906,6 +941,23 @@ the scale-up described in this step.
   `mm_per_px`. See item 4 above.
 - Resolve the 2/126 damage cases (was 1/126 pre-fix, 2/54 before that) per
   item 3 above — not yet individually re-investigated on the current split.
+- **Item 6's two residual wall grazes — the two real mitigations, and
+  the only two.** Both use information the prediction does not contain,
+  which is the whole reason they are the ones listed:
+  - **Reduce the segmenter's `bay` boundary displacement**, currently
+    **1.226 mm** (`docs/receipts/seg_eval.txt`) — the quantity those two
+    grazes are literally made of. Steps 1–3's coverage work is the
+    available lever; when it is re-measured, score it on boundary
+    displacement and not on IoU alone, or this residual will not be
+    visible in the result.
+  - **Verify contact at placement time by force rather than by camera** —
+    FDR §13.2(6)'s wrist force-torque upgrade. This is the standard
+    robotics answer and the only mitigation available that holds
+    regardless of what the segmenter believed; it is gated on lab access
+    (Step 6) and is recorded here so it is not rediscovered from scratch.
+  - **Not** a clearance margin, a geometric guard, or any other
+    planner-side check derived from the predicted mask — all measured,
+    all inert or harmful (item 6's table).
 - Consider hardening `tests/test_synth3d.py`'s bpy-boundary check: it is a
   substring grep for `import bpy`, which `from bpy import context` walks
   straight past. It is the only enforcement of the architecture constraint
