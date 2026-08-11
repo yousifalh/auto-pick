@@ -11,18 +11,31 @@ tell a real change from noise. The timings live in the separate,
 uncommitted file instead; the human-readable summary in
 ``forbidden_bench.txt`` still reports the per-level mean timings.
 
-Two arms are compared on identical masks:
+Three arms are compared on identical masks:
 
 *aware*
     :func:`common.packing.first_fit_decreasing` called with
-    ``forbidden_mask=mask`` — the obstacle-aware variant that is the
-    project's algorithmic contribution.
+    ``forbidden_mask=mask`` — the obstacle-aware FFDH variant.
 *naive*
     The same function called with ``forbidden_mask=None`` — i.e. stock
     FFDH with no obstacle awareness — followed by discarding every
     placement that overlaps the mask. This is *rejection sampling*: it
     is the trivial baseline the aware arm has to beat to justify
     existing.
+*best*
+    :func:`common.packing.pack_best_effort` — **what the planner
+    actually runs** since ``docs/superpowers/specs/
+    2026-08-11-packing-ceiling.md``. The *aware* arm's collapse as
+    coverage rises (23.00 cells clear, 2.60 at 10 %, 0.03 at 25 %) is
+    the shelf discipline hitting its ceiling, not the strip filling up;
+    *best* competes FFDH against two obstacle-tolerant strategies and
+    takes the maximum.
+
+The *aware* and *naive* columns are untouched by that change — FFDH
+itself is frozen — so their figures remain directly comparable with
+every earlier regeneration of this receipt. The third arm was added so
+the published number describes the packer that ships rather than one the
+planner no longer calls.
 
 Parameters are those recorded in FDR §6.3.1: a 200 x 150 mm strip, 40
 candidate 18.5 x 65 mm items, 1.5 mm cells, 40 random masks per
@@ -66,6 +79,7 @@ from common.packing import (  # noqa: E402
     Item,
     _overlaps_forbidden,
     first_fit_decreasing,
+    pack_best_effort,
 )
 
 # ------------------------------------------------------------ config ----
@@ -142,6 +156,17 @@ def run_aware(items: List[Item], mask: np.ndarray) -> Tuple[int, float]:
     return res.count, us
 
 
+def run_best(items: List[Item], mask: np.ndarray) -> Tuple[int, float]:
+    """What the planner runs. Returns (placed, microseconds)."""
+    t0 = time.perf_counter()
+    res = pack_best_effort(
+        items, STRIP_W, STRIP_H,
+        forbidden_mask=mask, mm_per_cell=MM_PER_CELL,
+    )
+    us = (time.perf_counter() - t0) * 1e6
+    return res.count, us
+
+
 def run_naive(items: List[Item], mask: np.ndarray) -> Tuple[int, float]:
     """Stock FFDH then discard mask-overlapping placements."""
     t0 = time.perf_counter()
@@ -189,12 +214,25 @@ def collect(master_seed: int) -> List[dict]:
 
             n_aware, us_aware = run_aware(items, mask)
             n_naive, us_naive = run_naive(items, mask)
+            n_best, us_best = run_best(items, mask)
 
             aware_res = first_fit_decreasing(
                 items, STRIP_W, STRIP_H,
                 forbidden_mask=mask, mm_per_cell=MM_PER_CELL,
             )
             check_valid(mask, aware_res.placements)
+            # The shipping arm is held to the same invariant, on every
+            # mask, not just spot-checked: it is the one whose output
+            # reaches the robot.
+            best_res = pack_best_effort(
+                items, STRIP_W, STRIP_H,
+                forbidden_mask=mask, mm_per_cell=MM_PER_CELL,
+            )
+            check_valid(mask, best_res.placements)
+            assert n_best >= n_aware, (
+                "pack_best_effort must never place fewer than the FFDH arm "
+                "it competes"
+            )
 
             rows.append({
                 "target_cov": coverage,
@@ -202,8 +240,10 @@ def collect(master_seed: int) -> List[dict]:
                 "seed": seed,
                 "n_aware": n_aware,
                 "n_naive": n_naive,
+                "n_best": n_best,
                 "us_aware": us_aware,
                 "us_naive": us_naive,
+                "us_best": us_best,
             })
 
     return rows
@@ -235,6 +275,29 @@ def summarise(rows: List[dict]) -> List[str]:
             "%5.1f%%%13.2f%13.2f%+9.2f%11.1f%11.1f"
             % (coverage * 100, a, n, a - n, ua, un)
         )
+
+    lines += [
+        "",
+        "pack_best_effort - the strategy the planner actually runs",
+        "=" * 64,
+        "   cov    best mean   aware mean     gain    best us   win/tie",
+    ]
+    for coverage in COVERAGES:
+        sub = [r for r in rows if r["target_cov"] == coverage]
+        b = sum(r["n_best"] for r in sub) / len(sub)
+        a = sum(r["n_aware"] for r in sub) / len(sub)
+        ub = sum(r["us_best"] for r in sub) / len(sub)
+        wins = sum(1 for r in sub if r["n_best"] > r["n_aware"])
+        lines.append(
+            "%5.1f%%%13.2f%13.2f%+9.2f%11.1f   %d/%d"
+            % (coverage * 100, b, a, b - a, ub, wins, len(sub) - wins)
+        )
+    lines += [
+        "",
+        "There are no losses to report in the right-hand column: the arms",
+        "FFDH competes include FFDH, and the maximum is taken, so best >=",
+        "aware holds by construction on every mask (asserted in collect()).",
+    ]
 
     # Paired within-run statistics. Both arms see identical masks, so the
     # per-seed difference is the primary evidence: it is unaffected by how
@@ -286,12 +349,13 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         with CSV_PATH.open("w", newline="", encoding="utf-8") as fh:
             writer = csv.DictWriter(fh, fieldnames=[
                 "target_cov", "actual_cov", "seed", "n_aware", "n_naive",
+                "n_best",
             ], extrasaction="ignore", lineterminator="\n")
             writer.writeheader()
             writer.writerows(rows)
         with TIMINGS_CSV_PATH.open("w", newline="", encoding="utf-8") as fh:
             writer = csv.DictWriter(fh, fieldnames=[
-                "target_cov", "seed", "us_aware", "us_naive",
+                "target_cov", "seed", "us_aware", "us_naive", "us_best",
             ], extrasaction="ignore", lineterminator="\n")
             writer.writeheader()
             writer.writerows(rows)

@@ -26,7 +26,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 from common.types import PickPlacePose, Snapshot, WorkspacePoint
-from plan.bin_packing import Item, PackResult, first_fit_decreasing
+from plan.bin_packing import Item, PackResult, pack_best_effort
 from plan.placement_area import (
     BadDetectorBox,
     PlacementAreaExtractor,
@@ -258,7 +258,13 @@ class Planner:
         forbidden = ctg.occupancy.mask_of(
             CellState.FORBIDDEN, CellState.PLANNED, CellState.PLACED,
         )
-        return first_fit_decreasing(
+        # pack_best_effort, not first_fit_decreasing: FFDH alone placed
+        # zero cells on scene_00005's 93%-free grid, because its shelves
+        # span the strip width and their origins never scan in y. It is
+        # still one of the arms competed here and still wins on lightly
+        # obstructed cartridges, so this can only place MORE than before.
+        # docs/superpowers/specs/2026-08-11-packing-ceiling.md.
+        return pack_best_effort(
             items, strip_w_mm, strip_h_mm,
             allow_rotation=self.cfg.allow_rotation,
             forbidden_mask=forbidden,
