@@ -24,7 +24,7 @@ Per-class IoU (pooled over the validation split; NaN = class absent from both pr
   ----------------------------------
   selected mean IoU over ['bay', 'electronics', 'obstruction'] (instances={'bay': 36, 'electronics': 36, 'obstruction': 24}): 0.8032
   note: background IoU (0.3629 on 126 crops) is STRUCTURAL, not a comparable failure - a crop is the union of the unit's OWN boxes, so background is only the thin leftover corners and gaps, a small region where IoU is naturally harsh. It is not evidence against the model.
-  note: cartridge (126 instances) and bay (36 instances) crop populations are OVERLAPPING on this validation split, measured fresh this run (not assumed): 90 crops carry cartridge only, 0 carry bay only, 36 carry BOTH in the SAME crop, 0 carry neither. See seg_dataset.py's module docstring for why this can no longer be assumed disjoint (real tray-wall geometry, commits 27cbd97..9fcf136). Either way, 0.9398 and 0.8903 are each pooled independently over their own class's pixels across the whole split - a marginal per-class statistic, not a per-crop joint one - so this is still not evidence the model handles both together within the SAME crop, even on crops where both truly co-occur.
+  note: cartridge (126 instances) and bay (36 instances) crop populations are OVERLAPPING on this validation split, measured fresh this run (not assumed): 90 crops carry cartridge only, 0 carry bay only, 36 carry BOTH in the SAME crop, 0 carry neither. See seg_dataset.py's module docstring for why this can no longer be assumed disjoint (real tray-wall geometry, commits a31ac28..043e92d). Either way, 0.9398 and 0.8903 are each pooled independently over their own class's pixels across the whole split - a marginal per-class statistic, not a per-crop joint one - so this is still not evidence the model handles both together within the SAME crop, even on crops where both truly co-occur.
   note: checkpoint selection is noise-limited - best.pt 0.8126 and last.pt 0.8091 differ by 0.0036 on 36/36/24 (bay/electronics/obstruction) val instances, and both ship.
 
 Boundary displacement, mm (mean distance from a predicted boundary pixel to
@@ -60,9 +60,9 @@ n calls) - the path batching replaced. This is the single measured source for
 the batching-latency figure; quote THIS receipt rather than a hand-measured one.
    cartridges   total_ms  per_cart_ms  within_50ms   looped_ms
   ------------------------------------------------------------
-            1       13.5        13.53         True        13.9
-            2       14.8         7.38         True        19.7
-            4       20.6         5.14         True        46.7
-            8       21.2         2.65         True        88.0
+            1        6.5         6.55         True         6.6
+            2        8.0         4.02         True        13.2
+            4       13.7         3.42         True        28.3
+            8       16.6         2.08         True        57.1
   ------------------------------------------------------------
-  at 8 cartridges: 21.2 ms batched vs 88.0 ms looped (4.2x) - batching is load-bearing, not an optimisation: the looped figure breaches the 50 ms end-to-end budget on its own.
+  at 8 cartridges: 16.6 ms batched vs 57.1 ms looped (3.4x) - batching is load-bearing, not an optimisation: the looped figure breaches the 50 ms end-to-end budget on its own.

@@ -23,6 +23,22 @@ delta_cells needs a GROUND-TRUTH label map, which only the synthetic
 validation split (recog/dataset3d_seg, via BaySegDataset) carries. It is
 therefore computed there, not on recog/realtest.
 
+Every crop is packed at ITS OWN frame's ground sample distance. Here
+mm_per_px is not a reporting unit - it is an input to the measurement:
+it sets `arbitrate`'s wall-inset erosion radius in pixels, the strip's
+size in millimetres, and `_rasterise_mask`'s grid stride, so it decides
+what the packer does. Until 2026-08-12 this module packed every crop at
+the generator's NOMINAL framing (0.6250 on this corpus, the framing at
+margin=1.0 zoom=1.0, which no frame is rendered at) while seg_evaluate
+and calibrate_tau had already moved to per-frame scales. Because packing
+is discrete and non-monotone in scale, that error did NOT cancel between
+the two sides of the difference the way a shared multiplier would: on
+the 126-crop validation split the damage-direction count is 2 at the
+nominal and 5 at the frames' own scales, three crops change sign, and
+the ground truth's total packing capacity over the whole split is 4
+cells against 17. See
+docs/superpowers/specs/2026-08-12-fix-delta-cells-scale.md.
+
 heuristic_vs_segmenter is the real-photo half. recog/realtest carries
 boxes only - 80 annotations, 2 categories (Battery, Cartridge), and
 (verified at run time, not assumed) ZERO non-empty `segmentation`
@@ -138,10 +154,24 @@ def delta_cells(gt_label_map: np.ndarray, pred_label_map: np.ndarray,
 
 
 def evaluate_delta_cells(segmenter, full_dataset, val_indices: Sequence[int],
-                         mm_per_px: float,
+                         scales: Dict[int, float],
                          wall_inset_mm: float = _DEFAULT_WALL_INSET_MM
                          ) -> Dict[str, Any]:
     """delta_cells over every crop in the segmenter's OWN validation split.
+
+    ``scales`` maps crop index -> that crop's OWN mm_per_px, as
+    :func:`recog.seg_evaluate.resolve_frame_scales` builds it. It is
+    deliberately NOT a scalar, and passing one raises - for a reason
+    stronger than the one that made `evaluate` and `collect_records`
+    refuse it. There, scale is the multiplier on a pixel count and a
+    wrong one understates a published millimetre. HERE it is an input to
+    the measurement: it sets `arbitrate`'s erosion radius in pixels, the
+    strip's size in millimetres, and `_rasterise_mask`'s grid stride, so
+    it changes what the PACKER DOES. Packing is discrete and non-monotone
+    in scale, so the error does not cancel between the two sides of a
+    difference: on the 126-crop validation split the damage-direction
+    count is 2 at the nominal 0.6250 and 5 at the frames' own scales,
+    with three crops changing sign.
 
     Native resolution (out_size=None), matching recog.seg_evaluate.evaluate,
     so mm_per_px stays isotropic - a jittered union box is not square, and
@@ -152,11 +182,27 @@ def evaluate_delta_cells(segmenter, full_dataset, val_indices: Sequence[int],
     from PIL import Image
 
     from recog.seg_dataset import extract_crop, rasterise_crop
+    # One definition of the distribution summary, shared with the receipt
+    # seg_evaluate prints, rather than a second copy that agrees today.
+    from recog.seg_evaluate import scale_stats
+
+    if isinstance(scales, (int, float)):
+        raise TypeError(
+            "evaluate_delta_cells() takes a per-crop {index: mm_per_px} "
+            f"map, not one constant ({scales!r}). Scale is a property of "
+            "the FRAME - recog/synth3d/world.py randomises margin and "
+            "zoom per scene, so no single number describes this corpus - "
+            "and in this measurement it is not a reporting unit but an "
+            "input to the packer. Build the map with "
+            "resolve_frame_scales(); if the corpus really is one fixed "
+            "framing, pass that value as its `fallback` so the receipt "
+            "records that it was a fallback.")
 
     rows: List[Dict[str, Any]] = []
     for idx in val_indices:
         img_meta, anns, unit_box = full_dataset.samples[idx]
         box = tuple(int(v) for v in unit_box)
+        mm_per_px = scales[idx]                   # THIS frame's own GSD
 
         path = Path(full_dataset.img_dir) / img_meta["file_name"]
         image = np.asarray(Image.open(path).convert("RGB"))
@@ -167,7 +213,7 @@ def evaluate_delta_cells(segmenter, full_dataset, val_indices: Sequence[int],
 
         d = delta_cells(gt, pred, mm_per_px, wall_inset_mm)
         rows.append({"file_name": img_meta["file_name"], "unit_box": box,
-                     "delta_cells": d})
+                     "mm_per_px": float(mm_per_px), "delta_cells": d})
 
     arr = np.asarray([r["delta_cells"] for r in rows], dtype=float)
     n = len(arr)
@@ -175,6 +221,10 @@ def evaluate_delta_cells(segmenter, full_dataset, val_indices: Sequence[int],
         "n": n,
         "rows": rows,
         "wall_inset_mm": wall_inset_mm,
+        # The scales these cell counts were actually packed at, carried in
+        # the result rather than left to the caller to remember - the same
+        # reason evaluate() carries its own.
+        "mm_per_px": scale_stats({i: scales[i] for i in val_indices}),
         "mean": float(arr.mean()) if n else float("nan"),
         "median": float(np.median(arr)) if n else float("nan"),
         "min": float(arr.min()) if n else float("nan"),
@@ -402,7 +452,8 @@ def heuristic_vs_segmenter(real_dir: str | Path, segmenter,
 
 def format_report(delta_result: Dict[str, Any], real_result: Dict[str, Any], *,
                   checkpoint: Optional[str], config_path: str,
-                  synth_source: str, mm_per_px_synth: float,
+                  synth_source: str, scale_provenance: Dict[str, Any],
+                  nominal_mm_per_px: Optional[float],
                   real_dir: str, device: str) -> str:
     lines: List[str] = []
     lines.append("")
@@ -422,16 +473,55 @@ def format_report(delta_result: Dict[str, Any], real_result: Dict[str, Any], *,
                  "forbids them (damage risk,")
     lines.append("the serious direction). Measured on the segmenter's OWN "
                  "validation split")
-    lines.append(f"({synth_source}, mm_per_px={mm_per_px_synth:.4f}) "
-                 "because delta_cells needs a ground-")
-    lines.append("truth label map, which only synthetic data carries - "
-                 "recog/realtest has none.")
+    lines.append(f"({synth_source}) because delta_cells needs a "
+                 "ground-truth label map, which only")
+    lines.append("synthetic data carries - recog/realtest has none.")
     lines.append("Requires the Plan A packer fix (FDR 6.3.1): on the "
                  "unfixed shelf-cursor logic")
     lines.append("this figure was dominated by the packer abandoning "
                  "shelves, not by mask error.")
     lines.append("")
+    stats = delta_result["mm_per_px"]
     n = delta_result["n"]
+    # NOT a bare number, and not a reporting unit either. mm_per_px sets
+    # the wall-inset erosion RADIUS, the strip's size in millimetres and
+    # the occupancy grid's stride, so it decides what the packer does.
+    # Receipts published before 2026-08-12 packed every crop at the
+    # generator's nominal framing, which describes no frame in this
+    # corpus, and understated the damage-direction count as a result.
+    lines.append("  mm_per_px         : per frame, from each frame's own "
+                 "render sidecar")
+    lines.append("                      (camera.ortho_scale*1000 / width). "
+                 "NOT a reporting unit here:")
+    lines.append("                      it sets the erosion radius, the "
+                 "strip's mm size and the grid")
+    lines.append("                      stride, so it decides what the "
+                 "packer does.")
+    lines.append(f"    measured        : {scale_provenance['n_measured']} of "
+                 f"{scale_provenance['n_measured'] + scale_provenance['n_fallback']}"
+                 f" crops over {scale_provenance['n_frames']} frames")
+    lines.append(f"    distribution    : median {stats['median']:.4f}, "
+                 f"range {stats['min']:.4f}-{stats['max']:.4f}, "
+                 f"mean {stats['mean']:.4f} mm/px")
+    fb = scale_provenance.get("fallback")
+    lines.append("    fallback        : "
+                 + ("none configured - an uncalibrated frame raises "
+                    "UnknownScale rather than reverting to a constant"
+                    if fb is None else
+                    f"{fb:.4f} mm/px, applied to "
+                    f"{scale_provenance['n_fallback']} crops"))
+    if nominal_mm_per_px:
+        lines.append(
+            f"    note            : the generator's NOMINAL framing "
+            f"({nominal_mm_per_px:.4f} = layout.area[0]*1000 / "
+            f"render.res[0]) is the framing at margin=1.0, zoom=1.0 and "
+            f"describes NO frame in this corpus. Receipts published "
+            f"before 2026-08-12 packed EVERY crop at that constant. "
+            f"Because packing is discrete and non-monotone in scale the "
+            f"error does not cancel between the two sides of the "
+            f"difference: it moved the damage-direction count, not only "
+            f"the magnitude.")
+    lines.append("")
     lines.append(f"  wall_inset_mm used: {delta_result['wall_inset_mm']:.2f}")
     lines.append(f"  validation crops (n={n}):")
     lines.append(f"    mean   : {delta_result['mean']:.3f}")
@@ -554,10 +644,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--checkpoint", default="recog/checkpoints/seg/best.pt")
     ap.add_argument("--config", default="configs/segmentation.yaml")
     ap.add_argument("--synth-config", default=None,
-                    help="render/layout config to compute mm_per_px from "
-                         "for delta_cells. Defaults to the dataset's own "
-                         "manifest.json, falling back to "
-                         "configs/synth3d.yaml.")
+                    help="render/layout config to read the generator's "
+                         "NOMINAL framing from, for the receipt's note "
+                         "only - it is no longer what delta_cells packs "
+                         "at. Defaults to the dataset's own manifest.json, "
+                         "falling back to configs/synth3d.yaml.")
+    ap.add_argument("--fallback-mm-per-px", type=float, default=None,
+                    help="scale to use for frames that carry NO render "
+                         "sidecar. Unset by default: an uncalibrated frame "
+                         "then raises rather than silently reverting to a "
+                         "constant. A real fixed-mount camera is one "
+                         "calibrated scale and is served by setting this.")
     ap.add_argument("--real", default="recog/realtest")
     ap.add_argument("--wall-inset-mm", type=float, default=_DEFAULT_WALL_INSET_MM)
     ap.add_argument("--device", default="cuda")
@@ -585,18 +682,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     from recog.seg_dataset import BaySegDataset
     from recog.seg_evaluate import (check_split_matches_checkpoint,
                                     compute_val_instance_counts,
-                                    load_synth_config, resolve_mm_per_px)
+                                    load_synth_config, resolve_frame_scales,
+                                    resolve_mm_per_px)
     from recog.seg_training import _split_dataset
 
-    segmenter = BaySegmenter(checkpoint=args.checkpoint, device=args.device,
-                             crop_size=crop_size, half=half,
-                             num_classes=num_classes)
-
     # ---- delta_cells: the synthetic validation split -------------------
+    # The NOMINAL framing, kept only so the receipt can state how far the
+    # figure it used to publish was from the one it publishes now. Nothing
+    # below packs at it.
     synth_cfg, synth_source = load_synth_config(
         ds_cfg["coco_path"], args.synth_config)
     synth_source = Path(synth_source).as_posix()
-    mm_per_px = resolve_mm_per_px(synth_cfg)
+    nominal_mm_per_px = resolve_mm_per_px(synth_cfg)
 
     full_dataset = BaySegDataset(
         coco_path=ds_cfg["coco_path"], img_dir=ds_cfg["img_dir"],
@@ -612,21 +709,45 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     val_indices = list(val_set.indices)
 
     if args.checkpoint:
-        val_counts_now = compute_val_instance_counts(
-            full_dataset, val_indices, num_classes=num_classes)
         # `coco_path` is not optional and never was here: the guard only
         # fires when this eval is against the SAME dataset the checkpoint
         # trained on, and it needs the path to know. The argument was
-        # added in 138105d (cross-dataset scoring) and this caller was
-        # not updated, so `python -m recog.seg_ablation` has raised
-        # TypeError before reaching a single measurement ever since -
+        # added in 75db46a (cross-dataset scoring) and this caller was
+        # not updated, so `python -m recog.seg_ablation` raised TypeError
+        # before reaching a single measurement from then until 380e7d5 -
         # which is why docs/receipts/seg_ablation.txt could not be
-        # regenerated. Matches recog.seg_evaluate.main's own call.
+        # regenerated.
+        #
+        # out_size=crop_size, NOT native, and for a second reason that
+        # 502ef00 fixed in recog.calibrate_tau and missed here:
+        # seg_training's stored counts come off its val DataLoader, which
+        # rasterises at crop_size, so counting natively compares two
+        # different quantities and the guard fires on a dataset that never
+        # moved. Measured over all ten config/checkpoint pairs in this
+        # repo it did exactly that on four of them - anchored and
+        # anchored_crown (background 124 native against the checkpoint's
+        # 123), wide and the 20100 CAD control (also `battery`, 24 vs 23
+        # and 19 vs 18) - and the other six passed only because native and
+        # downsampled counts happened to agree. See
+        # compute_val_instance_counts' docstring. Matches
+        # recog.seg_evaluate.main's own call on both counts.
+        val_counts_now = compute_val_instance_counts(
+            full_dataset, val_indices, num_classes=num_classes,
+            out_size=crop_size)
         check_split_matches_checkpoint(args.checkpoint, ds_cfg["coco_path"],
                                        val_counts_now)
 
+    # Resolved BEFORE inference: an uncalibrated frame is a configuration
+    # error and should cost nothing but the time to notice it.
+    scales, scale_provenance = resolve_frame_scales(
+        full_dataset, val_indices, fallback=args.fallback_mm_per_px)
+
+    segmenter = BaySegmenter(checkpoint=args.checkpoint, device=args.device,
+                             crop_size=crop_size, half=half,
+                             num_classes=num_classes)
+
     delta_result = evaluate_delta_cells(
-        segmenter, full_dataset, val_indices, mm_per_px, args.wall_inset_mm)
+        segmenter, full_dataset, val_indices, scales, args.wall_inset_mm)
 
     # ---- heuristic vs segmenter: the real photographs -------------------
     real_result = heuristic_vs_segmenter(
@@ -636,7 +757,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     report = format_report(
         delta_result, real_result,
         checkpoint=args.checkpoint, config_path=args.config,
-        synth_source=synth_source, mm_per_px_synth=mm_per_px,
+        synth_source=synth_source, scale_provenance=scale_provenance,
+        nominal_mm_per_px=nominal_mm_per_px,
         real_dir=args.real, device=str(segmenter.device))
     print(report)
 

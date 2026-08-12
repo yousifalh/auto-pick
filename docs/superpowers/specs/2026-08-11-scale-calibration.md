@@ -261,11 +261,35 @@ nothing anyway.
   `pack_best_effort` shipping cannot change it. **The outstanding flag
   can be cleared, with that correction.**
   *Caveat, not fixed here:* Δcells is still computed at the nominal
-  `resolve_mm_per_px` = 0.625, now known to describe no frame. Both sides
-  are at the same wrong scale so the sign is trustworthy, but the
-  magnitude is compressed — a 65 mm cell is 104 px there against a true
-  median of 76 px. Changing it would change a metric definition, which
-  the brief forbids.
+  `resolve_mm_per_px` = 0.625, now known to describe no frame. Changing
+  it would change a metric definition, which the brief forbids.
+
+  > **CORRECTION, 2026-08-12 — the rest of this caveat, as originally
+  > written, was false.** It read: *"Both sides are at the same wrong
+  > scale so the sign is trustworthy, but the magnitude is compressed —
+  > a 65 mm cell is 104 px there against a true median of 76 px."* The
+  > second half is right and the first half is not, and the first half
+  > is the load-bearing one. A shared multiplier cancels in a
+  > difference; **packing does not**, because it is a discrete,
+  > non-monotone function of scale. `_pack_count` answers "how many
+  > fixed-millimetre 18650s fit", so mm_per_px is not a unit on the
+  > answer — it sets the wall-inset erosion radius, the strip's
+  > millimetre size and the occupancy grid's stride, and therefore
+  > changes what the packer does. Measured on the same 126 crops with
+  > the same `best.pt`: 8 crops disagree between the two scales, **7
+  > change sign**, and **3 go from zero into the damage direction**. The
+  > published damage-direction count moves **2 of 126 → 5 of 126** and
+  > the range **[−2, +2] → [−2, +4]** — in the unsafe direction. Nor was
+  > "the magnitude is compressed" the whole of the second half's story:
+  > at 0.625 the split's ground truth admits 4 cells in total and 124 of
+  > 126 crops pack none, against 17 cells at the frames' own scales, so
+  > the metric had almost no dynamic range to compress. This was filed
+  > as a magnitude caveat; it was a sign caveat. Fixed in
+  > `2026-08-12-fix-delta-cells-scale.md` and pinned by
+  > `tests/test_calibration.py::test_the_pack_count_conclusion_is_not_invariant_to_mm_per_px`.
+  > The reasoning error worth keeping: "both sides are at the same wrong
+  > scale" licenses cancellation only where the metric is *linear* in
+  > the scale. Neither side of this one is.
 * **Two pre-existing defects surfaced and fixed, both blockers.**
   `recog.seg_ablation`'s CLI has raised `TypeError` before reaching a
   single measurement since `75db46a` gave

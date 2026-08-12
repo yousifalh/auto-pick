@@ -213,7 +213,10 @@ states the constraint before any segmenter figure it quotes.
 - **Re-measuring anything.** Δcells (+0.032 mean, 2 of 126 negative) was
   measured under the FFDH-only planner and has not been re-run against
   `pack_best_effort`. That is flagged in `NEXT_STEPS.md` item 3 as work,
-  not quietly left to read as current.
+  not quietly left to read as current. *(Both figures are at the nominal
+  0.6250 mm/px and were corrected on 2026-08-12 to +0.056 and 5 of 126 —
+  see `2026-08-12-fix-delta-cells-scale.md`. The packer half of this note
+  still stands: it is still FFDH under there.)*
 - **Restructuring `FDR_v3.md`.** It is a submitted report. §6.3.1's
   pseudocode, §13.2.1's τ measurements and §6.3.1's benchmark tables are
   all still accurate about what they measure and were left in place;

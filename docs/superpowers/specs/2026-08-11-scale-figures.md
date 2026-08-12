@@ -49,6 +49,17 @@ changing it would change a metric definition rather than correct a
 conversion (`2026-08-11-scale-calibration.md` §5 records the same
 judgement and the same caveat).
 
+> **CORRECTION, 2026-08-12.** That judgement was wrong, and so was the
+> caveat it points at. "Both arms are at the same scale" only licenses
+> leaving a scale alone where the metric is linear in it; `_pack_count`
+> is not — mm_per_px sets the erosion radius, the strip's millimetre
+> size and the grid stride, so it changes what the packer does rather
+> than the units of its answer. Correcting it moved the published
+> damage-direction count **2 of 126 → 5 of 126**, in the unsafe
+> direction, and was not a change of metric definition: `delta_cells`
+> still measures the same thing, at the scale each frame actually has.
+> See `2026-08-12-fix-delta-cells-scale.md`.
+
 **An unknown scale raises.** `resolve_frame_scales` takes a `fallback`
 that defaults to `None`; a frame with no render sidecar and no
 configured fallback raises `plan.placement_area.UnknownScale` — the
@@ -239,7 +250,9 @@ It does not change that receipt's verdict, which `electronics` decides.
   `75db46a`** (§1.1); receipt regenerated.
 * `python -m recog.seg_ablation` — not re-run and not changed by this
   work. Its Δcells metric is defined at the nominal scale on both arms;
-  see §1. **Note for whoever picks this up next:** `b93bbd3` states
+  see §1 — *and see the correction there: that was the wrong call, and
+  it left the safety figure understated by 2.5× for a day.*
+  **Note for whoever picks this up next:** `b93bbd3` states
   that its `_rasterise_mask` change moves `docs/receipts/seg_ablation.txt`
   and `docs/receipts/main_seg_run.txt` and that it did not regenerate
   them. Neither is a receipt this work touches or is affected by — no

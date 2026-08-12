@@ -121,7 +121,7 @@ MASK_HEAD_QUANTISATION_PX: Tuple[float, float] = (131.0 / 28.0, 288.0 / 28.0)
 # 0.49-1.09 mm/px against a nominal 0.625, and every millimetre figure
 # in docs/receipts/seg_eval.txt was understated by that ratio.
 #
-# The fix is the same one 58dd21d applied to the planner, using the same
+# The fix is the same one 380e7d5 applied to the planner, using the same
 # module: scale is a property of the FRAME, read from that frame's own
 # render sidecar. IoU and every other pixel-space quantity are untouched
 # by construction - they never multiply by this number.
@@ -426,7 +426,7 @@ def evaluate(segmenter, full_dataset, val_indices: Sequence[int],
 
     # cartridge/bay crop-population overlap, measured fresh every run
     # rather than asserted in prose. Before the tray-interior fix
-    # (27cbd97..9fcf136) a closed shell's cartridge mask and an open
+    # (a31ac28..043e92d) a closed shell's cartridge mask and an open
     # unit's bay mask genuinely never shared a crop; the fix gave open
     # units real tray walls, which paint `cartridge` pixels alongside
     # their own bay/electronics/obstruction pixels in the SAME crop
@@ -775,7 +775,7 @@ def format_report(results: Dict[str, Any], latency: List[dict], *,
                 f"{overlap['neither']} carry neither. See seg_dataset.py's "
                 "module docstring for why this can no longer be assumed "
                 "disjoint (real tray-wall geometry, commits "
-                "27cbd97..9fcf136).")
+                "a31ac28..043e92d).")
         else:                                    # pragma: no cover - guard
             pop_note = "of unmeasured overlap (cartridge_bay_crops missing)"
         lines.append(

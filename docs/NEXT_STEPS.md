@@ -89,7 +89,7 @@ Four plans were executed end to end. Every number below has a receipt in
 | A | Forbidden-mask FFDH shelf advance | 3.17 → **14.28 cells** at 2.5 % coverage, 40/40 paired seed wins (that measures `first_fit_decreasing`, which is frozen; the planner now runs `common.packing.pack_best_effort` at **14.55** — see "The packing ceiling" below) |
 | B | Five-class segmentation ground truth from CAD | `placement_area` = currently-free floor, **0 overlapping pixels** across 3280 mask pairs (full 502-scene tray-interior dataset; was 139 pairs on a 32-scene spot check) |
 | C | Per-ROI bay segmenter | IoU 0.8126; boundary displacement **1.226 mm** (bay) against the **3.844 mm** a mask head would quantise to over the same crops — it clears by **3.14×** (corrected 2026-08-11; this row read *0.949 mm vs 2.9 mm* while both sides were converted at a nominal 0.625 mm/px that no frame was rendered at. Both figures rose by the same factor, so the margin is unchanged — see below) |
-| D | Integration and arbitration | Planning **2.0 ms/cartridge** vs an 8 ms budget; segmentation 21.2 ms for 8 crops vs 50 ms (was 16.7 ms; an intermediate 40.9 ms reading was GPU-contention noise, since superseded by clean re-measurements — the table is wall-clock and is re-taken every time the receipt is regenerated, most recently 21.2 / 88.0 ms; see the tray-interior retrain note below) |
+| D | Integration and arbitration | Planning **2.0 ms/cartridge** vs an 8 ms budget; segmentation 16.6 ms for 8 crops vs 50 ms (was 16.7 ms; an intermediate 40.9 ms reading was GPU-contention noise, since superseded by clean re-measurements — the table is wall-clock and is re-taken every time the receipt is regenerated, and spans 16.6–21.2 / 57.1–88.0 ms across five clean runs, most recently 16.6 / 57.1 ms; see the tray-interior retrain note below) |
 
 New modules: `recog/synth3d/bay.py`, `recog/seg_dataset.py`,
 `recog/seg_training.py`, `recog/seg_evaluate.py`, `recog/bay_segmenter.py`,
@@ -180,7 +180,9 @@ still calls it, so no dataset moves; FDR §6.3.1's pseudocode remains
 accurate *for FFDH*. Two consequences for figures in this document: Plan
 A's 14.28 is still the FFDH number (the shipping packer is 14.55 at the
 same coverage), and item 3's Δcells figures were measured under the
-FFDH-only planner and have not been re-run.
+FFDH-only planner and have not been re-run (the 2026-08-12 scale
+correction re-ran them at the frames' own scales, not under a different
+packer).
 
 Specs: `docs/superpowers/specs/2026-08-11-segmenter-integration.md`
 (items 1 and 2), `2026-08-11-packing-ceiling.md` (item 3).
@@ -492,8 +494,8 @@ plan depends on it being used.
 
 ### 3. Damage-direction crops — got WORSE this retrain, and still not re-investigated on the current split
 
-Δcells is mean **+0.008** over the 126-crop validation split, with the
-negative-direction count **at 2 of 126** (was 1 of 126 pre-tray-fix; 2
+Δcells is mean **+0.056** over the 126-crop validation split, with the
+negative-direction count **at 5 of 126** (was 1 of 126 pre-tray-fix; 2
 of 54 further back, before the dataset was first scaled to 502/841).
 This is a regression on the
 metric that matters most, reported as one rather than smoothed over by
@@ -501,19 +503,39 @@ the small mean: the tray fix corrected the geometry but did not
 improve, and by this one measure slightly worsened, the fraction of
 crops where the prediction packs a cell the ground truth forbids.
 
+**Corrected 2026-08-12, in the unsafe direction: this item read
++0.008 mean and 2 of 126 negative.** Those figures came from
+`recog.seg_ablation` packing every crop at the generator's nominal
+0.6250 mm/px instead of at each frame's own ground sample distance —
+and here mm_per_px is not a reporting unit but an input to the packer
+(erosion radius, strip size, grid stride). At 0.6250 the split's entire
+ground truth admits 4 cells and 124 of 126 crops pack none, so the
+metric had almost no dynamic range; at the frames' own scales it admits
+17. Re-scored on the same crops with the same checkpoint, 8 of 126
+differ, 7 change sign, and **3 move from zero into the damage
+direction** (`scene_00330`, `scene_00324`, `scene_00086`, true GSDs
+0.86 / 0.89 / 0.70). The two crops this item was already about are
+still 2 of the 5. `docs/superpowers/specs/2026-08-12-fix-delta-cells-scale.md`;
+`docs/superpowers/specs/2026-08-11-scale-calibration.md` §5's claim
+that the sign was trustworthy under the wrong scale is corrected there
+and is what these three crops falsify.
+
 **The mean fell from +0.032 to +0.008 at `b93bbd3`, and this item did
-not get better.** That commit made `_rasterise_mask` call a grid cell
+not get better.** *(Both of those are nominal-scale figures, kept as
+the record of how the instrument moved — see the correction above for
+the current values.)* That commit made `_rasterise_mask` call a grid cell
 free only if every pixel it covers is free rather than only its centre
 pixel; `recog.seg_ablation._pack_count` calls that same production
 rasteriser, so both sides of the difference requantised and two of the
 four conservatism losses became exact agreements (120 → 122 of 126
 exact). The damage-direction count — the only number this item is
-about — is unmoved at 2 of 126, and they are the same 2 crops. Do not
-read the smaller mean as progress here.
+about — was unmoved by that commit at 2 of 126, and they were the same
+2 crops. Do not read the smaller mean as progress here.
 
 **The investigation below describes an EARLIER split's two negative
 crops under an EARLIER checkpoint; it has not been re-run against
-either the previous single negative crop or this task's current two.**
+either the previous single negative crop or any of this task's current
+five.**
 Both the dataset and the model have changed twice since that
 investigation. Read what follows as the documented explanation for the
 original finding, generalisable lessons included, not as a claim
@@ -561,17 +583,19 @@ fixed** — FFDH never scanned its shelf origin in y, so a forbidden region
 in the first shelf's row band voided the whole pack. The planner now runs
 `common.packing.pack_best_effort` (`562ca75`), which competes FFDH
 against two obstacle-tolerant arms and takes the maximum. Δcells has
-**not** been re-measured under the new packer, so the +0.008 mean and the
-2/126 negative-direction count above are both figures from the FFDH-only
+**not** been re-measured under the new packer, so the +0.056 mean and the
+5/126 negative-direction count above are both figures from the FFDH-only
 planner. Re-measuring them is now part of resolving this item. **This
-still holds after the 2026-08-11 regeneration** — re-running
+still holds after both the 2026-08-11 and the 2026-08-12
+regenerations** — re-running
 `python -m recog.seg_ablation` does not change it, because
 `recog.seg_ablation._pack_count` calls
 `common.packing.first_fit_decreasing` directly and never reaches
 `pack_best_effort`.
-The mean moved (from +0.032) for an unrelated reason, the rasteriser
-change at `b93bbd3`; the packer under it is the same FFDH it always
-was.
+The mean moved twice for reasons unrelated to the packer: the
+rasteriser change at `b93bbd3` (+0.032 → +0.008) and the 2026-08-12
+scale correction (+0.008 → +0.056). The packer under it is the same
+FFDH it always was.
 
 **Mitigations were tested and rejected on cost-benefit**: a larger wall inset
 (to 7.5 mm), requiring `P_safe` itself to admit a cell, and extra `P_safe`
@@ -713,7 +737,12 @@ that render and that checkpoint no longer existing — see FDR §13.2.1
 for the full table), but the pooled selected mean IoU dipped slightly
 (0.8045 → 0.8032) even as the checkpoint's own per-epoch selection metric
 rose (0.8096 → 0.8126), and Δcells' negative-direction fraction got worse
-(1/126 → 2/126). `obstruction` in particular is still a 24-instance number
+(1/126 → 2/126 as both were measured then, and 5/126 for the post-fix
+half once the 2026-08-12 scale correction is applied to it; the pre-fix
+half cannot be re-measured, that render and that checkpoint no longer
+existing, so the pair is not comparable at the corrected scale and only
+the post-fix figure should be quoted). `obstruction` in particular is
+still a 24-instance number
 and should be read as such. And per item 4 (superseded above): for τ
 specifically, neither sample size nor error size is the binding
 constraint any more — τ is retired as a confidence gate outright,
@@ -939,8 +968,11 @@ the scale-up described in this step.
   branch, `self.tau` and the constructor argument, after the gate was
   measured to reject 8 of 8 plannable cartridges at the project's own
   `mm_per_px`. See item 4 above.
-- Resolve the 2/126 damage cases (was 1/126 pre-fix, 2/54 before that) per
-  item 3 above — not yet individually re-investigated on the current split.
+- Resolve the 5/126 damage cases (2/126 as published until the
+  2026-08-12 scale correction; 1/126 pre-tray-fix, 2/54 before that) per
+  item 3 above — none individually re-investigated on the current split,
+  and the three the scale correction added have never been visible in
+  this metric at all.
 - **Item 6's two residual wall grazes — the two real mitigations, and
   the only two.** Both use information the prediction does not contain,
   which is the whole reason they are the ones listed:

@@ -9,19 +9,28 @@ delta_cells - the end-to-end number, in cells. Positive = cells the ground
 truth would have placed but the prediction lost (throughput cost). Negative =
 cells the prediction packed where the ground truth forbids them (damage risk,
 the serious direction). Measured on the segmenter's OWN validation split
-(recog/dataset3d_seg/manifest.json, mm_per_px=0.6250) because delta_cells needs a ground-
-truth label map, which only synthetic data carries - recog/realtest has none.
+(recog/dataset3d_seg/manifest.json) because delta_cells needs a ground-truth label map, which only
+synthetic data carries - recog/realtest has none.
 Requires the Plan A packer fix (FDR 6.3.1): on the unfixed shelf-cursor logic
 this figure was dominated by the packer abandoning shelves, not by mask error.
 
+  mm_per_px         : per frame, from each frame's own render sidecar
+                      (camera.ortho_scale*1000 / width). NOT a reporting unit here:
+                      it sets the erosion radius, the strip's mm size and the grid
+                      stride, so it decides what the packer does.
+    measured        : 126 of 126 crops over 112 frames
+    distribution    : median 0.8211, range 0.4903-1.0739, mean 0.8107 mm/px
+    fallback        : none configured - an uncalibrated frame raises UnknownScale rather than reverting to a constant
+    note            : the generator's NOMINAL framing (0.6250 = layout.area[0]*1000 / render.res[0]) is the framing at margin=1.0, zoom=1.0 and describes NO frame in this corpus. Receipts published before 2026-08-12 packed EVERY crop at that constant. Because packing is discrete and non-monotone in scale the error does not cancel between the two sides of the difference: it moved the damage-direction count, not only the magnitude.
+
   wall_inset_mm used: 4.25
   validation crops (n=126):
-    mean   : 0.008
+    mean   : 0.056
     median : 0.000
-    range  : [-2, 2]
-    positive (cells lost)   : 2 / 126
-    negative (cells packed where forbidden) : 2 / 126
-    zero (no difference)    : 122 / 126
+    range  : [-2, 4]
+    positive (cells lost)   : 6 / 126
+    negative (cells packed where forbidden) : 5 / 126
+    zero (no difference)    : 115 / 126
 
 Heuristic vs segmenter on the real photographs (recog/realtest)
 ------------------------------------------------------------------

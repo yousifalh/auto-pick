@@ -319,6 +319,14 @@ paths, with the shipping commands.
   unchanged. No conclusion in that receipt or in FDR v3 turns on the
   difference; it strengthens the existing one.
 
+  > **Superseded 2026-08-12.** Every figure in this bullet is at the
+  > nominal 0.6250 mm/px, which describes no frame in the corpus. At the
+  > frames' own scales the same checkpoint on the same crops gives mean
+  > **+0.056**, positive **6**, negative **5 of 126**, zero **115**,
+  > range **[−2, +4]**. The prediction above did reproduce exactly, at
+  > the scale it was made at — it is the scale that was wrong, not the
+  > prediction. `2026-08-12-fix-delta-cells-scale.md`.
+
 **Both were regenerated on 2026-08-11, after this section was written,
 by the agent that owns `docs/receipts/`.** Every figure predicted above
 reproduced exactly — all six of `main_seg_run`'s (2 / 2 / 7 / 6 / 13 /

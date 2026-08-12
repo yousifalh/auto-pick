@@ -2143,11 +2143,11 @@ had.** Segmentation was moved out of Planning and into Recognition, on
 the grounds that it is perception and belongs in the perception budget.
 Planning then performs mask arithmetic only, measured at **2.0–2.2 ms
 per cartridge** against the tested 8 ms O3 budget of §10.4. Segmentation
-itself runs at **21.2 ms for 8 crops batched** (was 16.7 ms) — still
-inside the 50 ms end-to-end PPR budget, by 28.8 ms rather than 33.3.
+itself runs at **16.6 ms for 8 crops batched** — still
+inside the 50 ms end-to-end PPR budget, by 33.4 ms.
 Batching is still a requirement rather than an optimisation: the same
-eight crops, same checkpoint, same warm-up give 21.2 ms batched against
-**88.0 ms if they are segmented one at a time (4.2×, was 3.6×)**, which
+eight crops, same checkpoint, same warm-up give 16.6 ms batched against
+**57.1 ms if they are segmented one at a time (3.4×)**, which
 breaches the end-to-end budget outright either way.
 
 An earlier pass of this measurement reported 40.9 ms batched / 157.0 ms
@@ -2160,17 +2160,19 @@ showed the inflation was consistent rather than a fluke, though
 contention was never formally isolated as the sole cause. Rather than
 keep relying on that judgment call, the measurement has since been
 re-run clean (`docs/receipts/seg_eval.txt`, regenerated at commit
-`4e3c03e`): **20.2 ms batched / 76.5 ms looped**. Regenerating that
-receipt for the 2026-08-11 scale correction above re-took the timings
-in the same run — the table is wall-clock and cannot be carried
-forward across a regeneration — giving **21.2 ms / 88.0 ms**, the
-figures quoted above. That is within the run-to-run spread this
-paragraph already describes and is not attributed to the scale change,
-which touches no code on the inference path. The honest before/after is
-**16.7 → 21.2 ms** — a real increase, but nowhere near the ~2.5× the
-contended figure implied, and the margin against the 50 ms budget
-barely moved (33.3 ms → 28.8 ms, not the ~9 ms the contended figure
-gave). The architecture conclusion is unchanged either way: batching
+`4e3c03e`): **20.2 ms batched / 76.5 ms looped**. Every regeneration of
+that receipt re-takes the timings in the same run — the table is
+wall-clock and cannot be carried forward across a regeneration — so
+this pair moves a little each time: **21.2 / 88.0 ms** at the
+2026-08-11 scale correction, and **16.6 / 57.1 ms** at the 2026-08-12
+regeneration that repaired the receipt's embedded commit citation,
+which is the pair quoted above. None of those regenerations touched any
+code on the inference path, so the spread is the machine and not the
+change. Read as a range, the measured span across five clean runs is
+**16.6–21.2 ms batched / 57.1–88.0 ms looped**, against an original
+16.7 ms; the margin against the 50 ms budget has stayed between 28.8
+and 33.4 ms throughout — nowhere near the ~9 ms the contended figure
+gave. The architecture conclusion is unchanged either way: batching
 remains load-bearing — the looped figure alone breaches the 50 ms
 budget, on every pair measured.
 
@@ -2197,18 +2199,50 @@ was +0.037 mean, 2 of 54 negative. Re-measured again using
 `plan.placement_area._rasterise_mask` — production's own rasteriser,
 whatever it currently is — running the fixed packer of §6.3.1 on the
 ground-truth mask and on the predicted mask from the 40-epoch checkpoint
-gives a mean difference of **+0.008 cells** over the same **126**
-validation crops: **122 of 126 exact**, 2 losing a cell to
+gives a mean difference of **+0.056 cells** over the same **126**
+validation crops: **115 of 126 exact**, 6 losing a cell to
 conservatism, and — the figure that matters for safety —
-**2 of 126 in the negative direction** (range [−2, +2]). This is a
+**5 of 126 in the negative direction** (range [−2, +4]). This is a
 regression on the metric that
 matters most and is reported as one: the damage-direction fraction
 got *worse* after the tray fix, not better — it was 1 of 126 pre-fix
 (range [−1, +2]) and 2 of 54 on the smaller pre-scale-up split, and
 the whole-cell rasterisation below did not move it.
 
+**Corrected 2026-08-12: this paragraph read +0.008 mean, 122 of 126
+exact, 2 losing a cell and — as the safety line — 2 of 126 negative,
+range [−2, +2]. Those figures were packed at a scale that describes no
+frame in the corpus, and the correction is in the unsafe direction.**
+`recog.seg_ablation` converted at the generator's nominal 0.6250 mm/px
+long after `seg_evaluate` and `calibrate_tau` had moved to each frame's
+own ground sample distance (`380e7d5` fixed the planner; `502ef00`
+fixed those two; this caller was in neither pass). Here mm_per_px is
+**not a reporting unit**: it sets `arbitrate`'s wall-inset erosion
+radius in pixels, the strip's size in millimetres and
+`_rasterise_mask`'s grid stride, so it decides what the packer *does*,
+not how the answer is labelled. At the nominal scale the whole
+validation split's ground truth admits **4 cells** and 124 of 126 crops
+pack none at all, so "the prediction and the truth agree" was very
+largely forced by the metric having no dynamic range; at the frames'
+own scales the same ground truth admits **17**. Re-scored on the same
+crops with the same `best.pt`, the two columns differ on **8 of 126**
+crops, **7 change sign**, and **3 go from zero into the damage
+direction** — `scene_00330` (true GSD 0.8566), `scene_00324` (0.8865)
+and `scene_00086` (0.6994), each of which packed nothing at all at
+0.6250. Packing is discrete and non-monotone in scale, so the error
+does *not* cancel between the two sides of a difference the way a
+shared multiplier would. The two previously-known negative crops are
+still negative; the count is 2 + 3 = 5. Detail:
+`docs/superpowers/specs/2026-08-12-fix-delta-cells-scale.md`; receipt:
+`docs/receipts/seg_ablation.txt`, regenerated by
+`python -m recog.seg_ablation`.
+
 **The mean and the loss count moved at `b93bbd3`; the damage-direction
-count did not.** This paragraph read *+0.032 mean, 120 of 126 exact, 4
+count did not.** *Every figure in the rest of this sub-section is at the
+retired nominal 0.6250 mm/px — it is the record of how the number moved
+under the instrument, kept because it is that record, and it is
+superseded on absolute values by the correction above.* This paragraph
+read *+0.032 mean, 120 of 126 exact, 4
 losing a cell* until then, and noted that the mean was numerically
 unchanged from the pre-tray-fix figure at that rounding. `b93bbd3`
 made `_rasterise_mask` call a grid cell free only when every pixel it
@@ -2221,8 +2255,9 @@ evidence that the segmenter improved — the checkpoint is the same
 `best.pt` throughout, and mask IoU did not move. What it says is that
 some of the gap this metric used to report was the two sides
 disagreeing about half-wall cells rather than about the mask. Which
-side's count fell has not been separated, and the 2 negative crops are
-the same 2 and remain the open item. Positive means cells the
+side's count fell has not been separated, and the 2 negative crops that
+commit did not move are still 2 of the 5 the corrected scale reports;
+they remain the open item, now joined by three more. Positive means cells the
 ground truth would have placed and the prediction gave up; negative
 means a cell packed where the truth forbids it, the direction that
 puts a cell on a PCB. The earlier split's two negative crops (from the
@@ -2232,12 +2267,15 @@ but is shaped too thin and elongated to admit a full cell footprint
 anywhere, while the prediction's smaller, more compact region does —
 the morphological-vs-areal distinction `plan.arbitration.admits_a_cell`
 exists to catch (Task 2's blob-vs-rim demonstration). **This split's
-two negative crops have not been individually re-investigated**; both
+five negative crops have not been individually re-investigated**; both
 the dataset and the model changed in this retrain, so the mechanism
 above is documented for the earlier finding, not confirmed for this
-one — whether the new pair fails for the same reason, or for a reason
+one — whether they fail for the same reason, or for a reason
 specific to the corrected tray geometry (e.g. a real wall edge now
-being mistaken for a packable boundary), is open. Two caveats carry
+being mistaken for a packable boundary), is open. The three that the
+scale correction added are additionally *unexamined at any scale*: at
+0.6250 they packed zero cells on both sides, so nothing about them was
+ever visible in this metric. Two caveats carry
 over unchanged: this is measured on the segmenter's own synthetic
 validation split, because Δcells needs a ground-truth label map and
 `recog/realtest/` has none; and it is gated on the §6.3.1 packer fix,
@@ -2630,15 +2668,21 @@ improved on all three classes, and the margin against a mask head is
 unchanged by the 2026-08-11 scale correction, which moves both sides of
 that comparison together) and the latency budget's *shape* (batching is
 still load-bearing), with its *margin* narrowed only slightly
-(16.7→21.2 ms at 8 crops, against a 50 ms budget) once a
+(16.7 ms originally, 16.6–21.2 ms across five clean regenerations of
+the receipt, at 8 crops against a 50 ms budget) once a
 GPU-contention-inflated intermediate reading (40.9 ms, superseded by a
 clean re-measurement in `docs/receipts/seg_eval.txt`) is set aside.
 Δcells (§13.2.1) got *worse* on the metric that matters most —
-now 2 of 126 crops in the damage direction (was 1 of 126 pre-fix, 2 of
+now **5 of 126** crops in the damage direction (was 1 of 126 pre-fix, 2 of
 54 on the smaller pre-scale-up split), and `b93bbd3` did not move that
-count — while its mean is now **+0.008** (it read +0.032 until
+count — while its mean is now **+0.056** (it read +0.032 until
 `b93bbd3` requantised both sides of the difference; §13.2.1 explains
 why that is an instrument change and not a segmenter improvement).
+**Both figures were corrected on 2026-08-12 from 2 of 126 and +0.008**,
+which had been packed at the generator's nominal 0.6250 mm/px rather
+than at each frame's own ground sample distance; three crops moved from
+zero into the damage direction, and the correction is in the unsafe
+direction. See §13.2.1.
 τ has moved from "uninformative on this split" to **retired as
 a confidence gate**: per-SKU, IoU and optimistic error correlate
 POSITIVELY in all four SKUs (`docs/receipts/tau_independence_correlation.txt`),
