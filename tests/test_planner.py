@@ -12,7 +12,12 @@ import pytest
 from common.types import BBox, ClassLabel, Detection, Snapshot
 from plan.placement_area import PlacementAreaExtractor
 from plan.planner import Planner, PlannerConfig
-from plan.scene import CellState, WorkspaceBounds
+from plan.scene import (
+    CellState,
+    OutOfWorkspace,
+    PlacementCollision,
+    WorkspaceBounds,
+)
 
 # _make_planner() below constructs the heuristic (green-channel)
 # extractor deliberately, to exercise the planner's cycle end-to-end
@@ -37,15 +42,31 @@ def _synth_image(H=600, W=800) -> np.ndarray:
     return img
 
 
-def _make_planner():
+def _make_planner(workspace=None):
     cfg = PlannerConfig(
         battery_width_mm=18.5, battery_length_mm=65.0,
         mm_per_px=0.38,
     )
     ext = PlacementAreaExtractor(safety_margin_px=3,
                                  mm_per_cell=1.5, mm_per_px=0.38)
-    ws = WorkspaceBounds(-350, 350, -350, 350)
+    # +/-350 mm covers the whole 800x600 px fixture at 0.38 mm/px
+    # (304 x 228 mm), so the envelope is not what any of these tests is
+    # measuring unless it says so. The envelope itself is exercised by
+    # the workspace tests at the bottom of this file.
+    ws = workspace or WorkspaceBounds(-350, 350, -350, 350)
     return Planner(cfg, ext, ws)
+
+
+def _overlap_area_mm2(a, b) -> float:
+    """Intersection area of two footprints, in mm^2.
+
+    Deliberately re-derived here from the raw floats rather than calling
+    ``Reservation.overlaps_mm``: a collision test that asks the code
+    under test whether it collided proves nothing.
+    """
+    dx = min(a.x_mm + a.w_mm, b.x_mm + b.w_mm) - max(a.x_mm, b.x_mm)
+    dy = min(a.y_mm + a.h_mm, b.y_mm + b.h_mm) - max(a.y_mm, b.y_mm)
+    return max(0.0, dx) * max(0.0, dy)
 
 
 def _snapshot_with_cart_and_batteries(batt_centres):
@@ -71,14 +92,161 @@ def test_cycle_produces_poses():
         assert p.place.z_mm == planner.cfg.place_insert_height_mm
 
 
-def test_cycle_marks_cells_planned():
+def test_cycle_marks_the_whole_footprint_of_every_queued_cell():
+    """CORRECTED from `test_cycle_marks_cells_planned`, which asserted
+    `planned_count() == len(queue)` — one 1.5 mm grid cell per 18.5 x 65 mm
+    battery. That is the defect (audit E finding 1), not the contract:
+    `_pack_cartridge` re-packs from this grid every frame, so 571 of the
+    572 cells a battery covers read FREE and the next cycle could legally
+    seat a cell 1.5 mm from one already in the tray.
+
+    What it asserts instead: one reservation per queued pose, the marked
+    region is exactly the union of their cell blocks, and each block is
+    the battery's real footprint rounded outward.
+    """
     planner = _make_planner()
     snap = _snapshot_with_cart_and_batteries([(5, 5), (10, 10)])
     queue = planner.cycle(snap, _synth_image())
-    cid = next(iter(planner.env.cartridges))
-    ctg = planner.env.cartridge(cid)
-    planned = ctg.occupancy.planned_count()
-    assert planned == len(queue)
+    ctg = planner.env.cartridge(next(iter(planner.env.cartridges)))
+
+    assert len(ctg.reservations) == len(queue) >= 2
+
+    # 18.5 x 65 mm on a 1.5 mm grid is 13 x 44 cells whichever way round
+    # it is placed. The old assertion allowed 1.
+    for res in ctg.reservations.values():
+        assert res.cell_count == 13 * 44, (
+            f"{res.cell_count} cells for a {res.w_mm} x {res.h_mm} mm "
+            "footprint at 1.5 mm — the block does not cover the battery")
+
+    # Exactly the union of the blocks: no cell marked that no battery
+    # covers, and none left FREE that one does. Adjacent batteries share
+    # a boundary column (cells round outward), so this is a union, not a
+    # sum - a sum would be the wrong assertion and would drift.
+    expected = np.zeros((ctg.occupancy.rows, ctg.occupancy.cols), bool)
+    for res in ctg.reservations.values():
+        expected[res.row0:res.row1, res.col0:res.col1] = True
+    assert (ctg.occupancy.mask_of(CellState.PLANNED) == expected).all()
+    assert ctg.occupancy.planned_count() == int(expected.sum())
+    assert ctg.occupancy.planned_count() >= len(queue) * 12 * 43
+
+
+def test_a_later_cycle_never_plans_a_cell_into_one_already_placed():
+    """THE regression test for audit E finding 1.
+
+    Two cycles, one cell placed in the first, and no cell in the second
+    overlapping it. Measured in millimetres against the real footprint,
+    because the grid is the thing under suspicion: asking the occupancy
+    grid whether the cells collide would just re-ask the code that got
+    it wrong.
+
+    Before the fix the second cycle's first pose sat 1.5 mm from the
+    placed cell in x and 0.0 mm in y — about 17 mm of an 18.5 mm-wide
+    battery driven into one already in the tray, with the queue, the
+    `placed` counter and the robot's SUCCESS all reading normal.
+    """
+    planner = _make_planner()
+    img = _synth_image()
+
+    q1 = planner.cycle(_snapshot_with_cart_and_batteries([(5, 5)]), img)
+    assert len(q1) == 1
+    first = q1[0]
+    planner.confirm_placement(
+        first.cartridge_id, first.grid_row, first.grid_col, True)
+
+    q2 = planner.cycle(
+        _snapshot_with_cart_and_batteries([(5, 5), (400, 300), (700, 500)]),
+        img)
+    assert q2, "the second cycle found no room in a mostly empty cartridge"
+
+    # (a) From the poses alone, in workspace millimetres. An 18.5 mm
+    # square centred on a place target lies inside that battery's real
+    # footprint at EITHER rotation, so if two such squares intersect the
+    # two batteries intersect. This is the assertion that fails on the
+    # old planner (dx = 1.5, dy = 0.0).
+    for pose in q2:
+        dx = abs(pose.place.x_mm - first.place.x_mm)
+        dy = abs(pose.place.y_mm - first.place.y_mm)
+        assert max(dx, dy) >= 18.5, (
+            f"pose at ({pose.place.x_mm:.1f}, {pose.place.y_mm:.1f}) mm is "
+            f"{dx:.1f} mm / {dy:.1f} mm from the cell placed last cycle at "
+            f"({first.place.x_mm:.1f}, {first.place.y_mm:.1f}) — two 18650s "
+            "cannot be that close without occupying the same space")
+
+    # (b) Exactly, against the footprints the planner reserved, using an
+    # overlap area computed here from the raw millimetres.
+    ctg = planner.env.cartridge(first.cartridge_id)
+    placed = [r for r in ctg.reservations.values()
+              if r.state is CellState.PLACED]
+    assert len(placed) == 1, "the confirmed cell should be the only PLACED one"
+    assert placed[0].w_mm * placed[0].h_mm == pytest.approx(18.5 * 65.0)
+    for res in ctg.reservations.values():
+        if res is placed[0]:
+            continue
+        assert _overlap_area_mm2(res, placed[0]) == 0.0, (
+            f"{_overlap_area_mm2(res, placed[0]):.1f} mm^2 of overlap with "
+            "the battery already in the tray")
+
+
+def test_a_rotated_placement_reserves_the_rotated_block():
+    """The block follows the orientation the packer CHOSE.
+
+    `pack_best_effort` rotates freely (both orientations appear in this
+    fixture's 30-item pack), and `PackedItem.width`/`.height` already
+    report the placed orientation. Reserving the nominal 13 x 44 for a
+    90-degree placement would leave 31 cells of its long axis unmarked -
+    the same defect, one costume down.
+    """
+    from common.packing import Item, PackedItem
+    from plan.scene import Cartridge, OccupancyGrid
+
+    planner = _make_planner()
+    ctg = Cartridge(id=0, bbox=BBox(0, 0, 100, 100), confidence=0.9,
+                    occupancy=OccupancyGrid(rows=80, cols=80,
+                                            resolution_mm=1.5))
+    battery = Item(id=0, width=18.5, height=65.0)
+
+    upright = planner._reservation_for(
+        ctg, PackedItem(item=battery, x=0.0, y=0.0, rotated=False))
+    assert (upright.row1 - upright.row0,
+            upright.col1 - upright.col0) == (44, 13)
+
+    turned = planner._reservation_for(
+        ctg, PackedItem(item=battery, x=0.0, y=0.0, rotated=True))
+    assert (turned.row1 - turned.row0, turned.col1 - turned.col0) == (13, 44)
+    assert (turned.w_mm, turned.h_mm) == (65.0, 18.5)
+
+
+def test_unexecuted_reservations_are_released_when_the_queue_is_rebuilt():
+    """A queue is rebuilt from scratch every cycle, so the reservations
+    of the queue it replaces have to go with it.
+
+    `main` executes one pose per cycle. If the other N-1 stayed PLANNED
+    the cartridge would fill with batteries nobody picked within a few
+    frames, the packer would place nothing, and the run would report
+    "queue empty, job done" over a nearly empty tray. The count is
+    exposed rather than absorbed.
+    """
+    planner = _make_planner()
+    img = _synth_image()
+
+    q1 = planner.cycle(_snapshot_with_cart_and_batteries([(5, 5), (10, 10),
+                                                          (15, 15)]), img)
+    assert len(q1) == 3
+    assert planner.released_reservation_count == 0
+    planner.confirm_placement(q1[0].cartridge_id, q1[0].grid_row,
+                              q1[0].grid_col, True)
+
+    ctg = planner.env.cartridge(q1[0].cartridge_id)
+    placed_cells = ctg.occupancy.placed_count()
+    assert placed_cells == 13 * 44
+
+    planner.cycle(_snapshot_with_cart_and_batteries([(5, 5)]), img)
+    assert planner.released_reservation_count == 2, (
+        "the two queued-but-never-executed reservations must be released")
+    # The executed one is physical and survives untouched.
+    assert ctg.occupancy.placed_count() == placed_cells
+    assert [r.state for r in ctg.reservations.values()].count(
+        CellState.PLACED) == 1
 
 
 def test_queue_never_exceeds_batteries():
@@ -90,6 +258,12 @@ def test_queue_never_exceeds_batteries():
 
 
 def test_confirm_placement_success_marks_placed():
+    """The WHOLE reserved block flips, not the anchor cell.
+
+    Strengthened alongside the footprint fix: the anchor-cell-only
+    assertion this replaced passed just as happily when the other 571
+    cells of a placed battery were left reading PLANNED for ever.
+    """
     planner = _make_planner()
     snap = _snapshot_with_cart_and_batteries([(5, 5)])
     queue = planner.cycle(snap, _synth_image())
@@ -100,18 +274,28 @@ def test_confirm_placement_success_marks_placed():
     ctg = planner.env.cartridge(pose.cartridge_id)
     assert ctg.occupancy.get(pose.grid_row,
                              pose.grid_col) == CellState.PLACED
+    res = ctg.reservations[(pose.grid_row, pose.grid_col)]
+    block = ctg.occupancy.grid[res.row0:res.row1, res.col0:res.col1]
+    assert (block == CellState.PLACED.value).all()
+    assert ctg.occupancy.planned_count() == 0
 
 
 def test_confirm_placement_failure_reverts_to_free():
+    """A failed place frees the whole footprint, so the next cycle can
+    retry it - not one cell of it."""
     planner = _make_planner()
     snap = _snapshot_with_cart_and_batteries([(5, 5)])
     queue = planner.cycle(snap, _synth_image())
     pose = queue[0]
+    ctg = planner.env.cartridge(pose.cartridge_id)
+    res = ctg.reservations[(pose.grid_row, pose.grid_col)]
     planner.confirm_placement(pose.cartridge_id,
                               pose.grid_row, pose.grid_col, False)
-    ctg = planner.env.cartridge(pose.cartridge_id)
     assert ctg.occupancy.get(pose.grid_row,
                              pose.grid_col) == CellState.FREE
+    block = ctg.occupancy.grid[res.row0:res.row1, res.col0:res.col1]
+    assert (block == CellState.FREE.value).all()
+    assert (pose.grid_row, pose.grid_col) not in ctg.reservations
 
 
 def test_row_major_ordering():
@@ -305,7 +489,15 @@ def _scaled_planner(config_fallback):
     cfg = PlannerConfig(battery_width_mm=18.5, battery_length_mm=65.0,
                         mm_per_px=config_fallback)
     ext = PlacementAreaExtractor(safety_margin_px=3, mm_per_cell=1.5)
-    return Planner(cfg, ext, WorkspaceBounds(-350, 350, -350, 350))
+    # +/-500 mm, not the +/-350 this used to carry. The workspace
+    # envelope is enforced now (it was inert before), and these tests
+    # deliberately plan the same 800x600 px fixture at up to 0.50 mm/px,
+    # which puts the far edge of the cartridge at ~370 mm. That is a
+    # property of the fixture's framing, not of the scale handling these
+    # tests measure, so the envelope is widened to stay out of the way -
+    # the envelope's own behaviour is pinned by the workspace tests
+    # below.
+    return Planner(cfg, ext, WorkspaceBounds(-500, 500, -500, 500))
 
 
 def test_planner_measures_each_frame_at_that_frames_own_scale():
@@ -425,6 +617,109 @@ def test_an_unchanged_scale_does_not_drop_anything():
         snap.mm_per_px = 0.38
         planner.cycle(snap, img)
     assert planner.rescaled_area_drop_count == 0
+
+
+# --------------------------------------------- the workspace envelope ----
+#
+# `WorkspaceBounds` was parsed from `planning.yaml`, stored on the
+# EnvironmentModel and compared against nothing (audit E finding 5): a
+# declared robot-safety envelope that enforced nothing, which is worse
+# than none because it reads like an interlock. The proof it was inert
+# was that a deliberately tiny bound changed no test's outcome.
+#
+# It RAISES rather than clamps. A place target is where a cartridge slot
+# physically is and a pick point is where a battery physically lies;
+# moving either onto the envelope's edge does not make it reachable, it
+# makes it wrong - and a slightly-wrong motion that reports SUCCESS is
+# exactly the silent class this audit is closing.
+
+
+def test_a_place_target_outside_the_workspace_raises():
+    planner = _make_planner(workspace=WorkspaceBounds(-5, 5, -5, 5))
+    snap = _snapshot_with_cart_and_batteries([(5, 5)])
+    with pytest.raises(OutOfWorkspace, match="place target"):
+        planner.cycle(snap, _synth_image())
+
+
+def test_a_pick_point_outside_the_workspace_raises():
+    """A battery the camera can see but the arm cannot reach is not a
+    pose to attempt at the nearest reachable point."""
+    planner = _make_planner()
+    # 2000 px * 0.38 mm/px = 760 mm, well past the +/-350 envelope, while
+    # the place target stays inside it.
+    snap = _snapshot_with_cart_and_batteries([(2000, 2000)])
+    with pytest.raises(OutOfWorkspace, match="pick point"):
+        planner.cycle(snap, _synth_image())
+
+
+def test_poses_inside_the_envelope_are_emitted_unchanged():
+    """The guard must not be a clamp wearing a raise's clothes: an
+    in-envelope pose comes out at the millimetres that were computed."""
+    tight = _make_planner(workspace=WorkspaceBounds(-350, 350, -350, 350))
+    loose = _make_planner(workspace=WorkspaceBounds(-9999, 9999,
+                                                    -9999, 9999))
+    img = _synth_image()
+    a = tight.cycle(_snapshot_with_cart_and_batteries([(5, 5)]), img)
+    b = loose.cycle(_snapshot_with_cart_and_batteries([(5, 5)]), img)
+    assert a and len(a) == len(b)
+    assert a[0].place.x_mm == b[0].place.x_mm
+    assert a[0].place.y_mm == b[0].place.y_mm
+    assert a[0].pick.x_mm == b[0].pick.x_mm
+
+
+def test_an_empty_workspace_envelope_is_rejected_at_construction():
+    """An inverted bound would reject every pose, which reads as a broken
+    planner rather than as the typo it is."""
+    with pytest.raises(ValueError, match="empty workspace envelope"):
+        WorkspaceBounds(350, -350, -350, 350)
+    with pytest.raises(ValueError, match="empty workspace envelope"):
+        WorkspaceBounds(-350, 350, 0, 0)
+
+
+def test_a_reservation_over_a_forbidden_cell_raises():
+    """The cell-resolution half of the interlock. `_overlaps_forbidden`
+    means a placement that reaches `reserve` cannot cover a FORBIDDEN
+    cell; if one ever does, a battery is going onto the PCB and that has
+    to be an exception rather than a marked grid."""
+    from common.packing import Item, PackedItem
+    from plan.scene import Cartridge, OccupancyGrid
+
+    planner = _make_planner()
+    ctg = Cartridge(id=0, bbox=BBox(0, 0, 100, 100), confidence=0.9,
+                    occupancy=OccupancyGrid(rows=80, cols=80,
+                                            resolution_mm=1.5))
+    ctg.occupancy.set(20, 5, CellState.FORBIDDEN)
+    res = planner._reservation_for(
+        ctg, PackedItem(item=Item(id=0, width=18.5, height=65.0),
+                        x=0.0, y=0.0, rotated=False))
+    with pytest.raises(PlacementCollision, match="FORBIDDEN"):
+        ctg.reserve(res)
+
+
+def test_reserving_over_an_existing_footprint_raises():
+    """The millimetre-resolution half. Two batteries in the same space
+    is a packer bug; continuing past it puts an 18650 on an 18650."""
+    from common.packing import Item, PackedItem
+    from plan.scene import Cartridge, OccupancyGrid
+
+    planner = _make_planner()
+    ctg = Cartridge(id=0, bbox=BBox(0, 0, 100, 100), confidence=0.9,
+                    occupancy=OccupancyGrid(rows=80, cols=80,
+                                            resolution_mm=1.5))
+    battery = Item(id=0, width=18.5, height=65.0)
+    ctg.reserve(planner._reservation_for(
+        ctg, PackedItem(item=battery, x=0.0, y=0.0)))
+
+    # 17 mm in: exactly what the one-cell grid used to permit.
+    with pytest.raises(PlacementCollision, match="PLANNED"):
+        ctg.reserve(planner._reservation_for(
+            ctg, PackedItem(item=battery, x=1.5, y=0.0)))
+
+    # Abutting is not overlapping: sharing a boundary cell is normal
+    # between neighbours in one pack and must stay legal.
+    ctg.reserve(planner._reservation_for(
+        ctg, PackedItem(item=battery, x=18.5, y=0.0)))
+    assert len(ctg.reservations) == 2
 
 
 def test_planner_config_does_not_invent_a_fallback_scale():

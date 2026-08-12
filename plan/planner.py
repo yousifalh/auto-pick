@@ -13,6 +13,21 @@ Cycle-time rules (PPR §5.3):
 * Cells marked ``FORBIDDEN``, ``PLACED`` or ``PLANNED`` are skipped.
 * The queue never contains more picks than available batteries.
 
+Every queued battery reserves the WHOLE cell block its footprint
+covers (:class:`plan.scene.Reservation`), in the orientation it was
+placed at. Marking only the corner cell — which is what this did — let
+a later cycle seat a cell 1.5 mm from one already in the tray, ~17 mm
+of physical overlap on an 18.5 mm battery, with the queue, the
+counters and the robot's status all reading normal (audit E, finding
+1). Reservations from a queue that was never executed are released at
+the top of the next cycle, because the queue is rebuilt from scratch
+every frame.
+
+Every pose is checked against the robot's declared
+:class:`plan.scene.WorkspaceBounds` before it is emitted — pick point
+and place target both, because both are commanded to the arm. That
+envelope was parsed and compared against nothing (audit E, finding 5).
+
 After the executor reports back, :meth:`Planner.confirm_placement`
 flips each PLANNED cell to PLACED on success, or reverts it to FREE
 on failure so a future cycle can retry.
@@ -39,6 +54,7 @@ from plan.scene import (
     Cartridge,
     CellState,
     EnvironmentModel,
+    Reservation,
     WorkspaceBounds,
 )
 
@@ -153,6 +169,14 @@ class Planner:
         # non-zero count on real hardware means the calibration is
         # moving, which is worth seeing rather than absorbing.
         self.rescaled_area_drop_count = 0
+        # Reservations released because the queue that owned them was
+        # rebuilt before they were executed. Expected to be non-zero on
+        # a normal run - `main` executes one pose per cycle and re-plans
+        # - so this is a rate to watch, not an alarm. It exists because
+        # the alternative to releasing them is a cartridge that fills
+        # with batteries nobody picked, and the alternative to counting
+        # them is doing that silently.
+        self.released_reservation_count = 0
 
     # ---- main cycle -----------------------------------------------------
 
@@ -181,6 +205,7 @@ class Planner:
         scale = self.frame_scale(snapshot)
         self.env.update_from_snapshot(snapshot)
         self._drop_areas_measured_at_another_scale(scale)
+        self._release_stale_reservations()
 
         if image_rgb is not None:
             self._ensure_placement_areas(image_rgb, snapshot, scale)
@@ -229,6 +254,29 @@ class Planner:
             ctg.occupancy = None
             ctg.pcb_mask = None
             ctg.mm_per_px = None
+            # The reservations went with the grid they indexed: their
+            # rows, columns AND millimetres were all measured against a
+            # rectangle that no longer applies. Keeping them would let
+            # the collision interlock compare footprints from two
+            # different scales, which is worse than not comparing.
+            ctg.reservations.clear()
+
+    def _release_stale_reservations(self) -> None:
+        """Release PLANNED reservations left over from the last queue.
+
+        ``cycle`` rebuilds the queue from scratch every frame, so a
+        reservation still PLANNED when the next cycle starts belongs to
+        a queue that is being discarded. ``main`` executes exactly one
+        pose per cycle and re-plans, so on a queue of N this leaks N-1
+        reservations per frame if nothing releases them - and with the
+        whole footprint now marked (not one cell) that fills a cartridge
+        with batteries nobody picked within a few frames. The packer
+        then places nothing, the run reports "queue empty, job done",
+        and the tray is nearly empty. PLACED reservations are physical
+        and are not touched.
+        """
+        for ctg in self.env.cartridges.values():
+            self.released_reservation_count += ctg.release_planned()
 
     # ---- placement-area extraction --------------------------------------
 
@@ -390,6 +438,10 @@ class Planner:
         cx_mm = placement.x + placement.width / 2
         cy_mm = placement.y + placement.height / 2
         target_x, target_y = self._cell_to_workspace(ctg, cx_mm, cy_mm)
+        # Checked BEFORE a battery is consumed, so an out-of-envelope
+        # target does not also silently spend one.
+        self.env.workspace.require(
+            target_x, target_y, f"place target for cartridge {ctg.id}")
 
         # Choose the nearest battery and consume it.
         bat = self._nearest_battery(available, ctg, placement)
@@ -398,8 +450,12 @@ class Planner:
 
         pick_x, pick_y = self._image_to_workspace(
             bat.bbox.cx, bat.bbox.cy, frame_mm_per_px)
-        row, col = self._xy_mm_to_cell(ctg, placement.x, placement.y)
-        ctg.mark_cell(row, col, CellState.PLANNED)
+        self.env.workspace.require(
+            pick_x, pick_y, f"pick point for battery {bat.id}")
+
+        res = self._reservation_for(ctg, placement)
+        row, col = res.row, res.col
+        ctg.reserve(res)
 
         return PickPlacePose(
             pick=WorkspacePoint(
@@ -472,6 +528,54 @@ class Planner:
         col = max(0, min(ctg.occupancy.cols - 1, int(x_mm / res)))
         return row, col
 
+    def _reservation_for(self, ctg: Cartridge, placement) -> Reservation:
+        """The cell block one placement's real footprint covers.
+
+        ``placement.width`` / ``.height`` are the dimensions of the
+        orientation the packer actually CHOSE — :class:`PackedItem`
+        swaps the item's nominal width and height when ``rotated`` — so
+        an 18650 placed at 90° reserves 13 rows x 44 columns, where
+        upright it reserves 44 rows x 13 columns.
+        Reading ``self.cfg.battery_width_mm`` here instead would mark
+        the nominal footprint and leave the long axis of every rotated
+        placement unmarked, which is the same defect in a rarer costume
+        (``pack_best_effort`` rotates on real cartridges: 36 placements
+        on the test fixture, both orientations present).
+
+        The near edge floors and the far edge ceils, matching
+        :func:`common.packing._overlaps_forbidden` exactly. Any other
+        rounding lets the mask be tested at one size and marked at
+        another.
+        """
+        occ = ctg.occupancy
+        res_mm = occ.resolution_mm
+        row0, col0 = self._xy_mm_to_cell(ctg, placement.x, placement.y)
+        row1 = int(np.ceil((placement.y + placement.height) / res_mm))
+        col1 = int(np.ceil((placement.x + placement.width) / res_mm))
+
+        # The strip is `pr.height * scale` mm while the grid is
+        # `int(height_px / px_per_cell)` cells, so the far edge can sit
+        # up to one cell past the last row: that is quantisation, and it
+        # clips. More than one cell means the strip and the grid are
+        # describing different rectangles, and every reservation in this
+        # cartridge is then off by an unknown amount.
+        if row1 > occ.rows + 1 or col1 > occ.cols + 1:
+            raise RuntimeError(
+                f"cartridge {ctg.id}: placement at ({placement.x:.1f}, "
+                f"{placement.y:.1f}) + ({placement.width:.1f} x "
+                f"{placement.height:.1f}) mm needs cells up to "
+                f"({row1}, {col1}) in a {occ.rows} x {occ.cols} grid at "
+                f"{res_mm} mm — the packing strip and the occupancy grid "
+                "disagree about the placeable rectangle")
+        row1 = max(row0 + 1, min(occ.rows, row1))
+        col1 = max(col0 + 1, min(occ.cols, col1))
+
+        return Reservation(
+            row=row0, col=col0, row0=row0, row1=row1, col0=col0, col1=col1,
+            x_mm=float(placement.x), y_mm=float(placement.y),
+            w_mm=float(placement.width), h_mm=float(placement.height),
+        )
+
     # ---- execution feedback --------------------------------------------
 
     def confirm_placement(
@@ -481,16 +585,20 @@ class Planner:
         col: int,
         success: bool,
     ) -> None:
-        """Update the occupancy grid in response to an execution result."""
+        """Update the occupancy grid in response to an execution result.
+
+        ``(row, col)`` is the anchor the pose carried, which
+        :meth:`plan.scene.Cartridge.confirm` resolves back to the whole
+        block that battery reserved. Flipping the anchor cell alone
+        would leave the other ~571 cells of a placed battery reading
+        PLANNED forever on success, and would free none of them on
+        failure.
+        """
         if cartridge_id not in self.env.cartridges:
+            # The twin no longer tracks this cartridge (it was absent
+            # from the last snapshot), so there is no grid to update.
             return
-        ctg = self.env.cartridge(cartridge_id)
-        if success:
-            ctg.mark_cell(row, col, CellState.PLACED)
-            return
-        # Revert PLANNED → FREE so the next cycle can retry this cell.
-        if ctg.occupancy.get(row, col) == CellState.PLANNED:
-            ctg.mark_cell(row, col, CellState.FREE)
+        self.env.cartridge(cartridge_id).confirm(row, col, success)
 
 
 __all__ = ["Planner", "PlannerConfig"]
