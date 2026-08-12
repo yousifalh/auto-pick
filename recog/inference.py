@@ -81,7 +81,16 @@ class FasterRCNNDetector(Detector):
         from recog.model import build_fasterrcnn
 
         self.model = build_fasterrcnn(cfg)
-        state = torch.load(checkpoint_path, map_location="cpu")
+        # weights_only=True is not optional, for the same reason it is not
+        # optional in bay_segmenter.py: the default unpickles arbitrary
+        # Python objects, so loading a checkpoint is arbitrary code
+        # execution by whoever produced the file. No .pt is committed here,
+        # so every user following the README's --checkpoint commands has
+        # obtained this file from somewhere else - that is the normal path,
+        # not an edge case. A detector checkpoint holds tensors and nothing
+        # else, so the restriction costs nothing.
+        state = torch.load(checkpoint_path, map_location="cpu",
+                           weights_only=True)
         self.model.load_state_dict(
             state["model"] if "model" in state else state,
         )

@@ -4,10 +4,24 @@ version = "0.2.0"
 description = "Autonomous recognition, pick and place for Li-ion batteries"
 authors = [{name = "Yousif Al-Haidary"}]
 requires-python = ">=3.10"
+# These are floors, not pins, and a fresh install resolves well above them.
+# The two below are floors that a constrained or reproducible resolve could
+# legitimately land on, so they say what they mean:
+#   * pillow>=10.3 - 10.0 admits CVE-2023-4863 (libwebp heap overflow, fixed
+#     in 10.0.1) and CVE-2023-50447 (code execution via PIL.ImageMath.eval,
+#     fixed in 10.2.0). Pillow decodes attacker-supplied images all through
+#     recog/, so the floor has to sit above both.
+#   * opencv-python-headless - no source file calls cv2.imshow, waitKey,
+#     namedWindow, destroyAllWindows, createTrackbar or setMouseCallback
+#     (verified by grep over every tracked .py; zero hits). The GUI build was
+#     therefore dragging a Qt/GTK/X11 stack that is never entered, which is
+#     install weight, CI weight and the `ImportError: libGL.so.1` class of
+#     container failure for nothing. The one videoio call, main.py's
+#     cv2.VideoCapture, is present in the headless build.
 dependencies = [
     "numpy>=1.24",
-    "opencv-python>=4.8",
-    "pillow>=10.0",
+    "opencv-python-headless>=4.8",
+    "pillow>=10.3",
     "pyyaml>=6.0",
     "albumentations>=1.4",
 ]
