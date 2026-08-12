@@ -2,7 +2,7 @@ name: CI
 
 # What this proves: a fresh clone installs with the README's own command and
 # the torch-free test suite and demo loop pass on a machine with no GPU, no
-# torch and no Blender. `pip install -e .` was broken outright until 5ad9c85
+# torch and no Blender. `pip install -e .` was broken outright until 3fedcb6
 # (setuptools' flat-layout discovery refused to guess between the top-level
 # packages), which is exactly the class of breakage a reader hits first.
 
