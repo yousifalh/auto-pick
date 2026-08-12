@@ -1976,7 +1976,7 @@ def test_open_case_labels_the_tray_as_cartridge():
 
 def test_cell_formats_18650_matches_the_authoritative_constant():
     """CELL_W_MM/CELL_H_MM is the one authoritative 18650 figure (commit
-    ac54743) - CELL_FORMATS must derive from it, not restate a third copy."""
+    f4596e8) - CELL_FORMATS must derive from it, not restate a third copy."""
     from recog.synth3d.config import CELL_FORMATS, CELL_H_MM, CELL_W_MM
     assert CELL_FORMATS["18650"] == pytest.approx(
         (CELL_W_MM / 1000.0, CELL_H_MM / 1000.0))

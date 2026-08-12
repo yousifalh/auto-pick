@@ -3557,12 +3557,27 @@ because overwriting a placeholder with a log taken eleven weeks after
 submission would misrepresent *when* it was taken; a reader wanting the
 progression should run the command.
 
-**2. `docs/receipts/pytest-cov.txt` is stale.** It records **102 tests**
-and an Ubuntu / Python 3.10 coverage run. The suite stands at **814**
-tests on Windows / Python 3.14 as this correction is written. The 86 %
-branch-coverage figure in the O6 row of Appendix E is that old run's, and
-has not been re-measured; the receipt is class-A reproducible (one
-`pytest -q --cov`) and simply has not been refreshed.
+**2. `docs/receipts/pytest-cov.txt` was stale, and has been regenerated.**
+It recorded **102 tests** from an Ubuntu / Python 3.10 run. The suite now
+stands at **1032** tests on Windows / Python 3.14, and the receipt was
+re-measured on 2026-08-12 against a clean checkout of `82cff22`. It now
+reports *two* figures, because one number can no longer describe this
+project honestly. Over the 18 modules the original receipt listed — the
+scope O6 was written against — branch coverage is **89 %**, so the 86 %
+quoted in §1, §9.3 and §10.5 still holds and was, if anything, slightly
+conservative. Over every module `[tool.coverage.run] source` resolves to
+*today* it is **65 %**, which is below the 70 % O6 threshold. Nothing
+regressed: no module lost coverage, but the denominator grew from 1 142 to
+6 897 statements as Blender-only renderers, synthetic-data generators and
+CLI entry points landed, and several of those cannot be imported outside
+Blender, let alone unit-tested. The O6 row of Appendix E carries both
+figures with their scopes named. The receipt's nine trailing lines — a
+hand-appended end-to-end smoke-test summary that `pytest --cov` never
+emitted — are gone; the file is now tool output and its two commands,
+nothing else. The 86 % figures in §1, §9.3 and §10.5 remain the 2026-04-20
+run's and are left as written: they are a self-consistent snapshot of that
+run (102 tests, 1 142 statements), and this appendix is where its currency
+is recorded.
 
 **3. Sixteen of the thirty-four committed receipts have no surviving
 tool.** `ffdh_ablation.{csv,txt}`, `frcnn_map{,_default}.txt`,
@@ -3727,7 +3742,7 @@ I = Inspection.
 | O3.c | Forbidden-mask FFDH benchmarked    | T+A · `forbidden_bench.csv`, `forbidden_bench.py`, §6.3.1          | Pass — beats baseline ≤ 10 % coverage; the receipt's third block benchmarks `pack_best_effort`, the arm set the planner now runs (§6.3.1 scope note) |
 | O4   | Recover from single pick failure   | (lab access not obtained — §10.3, §13.2)                           | **Not tested**       |
 | O5   | Deterministic queue, row-major     | T · `tests/test_planner.py`                                        | Pass                 |
-| O6   | Branch coverage ≥ 70 %             | I · `pytest-cov.txt`                                               | Pass — 86 %          |
+| O6   | Branch coverage ≥ 70 %             | I · `pytest-cov.txt`                                               | Pass — 89 % on the scope O6 was written against: the 18 production modules the original receipt measured (re-measured 2026-08-12 at `82cff22`, 1032 tests). Over everything `[tool.coverage.run] source` resolves to *today* — 49 modules — the figure is 65 %, below the 70 % threshold. The two numbers differ by scope, not by regression: no module lost coverage, but the denominator grew from 1 142 to 6 897 statements as Blender-only renderers, synthetic-data generators and CLI entry points landed, several of which cannot be unit-tested outside Blender and sit at 0 %. Both figures and their exact commands are in the receipt. |
 
 *Standards compliance.* The execution layer was implemented against
 IEC 60204-1, the EthernetKRL 3.1 specification, and the CRC-16/MODBUS

@@ -1,45 +1,147 @@
-........................................................................ [ 70%]
-..............................                                           [100%]
-=============================== warnings summary ===============================
-tests/test_augmentation.py::test_train_transform_returns_expected_keys
-tests/test_augmentation.py::test_train_transform_image_dtype_preserved
-  /sessions/zen-vigilant-allen/.local/lib/python3.10/site-packages/albumentations/core/validation.py:114: UserWarning: ShiftScaleRotate is a special case of Affine transform. Please use Affine transform instead.
-    original_init(self, **validated_kwargs)
+pytest --cov, run 2026-08-12 on a clean checkout of commit 82cff22
+================================================================
+
+Scope A - every module [tool.coverage.run] source resolves to today:
+
+$ python -m pytest --cov --cov-report=term --verbosity=0
+============================= test session starts =============================
+platform win32 -- Python 3.14.3, pytest-9.0.2, pluggy-1.6.0
+rootdir: D:\dev\auto-pick-clean-82cff22
+configfile: pyproject.toml
+testpaths: tests
+plugins: anyio-4.13.0, dash-4.1.0, hypothesis-6.152.3, asyncio-1.3.0, cov-7.1.0, xdist-3.8.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 1032 items
+
+tests\test_annotate_masks.py ....................                        [  1%]
+tests\test_arbitration.py ......................                         [  4%]
+tests\test_augmentation.py .........................................     [  8%]
+tests\test_bay.py ...................................................... [ 13%]
+......................................................                   [ 18%]
+tests\test_bay_segmenter.py ..............................               [ 21%]
+tests\test_bin_packing.py .............                                  [ 22%]
+tests\test_calibration.py ........................                       [ 25%]
+tests\test_check_annotations.py ..........................               [ 27%]
+tests\test_common.py ....................                                [ 29%]
+tests\test_dataset.py ..................                                 [ 31%]
+tests\test_evaluate.py ...........                                       [ 32%]
+tests\test_execution.py .............................                    [ 35%]
+tests\test_inference.py .......                                          [ 35%]
+tests\test_labelme_to_seg.py .........................                   [ 38%]
+tests\test_main_integration.py ................                          [ 39%]
+tests\test_mock_kuka_server.py ................                          [ 41%]
+tests\test_packing_ceiling.py ..............................             [ 44%]
+tests\test_packing_forbidden.py ...................                      [ 46%]
+tests\test_packing_move.py .....                                         [ 46%]
+tests\test_placement_area.py ..........................                  [ 49%]
+tests\test_planner.py ..................................                 [ 52%]
+tests\test_protocol.py .............                                     [ 53%]
+tests\test_scene.py ..............                                       [ 54%]
+tests\test_seeding.py .................................................. [ 59%]
+..........                                                               [ 60%]
+tests\test_seg_dataset.py ...............                                [ 62%]
+tests\test_synth3d.py .................................................. [ 67%]
+........................................................................ [ 74%]
+........................................................................ [ 81%]
+.......................                                                  [ 83%]
+tests\test_synth3d_materials.py ...........                              [ 84%]
+tests\test_synth3d_world.py ............................................ [ 88%]
+........................................................................ [ 95%]
+.................................                                        [ 98%]
+tests\test_training.py .............                                     [100%]
+
+============================== warnings summary ===============================
+tests/test_main_integration.py::test_main_run_short_cycle
+tests/test_main_integration.py::test_run_surfaces_released_reservations
+tests/test_main_integration.py::test_no_coordinate_outside_the_envelope_reaches_the_wire
+tests/test_main_integration.py::test_run_reports_what_the_arm_declined_to_serve
+tests/test_main_integration.py::test_a_run_that_can_reach_nothing_is_a_failed_run
+tests/test_main_integration.py::test_build_planner_selects_the_extractor_the_config_asks_for
+tests/test_main_integration.py::test_torch_free_demo_does_not_build_a_segmenter
+  D:\dev\auto-pick-clean-82cff22\main.py:212: RuntimeWarning: HeuristicPlacementAreaExtractor assumes a LIGHT tray with a DARK interior module (PPR 5.3.2). On the black cartridges in recog/realtest/ it returns zero placeable area for 7 of 20 cartridges, because Otsu on the green channel selects whichever foreign matter is brightest and the gray<80 threshold classifies the black bay as PCB. Use SegmentationPlacementAreaExtractor for real imagery; this path exists for the torch-free demo on synth_dataset.py's green rectangles.
+    extractor = HeuristicPlacementAreaExtractor(
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-================================ tests coverage ================================
-_______________ coverage: platform linux, python 3.10.12-final-0 _______________
+=============================== tests coverage ================================
+_______________ coverage: platform win32, python 3.14.3-final-0 _______________
 
+Name                                 Stmts   Miss Branch BrPart  Cover
+----------------------------------------------------------------------
+common\__init__.py                       2      0      0      0   100%
+common\config.py                        29      3     10      2    82%
+common\logging.py                       16      0      2      0   100%
+common\packing.py                      232      7    112      7    96%
+common\types.py                        106      9      6      1    89%
+execution\__init__.py                    0      0      0      0   100%
+execution\execution.py                 177      6     38      4    95%
+execution\mock_kuka_server.py          197     23     40      4    87%
+execution\protocol.py                   73      0     16      0   100%
+plan\__init__.py                         0      0      0      0   100%
+plan\arbitration.py                     58      2     20      2    95%
+plan\bin_packing.py                     18     14      4      0    18%
+plan\placement_area.py                 180      9     28      4    94%
+plan\planner.py                        183      5     40      3    96%
+plan\scene.py                          188      7     50      8    94%
+recog\__init__.py                        0      0      0      0   100%
+recog\augmentation.py                   72     16     22      8    68%
+recog\bay_segmenter.py                  56      2     14      2    94%
+recog\calibrate_tau.py                 192    131     34      2    32%
+recog\calibration.py                    47      8     20      4    79%
+recog\check_annotations.py             234     11     98      9    93%
+recog\convert_cad.py                   286    131    122     10    52%
+recog\dataset.py                       159     16     42      7    88%
+recog\eval_real.py                     271    131     86      3    48%
+recog\evaluate.py                       86      1     28      1    98%
+recog\generate3d.py                    248    248     74      0     0%
+recog\inference.py                     118     32     34      4    71%
+recog\labelme_to_seg.py                149     25     56      4    82%
+recog\seeding.py                       120      8     50      9    88%
+recog\seg_ablation.py                  276     82     40     10    66%
+recog\seg_dataset.py                   120     11     36      6    89%
+recog\seg_evaluate.py                  376    191    106      9    49%
+recog\seg_training.py                  224    177     60      1    18%
+recog\sync_config.py                    22     22      2      0     0%
+recog\synth3d\__init__.py                1      0      0      0   100%
+recog\synth3d\_gate_orientation.py     105    105     22      0     0%
+recog\synth3d\annotate.py              224     11     90     10    93%
+recog\synth3d\assets.py                254    181     92      3    24%
+recog\synth3d\bay.py                   228      0     58      1    99%
+recog\synth3d\catalog.py               122     64     34      1    49%
+recog\synth3d\config.py                149      4     14      2    96%
+recog\synth3d\layout.py                116      9     26      3    90%
+recog\synth3d\lightrig.py               19      0      4      0   100%
+recog\synth3d\materials.py              87     29     18      2    67%
+recog\synth3d\render.py                210    210     50      0     0%
+recog\synth3d\scene.py                 199    199     80      0     0%
+recog\synth3d\world.py                 546     20     86      2    97%
+recog\verify3d.py                      122    122     40      0     0%
+----------------------------------------------------------------------
+TOTAL                                 6897   2282   1904    148    65%
+====================== 1032 passed, 7 warnings in 34.94s ======================
+
+
+Scope B - only the 18 modules the 2026-04-20 receipt listed:
+
+$ python -m coverage report --include=common/__init__.py,common/config.py,common/logging.py,common/types.py,execution/__init__.py,execution/execution.py,execution/mock_kuka_server.py,execution/protocol.py,plan/__init__.py,plan/bin_packing.py,plan/placement_area.py,plan/planner.py,plan/scene.py,recog/__init__.py,recog/augmentation.py,recog/dataset.py,recog/evaluate.py,recog/inference.py
 Name                            Stmts   Miss Branch BrPart  Cover
 -----------------------------------------------------------------
-common/__init__.py                  2      0      0      0   100%
-common/config.py                   29      3     10      2    82%
-common/logging.py                  16      0      2      0   100%
-common/types.py                   102      9      6      1    89%
-execution/__init__.py               0      0      0      0   100%
-execution/execution.py             98     17     14      6    79%
-execution/mock_kuka_server.py     133     27     26      3    79%
-execution/protocol.py              64      0     16      0   100%
-plan/__init__.py                    0      0      0      0   100%
-plan/bin_packing.py                90     15     30      1    83%
-plan/placement_area.py             96      6     14      2    93%
-plan/planner.py                    98      5     20      5    92%
-plan/scene.py                     111      1     20      1    98%
-recog/__init__.py                   0      0      0      0   100%
-recog/augmentation.py              34      2      8      4    86%
-recog/dataset.py                   94     23     24      4    70%
-recog/evaluate.py                  86      1     28      1    98%
-recog/inference.py                 89     26     20      4    67%
+common\__init__.py                  2      0      0      0   100%
+common\config.py                   29      3     10      2    82%
+common\logging.py                  16      0      2      0   100%
+common\types.py                   106      9      6      1    89%
+execution\__init__.py               0      0      0      0   100%
+execution\execution.py            177      6     38      4    95%
+execution\mock_kuka_server.py     197     23     40      4    87%
+execution\protocol.py              73      0     16      0   100%
+plan\__init__.py                    0      0      0      0   100%
+plan\bin_packing.py                18     14      4      0    18%
+plan\placement_area.py            180      9     28      4    94%
+plan\planner.py                   183      5     40      3    96%
+plan\scene.py                     188      7     50      8    94%
+recog\__init__.py                   0      0      0      0   100%
+recog\augmentation.py              72     16     22      8    68%
+recog\dataset.py                  159     16     42      7    88%
+recog\evaluate.py                  86      1     28      1    98%
+recog\inference.py                118     32     34      4    71%
 -----------------------------------------------------------------
-TOTAL                            1142    135    238     34    86%
-102 passed, 2 warnings in 4.78s
-
-===============================================================================
-Post-rewrite end-to-end smoke test (2026-04-20):
-  python main.py --config configs/demo.yaml
-Summary: {'cycles': 10, 'placed': 10, 'pick_failed': 0, 'place_failed': 0,
-          'empty_queue': 0}
-Perception: 3.0-6.2 ms/frame (HeuristicDetector on synthetic images).
-Planning:   1.8-7.8 ms/frame (FFDH + placement-area extraction).
-Execution:  10/10 successful pick-and-place cycles against the mock KUKA.
-===============================================================================
+TOTAL                            1604    141    360     46    89%

@@ -590,7 +590,7 @@ def train(cfg: Dict[str, Any], resume: bool = False,
             log.info("New best selected mean IoU=%.4f saved", best_iou)
 
         # Always keep the latest epoch too, UNCONDITIONALLY - commit
-        # dedf700 fixed exactly this bug (best-only saving silently
+        # 0ac6c5b fixed exactly this bug (best-only saving silently
         # discarding every later epoch) in the detector's loop; the same
         # bug is just as easy to reintroduce here.
         _atomic_save(
