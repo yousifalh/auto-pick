@@ -14,8 +14,9 @@ authoritative and which is history.
 | [`FDR_v2.md`](FDR_v2.md) | Superseded (second revision; its title block still carries unfilled `[fill in]` placeholders). Kept for history, with one marked editorial correction (Appendix F, rows O4.b and Std-1, 2026-08-12). [`FDR_v2.pdf`](FDR_v2.pdf) is the export as it stood before that correction. |
 
 **The PDF and the Markdown are no longer the same document, and the Markdown
-is the one to read.** This row read "`FDR_v3.pdf` is the same document as
-submitted" until 2026-08-12, which was doing quiet work: the PDF *is* the
+is the one to read.** Until 2026-08-12 the `FDR_v3.md` row above ended
+"`FDR_v3.pdf` is the same document as submitted", and that sentence was
+doing quiet work: the PDF *is* the
 artefact that was submitted, and precisely because it is frozen it carries
 none of the corrections `FDR_v3.md` has accumulated since — the Δcells safety
 figure (2 of 126 → 5 of 126 in the damage direction), the withdrawal of the
