@@ -3351,6 +3351,113 @@ all latency claims is x86-64 with an Intel Core i7-12700H, 16 GB RAM,
 Ubuntu 22.04, Python 3.10; wall times are medians over 100 consecutive
 frames after a one-frame warm-up.
 
+**Audited 2026-08-12. What in this appendix can actually be re-derived,
+and at what cost.** The whole corpus was re-run or traced by a
+reproducibility audit
+(`docs/superpowers/audit/2026-08-12-D-reproducibility.md`). Its verdict on
+the *current* evidence is better than this project's claim: two committed
+segmentation receipts and the ablation receipt were re-derived **exactly**
+from the artefacts, and the packing benchmark's committed counts
+reproduced byte-for-byte. Four things above are nevertheless not what they
+appear, and are corrected here rather than quietly left.
+
+**1. `docs/receipts/git-log.txt` is not a git log and never has been.**
+This appendix says "`git log --oneline` at submission time is at
+`docs/receipts/git-log.txt`". The file contains, in full, a bracketed
+placeholder reading *"No git history available — project was developed
+outside a versioned workspace in this session"*, followed by a statement
+of what a `git log --oneline` would be *expected* to show. It has never
+contained a commit line. The evidence §12.1's sprint narrative is
+supposed to rest on is therefore absent from the receipt corpus, and this
+predates the history rewrite described in `docs/README.md` — the rewrite
+neither caused it nor made it worse. **The real record exists**: the
+repository's own history has run continuously since the baseline commit
+`69fad79` (2026-08-05), and `git log --oneline` in a clone is truthful
+today where the receipt is not. The receipt is left as it is on purpose,
+because overwriting a placeholder with a log taken eleven weeks after
+submission would misrepresent *when* it was taken; a reader wanting the
+progression should run the command.
+
+**2. `docs/receipts/pytest-cov.txt` is stale.** It records **102 tests**
+and an Ubuntu / Python 3.10 coverage run. The suite stands at **814**
+tests on Windows / Python 3.14 as this correction is written. The 86 %
+branch-coverage figure in the O6 row of Appendix E is that old run's, and
+has not been re-measured; the receipt is class-A reproducible (one
+`pytest -q --cov`) and simply has not been refreshed.
+
+**3. Sixteen of the thirty-four committed receipts have no surviving
+tool.** `ffdh_ablation.{csv,txt}`, `frcnn_map{,_default}.txt`,
+`frcnn_latency.txt`, `heuristic_ablation.txt`, the two
+`heuristic_failure_*.json`, `pr_summary.txt`, `train{,_default}.log`,
+`train_curve{,_default}.csv`, `train_eval.txt`,
+`tau_independence_correlation.txt` and `git-log.txt` cannot be
+regenerated from a clone: no producing script is in the tree, and
+`git log --diff-filter=D -- '*.py'` returns nothing, so none was ever
+committed and later deleted. All sixteen predate the repository's
+history. `pr_curves.py`, `find_failures.py` and `find_missed_subtypes.py`,
+named above as the generators of Figure 8's and Figure 9's inputs, are
+among the scripts that were never committed; `/tmp/meas/pr_curves.npz` is
+likewise not in the repository. The same is structurally true of the nine
+figures — `grep -rn "matplotlib\|savefig" --include=*.py` returns no hits
+outside `tests/`. Of the sixteen, one is *current* and load-bearing rather
+than inherited: `tau_independence_correlation.txt` is the measurement that
+retired the τ gate, cited twice in this report and twice in shipping code,
+and its script was never committed (the receipt says so itself). No
+receipt in the corpus records the commit it was produced at, and the
+twelve that record their inputs record a *mutable* checkpoint path.
+
+**4. Training is unseeded, so a from-scratch reproduction returns a
+sample from the same distribution and not the published numbers.** This is
+the correction that most changes what a reader should expect, and nothing
+in this report previously said it. There is no `torch.manual_seed`, no
+`torch.use_deterministic_algorithms` and no `cudnn.deterministic` anywhere
+in the repository. Exactly three RNGs are seeded — the train/val split
+generator in both trainers, the numpy fallback augmenter, and the
+procedural scene catalog — and everything else runs off process-global
+RNGs seeded from OS entropy: `torch.initial_seed()` differs per process
+(measured), a freshly constructed `Conv2d`'s weights hash differently per
+process, so **model initialisation is not reproducible**;
+`DataLoader(..., shuffle=True)` is constructed without a `generator=` in
+both `recog/training.py` and `recog/seg_training.py`, so the epoch order
+differs per process; and `A.Compose(...)` carries no `seed=`. Measured
+directly: two one-epoch runs of the same command on the same data gave
+loss 1.7839 vs 1.7608 and selected mean IoU **0.4111 vs 0.3957** — a
+1.5-point swing in the selection metric after a single epoch. The
+project's ~222 mentions of the word "seed" create the impression that
+training is seeded-but-unspecified. It is not.
+
+The practical consequence, stated plainly because the cost is not small.
+Reproducing §13.1.1's headline — eight models on 836 held-out CAD test
+crops — costs roughly **8 GPU-hours and 5 GB** on the reference hardware
+(≈5.3 h of Blender renders for nine datasets, ≈2.5 h of segmenter
+training at ~19 min per run, ~6 minutes of evaluation), and the whole cost
+is in the two unseeded upstream stages. The evaluations that produce the
+published tables are cheap (32 s per model) and *are* exact: eleven
+`seg_eval*.txt` receipts were regenerated on 2026-08-12 and every IoU,
+boundary displacement, area error, instance count and per-SKU figure came
+back byte-identical, the only movement being an embedded wall-clock
+latency table and a commit-range string. **So a reader who retrains from
+scratch and finds a number 0.01 off has not found a discrepancy.** The
+comparison this report's conclusions rest on is *between* models trained
+under identical conditions — eight configs verified byte-identical apart
+from dataset and checkpoint paths — which is the right design and is
+robust to the missing seeds; a single reproduced *absolute* number is not
+the thing to check. Reproducing everything in `docs/receipts/` that is
+reproducible at all is ≈15 GPU-hours and 8.3 GB. Nothing needs the source
+STEP files: the four converted `.glb` assemblies and `catalog.json` are
+committed, and Blender is the only non-pip dependency.
+
+One further determinism note, because it is easy to mis-attribute.
+Blender renders are **label-exact and pixel-inexact**: rendering the same
+scene twice at the same seed produced hash-identical `annotations/*.xml`
+and `meta/*.json` and two PNGs differing by at most 1/255 on 0.01 % of
+pixels — Cycles' adaptive sampling plus GPU denoising, not a
+scene-description difference. And `python main.py --config
+configs/demo.yaml`'s variable placed/pick_failed count is neither of
+these: it is a deliberate 2 % simulated vacuum drop in the mock
+controller, drawn from an unseeded module-global RNG, documented at
+length in `configs/demo.yaml`.
+
 ### Appendix D — Use of generative-AI tooling
 
 A large-language-model assistant was used during this project as a

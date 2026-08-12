@@ -22,16 +22,35 @@ mode:
 # HeuristicDetector whenever no checkpoint / torch is present, so the loop
 # above runs on a machine with neither installed.
 #
-# On a dev machine that DOES have torch and a trained
-# recog/checkpoints/best.pt (as this repo's checkout does), load_detector
-# picks the real FasterRCNNDetector instead, and its per-cycle pick/place
-# outcome is then run-to-run non-deterministic (observed: 10/0, 9/1, 8/2
-# placed/pick_failed splits across otherwise-identical runs) - almost
-# certainly CUDA/cuDNN algorithm-selection jitter on box scores that sit
-# near main.py's decision thresholds, not this pipeline's own code: the
-# image sequence, the mock KUKA server and HeuristicDetector are themselves
-# fully deterministic, and main.py never wires a segmenter into this path
-# (cartridge_masks stays empty throughout). Cycle count, latency profile and
-# "no crash" are the properties this config's demo run actually promises;
-# the exact placed/pick_failed split when the real detector loads is not
-# one of them.
+# The per-cycle placed/pick_failed split is run-to-run non-deterministic
+# (observed: 10/0, 9/1, 8/2 across otherwise-identical runs). CORRECTED
+# 2026-08-12: this comment used to blame "CUDA/cuDNN algorithm-selection
+# jitter on box scores that sit near main.py's decision thresholds" and
+# called the mock KUKA server "fully deterministic". Both are wrong, and
+# the demo was run 10 times to establish it
+# (docs/superpowers/audit/2026-08-12-D-reproducibility.md Sec 5). In all
+# ten runs EVERY perception and planning number was identical -
+# cartridges_detected 37, batteries_detected 77, placement_areas 33,
+# queue_poses 62, placement_disagreements 0, bad_detector_boxes 0 - and a
+# normalised log diff across three of them was empty but for the
+# ephemeral TCP port and wall-clock timings. Detector jitter would have
+# moved those counts, and cannot produce a pick_failed at all.
+#
+# The actual cause is a DELIBERATE simulated hardware failure, injected
+# behind the robot protocol and downstream of everything torch touches:
+# mock_kuka_server.py draws `random.random() < drop_prob` for a failed
+# grip and `< drop_prob / 2` for a drop on insertion, from the unseeded
+# module-global `random`. drop_prob is simulation.drop_probability: 0.02
+# in configs/execution.yaml. Per cycle P(failure) = 0.02 + 0.98*0.01 =
+# 0.0298, so P(a 10-cycle run is not 10/10) = 1 - 0.9702^10 = 26%; 1 of
+# 10 observed runs is well inside binomial noise for that. It is genuine
+# sampling, on purpose, so the retry and re-plan paths get exercised -
+# and it is NOT GPU-related: the torch-free path this config is designed
+# around shows the same variance.
+#
+# Cycle count, latency profile and "no crash" are the properties this
+# config's demo run actually promises; the exact placed/pick_failed split
+# is not one of them, with or without torch. Setting
+# simulation.drop_probability to 0.0 (or seeding `random` in the mock)
+# would make the placed count promisable too; that is a behaviour change
+# and has deliberately not been made here.
