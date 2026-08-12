@@ -27,18 +27,23 @@ pytestmark = pytest.mark.filterwarnings(
     "ignore:HeuristicPlacementAreaExtractor assumes:RuntimeWarning")
 
 
-def _synth_image(H=600, W=800) -> np.ndarray:
+def _synth_image(H=600, W=800, dx=0) -> np.ndarray:
     """A large green cartridge with a central PCB — big enough that the
     FFDH step has room to pack several 18.5×65 mm batteries.
 
     At mm_per_px=0.38 the cartridge interior (roughly 700×500 px) maps
-    to ~266×190 mm, which fits ~20 18650 cells."""
+    to ~266×190 mm, which fits ~20 18650 cells.
+
+    ``dx`` translates the whole cartridge, PCB included, by that many
+    pixels in x. Nothing about its shape changes, so a twin that
+    re-measures a moved cartridge correctly must produce place targets
+    displaced by exactly ``dx * mm_per_px``."""
     img = np.zeros((H, W, 3), dtype=np.uint8)
-    img[50:550, 50:750, 0] = 40
-    img[50:550, 50:750, 1] = 200
-    img[50:550, 50:750, 2] = 40
+    img[50:550, 50 + dx:750 + dx, 0] = 40
+    img[50:550, 50 + dx:750 + dx, 1] = 200
+    img[50:550, 50 + dx:750 + dx, 2] = 40
     # Small central PCB
-    img[270:330, 370:430] = 20
+    img[270:330, 370 + dx:430 + dx] = 20
     return img
 
 
@@ -69,8 +74,40 @@ def _overlap_area_mm2(a, b) -> float:
     return max(0.0, dx) * max(0.0, dy)
 
 
-def _snapshot_with_cart_and_batteries(batt_centres):
-    dets = [Detection(BBox(45, 45, 755, 555), ClassLabel.CARTRIDGE, 0.95)]
+def _bare_cartridge(cid=0, rows=80, cols=80):
+    """A cartridge with a grid AND the rectangle that grid describes.
+
+    The rectangle is not decoration: ``Reservation`` carries its
+    footprint in WORKSPACE millimetres as well as strip millimetres, and
+    the workspace pair is what the cross-cartridge interlock compares
+    (one physical cartridge detected twice used to produce eight pairs of
+    overlapping place targets with the per-cartridge interlock unable to
+    see across them — audit H, finding 3). A cartridge holding an
+    occupancy grid but no rectangle is not a state the planner ever
+    produces, so ``_reservation_for`` refuses it rather than falling back
+    to strip coordinates, which would silently disable that check.
+    """
+    from plan.scene import Cartridge, OccupancyGrid
+
+    return Cartridge(
+        id=cid, bbox=BBox(0, 0, 100, 100), confidence=0.9,
+        placeable_rectangle=BBox(0, 0, 100, 100), mm_per_px=0.38,
+        occupancy=OccupancyGrid(rows=rows, cols=cols, resolution_mm=1.5),
+    )
+
+
+def _snapshot_with_cart_and_batteries(batt_centres, dx=0, cartridges=1,
+                                      extra_boxes=()):
+    """The fixture snapshot. ``dx`` moves the cartridge box with
+    ``_synth_image(dx=...)``; ``cartridges=0`` omits it entirely, which
+    is the one-frame dropout; ``extra_boxes`` adds further cartridge
+    detections over the same object."""
+    dets = []
+    if cartridges:
+        dets.append(Detection(BBox(45 + dx, 45, 755 + dx, 555),
+                              ClassLabel.CARTRIDGE, 0.95))
+    for box in extra_boxes:
+        dets.append(Detection(box, ClassLabel.CARTRIDGE, 0.9))
     for i, (cx, cy) in enumerate(batt_centres):
         dets.append(Detection(
             BBox(cx - 5, cy - 10, cx + 5, cy + 10),
@@ -243,9 +280,7 @@ def test_a_rotated_placement_reserves_the_rotated_block():
     from plan.scene import Cartridge, OccupancyGrid
 
     planner = _make_planner()
-    ctg = Cartridge(id=0, bbox=BBox(0, 0, 100, 100), confidence=0.9,
-                    occupancy=OccupancyGrid(rows=80, cols=80,
-                                            resolution_mm=1.5))
+    ctg = _bare_cartridge()
     battery = Item(id=0, width=18.5, height=65.0)
 
     upright = planner._reservation_for(
@@ -827,12 +862,9 @@ def test_a_reservation_over_a_forbidden_cell_raises():
     cell; if one ever does, a battery is going onto the PCB and that has
     to be an exception rather than a marked grid."""
     from common.packing import Item, PackedItem
-    from plan.scene import Cartridge, OccupancyGrid
 
     planner = _make_planner()
-    ctg = Cartridge(id=0, bbox=BBox(0, 0, 100, 100), confidence=0.9,
-                    occupancy=OccupancyGrid(rows=80, cols=80,
-                                            resolution_mm=1.5))
+    ctg = _bare_cartridge()
     ctg.occupancy.set(20, 5, CellState.FORBIDDEN)
     res = planner._reservation_for(
         ctg, PackedItem(item=Item(id=0, width=18.5, height=65.0),
@@ -845,12 +877,9 @@ def test_reserving_over_an_existing_footprint_raises():
     """The millimetre-resolution half. Two batteries in the same space
     is a packer bug; continuing past it puts an 18650 on an 18650."""
     from common.packing import Item, PackedItem
-    from plan.scene import Cartridge, OccupancyGrid
 
     planner = _make_planner()
-    ctg = Cartridge(id=0, bbox=BBox(0, 0, 100, 100), confidence=0.9,
-                    occupancy=OccupancyGrid(rows=80, cols=80,
-                                            resolution_mm=1.5))
+    ctg = _bare_cartridge()
     battery = Item(id=0, width=18.5, height=65.0)
     ctg.reserve(planner._reservation_for(
         ctg, PackedItem(item=battery, x=0.0, y=0.0)))
@@ -874,3 +903,318 @@ def test_planner_config_does_not_invent_a_fallback_scale():
     assert PlannerConfig.from_dict({"camera": {}}).mm_per_px is None
     assert PlannerConfig.from_dict(
         {"camera": {"mm_per_px_x": 0.5}}).mm_per_px == 0.5
+
+
+# ------------------------------- cross-frame identity, end to end -------
+#
+# The twin is the only memory the system has of which cells in which
+# cartridge are FREE / PLANNED / PLACED, and it is rebuilt from a fresh
+# set of detections every frame. Audit H executed four ordinary
+# perception events against it - a one-frame dropout, a cartridge that
+# moves, one cartridge detected twice, and two detections competing for
+# one track - and all four produced a full-length, in-envelope,
+# clean-reporting queue aimed at space that is physically occupied.
+#
+# These tests are those four events, at the altitude the arm sees them:
+# millimetres of place target, not internal state.
+
+
+def _assert_no_two_queued_footprints_overlap(planner, queue) -> None:
+    """No two queued place targets may share physical space, whichever
+    twin entries they came from.
+
+    Computed here from the raw workspace millimetres rather than by
+    calling `Reservation.overlaps_workspace_mm`: a collision test that
+    asks the code under test whether it collided proves nothing.
+    """
+    reserved = [
+        planner.env.cartridge(p.cartridge_id).reservations[
+            (p.grid_row, p.grid_col)]
+        for p in queue
+    ]
+    for i, a in enumerate(reserved):
+        for b in reserved[i + 1:]:
+            dx = (min(a.wx_mm + a.w_mm, b.wx_mm + b.w_mm)
+                  - max(a.wx_mm, b.wx_mm))
+            dy = (min(a.wy_mm + a.h_mm, b.wy_mm + b.h_mm)
+                  - max(a.wy_mm, b.wy_mm))
+            assert max(0.0, dx) * max(0.0, dy) == 0.0, (
+                f"queued targets at ({a.wx_mm:.1f}, {a.wy_mm:.1f}) and "
+                f"({b.wx_mm:.1f}, {b.wy_mm:.1f}) mm overlap by "
+                f"{dx:.1f} x {dy:.1f} mm")
+
+
+def test_a_one_frame_dropout_does_not_re_plan_a_slot_already_filled():
+    """The audit's scenario 1, executed: present / absent / present.
+
+    Measured before the fix: 572 placed cells, one undetected frame, and
+    the cartridge returned as a NEW id holding 0 whose first place target
+    was byte-identical to the one already executed. The millimetre
+    interlock could not fire, because the reservations it compares
+    against were deleted with the cartridge. A collision that reports
+    success.
+    """
+    planner = _make_planner()
+    img = _synth_image()
+
+    q1 = planner.cycle(_snapshot_with_cart_and_batteries([(5, 5)]), img)
+    assert len(q1) == 1
+    first = q1[0]
+    planner.confirm_placement(
+        first.cartridge_id, first.grid_row, first.grid_col, True)
+    ctg = planner.env.cartridge(first.cartridge_id)
+    placed_cells = ctg.occupancy.placed_count()
+    assert placed_cells == 13 * 44
+
+    # Frame 2: the cartridge is not detected at all. One low-confidence
+    # frame, one gripper arm across the box.
+    q2 = planner.cycle(
+        _snapshot_with_cart_and_batteries([(5, 5)], cartridges=0), img)
+    assert q2 == [], "an unseen cartridge must not be planned into"
+    assert first.cartridge_id in planner.env.cartridges, (
+        "the twin forgot a tray because of one missing frame")
+    assert planner.env.cartridge(
+        first.cartridge_id).occupancy.placed_count() == placed_cells
+
+    # Frame 3: the identical box comes back.
+    q3 = planner.cycle(
+        _snapshot_with_cart_and_batteries([(5, 5), (400, 300), (700, 500)]),
+        img)
+
+    assert list(planner.env.cartridges) == [first.cartridge_id], (
+        "the returning cartridge was inserted as a new, empty entity")
+    ctg = planner.env.cartridge(first.cartridge_id)
+    assert ctg.occupancy.placed_count() == placed_cells
+    assert len([r for r in ctg.reservations.values()
+                if r.state is CellState.PLACED]) == 1
+    assert q3, "the rest of the cartridge must still be plannable"
+    # The assertion that failed before the fix: an 18.5 mm square centred
+    # on a place target lies inside that battery's real footprint at
+    # either rotation, so two such squares intersecting means two
+    # batteries intersecting.
+    for pose in q3:
+        dx = abs(pose.place.x_mm - first.place.x_mm)
+        dy = abs(pose.place.y_mm - first.place.y_mm)
+        assert max(dx, dy) >= 18.5, (
+            f"pose at ({pose.place.x_mm:.1f}, {pose.place.y_mm:.1f}) mm is "
+            f"{dx:.1f} / {dy:.1f} mm from the battery placed before the "
+            "dropout - the twin came back empty")
+    assert planner.env.track_dropout_count == 1
+    assert planner.env.tracking_stats()["tracks_reacquired"] == 1
+    assert planner.env.tracking_stats()["tracks_expired"] == 0
+
+
+def test_a_track_that_never_comes_back_expires_and_says_what_it_cost():
+    """Memory is bounded. The bound is also the moment the protection
+    above stops applying, so it is loud: the cells are counted, not
+    quietly absent."""
+    planner = _make_planner()
+    planner.env.tracking.max_missing_frames = 2
+    img = _synth_image()
+    q1 = planner.cycle(_snapshot_with_cart_and_batteries([(5, 5)]), img)
+    planner.confirm_placement(q1[0].cartridge_id, q1[0].grid_row,
+                              q1[0].grid_col, True)
+
+    for _ in range(3):
+        planner.cycle(
+            _snapshot_with_cart_and_batteries([(5, 5)], cartridges=0), img)
+
+    assert planner.env.cartridges == {}
+    stats = planner.env.tracking_stats()
+    assert stats["tracks_expired"] == 1
+    assert stats["expired_placed_cells"] == 13 * 44
+    assert stats["expired_placed_batteries"] == 1
+
+
+def test_a_confirmation_for_an_expired_track_is_counted_not_swallowed():
+    """`main` counts this as `placed` - a battery really was put down -
+    while the twin has no record of where. That disagreement used to be a
+    bare `return` (audit H, finding 1)."""
+    planner = _make_planner()
+    planner.env.tracking.max_missing_frames = 0
+    img = _synth_image()
+    q1 = planner.cycle(_snapshot_with_cart_and_batteries([(5, 5)]), img)
+    planner.cycle(
+        _snapshot_with_cart_and_batteries([(5, 5)], cartridges=0), img)
+    assert planner.env.cartridges == {}
+
+    planner.confirm_placement(q1[0].cartridge_id, q1[0].grid_row,
+                              q1[0].grid_col, True)
+
+    assert planner.untracked_confirmation_count == 1
+
+
+def test_the_place_target_follows_a_cartridge_that_moves():
+    """Audit H finding 2, executed: the cartridge translated 100 px and
+    the place target moved 0.00 mm, because `_ensure_placement_areas`
+    skips any cartridge that already has a rectangle and the rectangle
+    was extracted exactly once, ever. IoU 0.5 tolerates ~90 mm of drift
+    on this fixture, so the twin kept commanding the old millimetres all
+    the way through it - into the cartridge wall, onto the PCB, or onto
+    the table.
+    """
+    planner = _make_planner()
+    dx = 40
+    q1 = planner.cycle(_snapshot_with_cart_and_batteries([(5, 5)]),
+                       _synth_image())
+    q2 = planner.cycle(_snapshot_with_cart_and_batteries([(5, 5)], dx=dx),
+                       _synth_image(dx=dx))
+
+    assert list(planner.env.cartridges) == [q1[0].cartridge_id], (
+        "a cartridge that moved is the same cartridge")
+    assert planner.env.geometry_refresh_count == 1
+    moved_mm = q2[0].place.x_mm - q1[0].place.x_mm
+    assert moved_mm == pytest.approx(dx * 0.38, abs=0.5), (
+        f"the cartridge moved {dx * 0.38:.1f} mm and its place target "
+        f"moved {moved_mm:.2f} mm")
+    assert q2[0].place.y_mm == pytest.approx(q1[0].place.y_mm, abs=0.5)
+
+
+def test_detector_jitter_does_not_re_measure_the_geometry_every_frame():
+    """The threshold is a threshold in both directions: a box that
+    wobbles by a pixel must not throw its measurement away, or the twin
+    re-extracts every cartridge every frame for nothing."""
+    planner = _make_planner()
+    img = _synth_image()
+    planner.cycle(_snapshot_with_cart_and_batteries([(5, 5)]), img)
+    for _ in range(3):
+        planner.cycle(_snapshot_with_cart_and_batteries([(5, 5)], dx=1), img)
+    assert planner.env.geometry_refresh_count == 0
+
+
+def test_a_battery_already_placed_survives_the_cartridge_moving():
+    """The other half of the same event, and the reason the twin
+    re-measures rather than rejecting the match: a cartridge that slides
+    takes its batteries with it. Rejecting the match would hand it a
+    fresh empty grid and plan straight into them."""
+    planner = _make_planner()
+    dx = 40
+    q1 = planner.cycle(_snapshot_with_cart_and_batteries([(5, 5)]),
+                       _synth_image())
+    planner.confirm_placement(q1[0].cartridge_id, q1[0].grid_row,
+                              q1[0].grid_col, True)
+    cid = q1[0].cartridge_id
+    placed_cells = planner.env.cartridge(cid).occupancy.placed_count()
+
+    q2 = planner.cycle(
+        _snapshot_with_cart_and_batteries([(5, 5), (400, 300)], dx=dx),
+        _synth_image(dx=dx))
+
+    ctg = planner.env.cartridge(cid)
+    assert ctg.occupancy.placed_count() == placed_cells, (
+        "the placed battery was lost when its cartridge was re-measured")
+    assert planner.placed_reservation_reprojected_count == 1
+    assert planner.placed_reservation_lost_count == 0
+    # And the next queue avoids it AT ITS NEW POSITION.
+    placed = [r for r in ctg.reservations.values()
+              if r.state is CellState.PLACED][0]
+    assert q2, "the moved cartridge must still be plannable"
+    for pose in q2:
+        res = ctg.reservations[(pose.grid_row, pose.grid_col)]
+        assert _overlap_area_mm2(res, placed) == 0.0
+
+
+def test_one_cartridge_detected_twice_yields_one_entry_and_no_overlap():
+    """Audit H finding 3, executed: a duplicate box at IoU 0.479 became a
+    second twin entry with its own grid and its own reservations, and
+    produced 8 pairs of physically overlapping place targets - roughly
+    17.5 x 34.6 mm of overlap on an 18.5 x 65 mm cell - with no
+    PlacementCollision raised, because the millimetre interlock is
+    per-cartridge and cannot see across two of them."""
+    planner = _make_planner()
+    base = BBox(45, 45, 755, 555)
+    duplicate = BBox(45 + 110, 45 + 110, 755 + 110, 555 + 110)
+    assert base.iou(duplicate) < planner.env.tracking.iou_match_threshold
+    assert base.iou(duplicate) >= planner.env.tracking.duplicate_iou_threshold
+    snap = _snapshot_with_cart_and_batteries(
+        [(5 + 10 * i, 5) for i in range(40)], extra_boxes=(duplicate,))
+
+    queue = planner.cycle(snap, _synth_image())
+
+    assert len(planner.env.cartridges) == 1
+    assert planner.env.duplicate_detection_count == 1
+    assert queue
+    _assert_no_two_queued_footprints_overlap(planner, queue)
+
+
+def test_two_entries_over_one_object_cannot_queue_overlapping_targets():
+    """The interlock behind the suppression above, exercised where
+    suppression does NOT apply: a box nested inside another scores below
+    the duplicate threshold, so the twin legitimately holds two entries -
+    and their placements still may not overlap in the workspace frame,
+    which is the only frame in which two cartridges are comparable."""
+    planner = _make_planner()
+    nested = BBox(400, 300, 700, 540)
+    assert BBox(45, 45, 755, 555).iou(nested) < \
+        planner.env.tracking.duplicate_iou_threshold
+    snap = _snapshot_with_cart_and_batteries(
+        [(5 + 10 * i, 5) for i in range(40)], extra_boxes=(nested,))
+
+    queue = planner.cycle(snap, _synth_image())
+
+    assert len(planner.env.cartridges) == 2
+    assert planner.cross_cartridge_conflict_count > 0, (
+        "fixture must actually produce a conflict for this to assert")
+    _assert_no_two_queued_footprints_overlap(planner, queue)
+
+
+def test_the_cross_cartridge_guard_fires_when_its_filter_is_bypassed():
+    """THE proof that the invariant is load-bearing, on the same pattern
+    as the workspace envelope: disable the filter
+    (`_conflicts_with_another_cartridge` exists as a named seam for
+    exactly this) and `_build_pose` must still refuse to emit a pose into
+    space another twin entry holds."""
+    planner = _make_planner()
+    planner._conflicts_with_another_cartridge = lambda ctg, res: None
+    nested = BBox(400, 300, 700, 540)
+    snap = _snapshot_with_cart_and_batteries(
+        [(5 + 10 * i, 5) for i in range(40)], extra_boxes=(nested,))
+
+    with pytest.raises(PlacementCollision, match="same physical space"):
+        planner.cycle(snap, _synth_image())
+
+
+def test_an_unseen_cartridge_is_remembered_but_never_planned_into():
+    """A track is memory; a detection is evidence. Memory is enough to
+    refuse a slot and not enough to command the arm into one - the box is
+    not in this frame, and the pixels under it belong to whatever is
+    there now."""
+    planner = _make_planner()
+    img = _synth_image()
+    assert planner.cycle(_snapshot_with_cart_and_batteries([(5, 5)]), img)
+
+    queue = planner.cycle(
+        _snapshot_with_cart_and_batteries([(5, 5)] * 4, cartridges=0), img)
+
+    assert queue == []
+    assert len(planner.env.cartridges) == 1
+    assert planner.env.visible_cartridges() == []
+    # Its geometry is neither re-measured nor thrown away meanwhile: the
+    # frame says nothing about a cartridge it does not contain.
+    ctg = next(iter(planner.env.cartridges.values()))
+    assert ctg.placeable_rectangle is not None
+    assert planner.rescaled_area_drop_count == 0
+
+
+def test_a_scale_change_while_a_cartridge_is_unseen_keeps_its_batteries():
+    """`_drop_areas_measured_at_another_scale` iterated every cartridge,
+    including ones this frame did not contain - so a re-calibration
+    during a dropout cleared the reservations of a cartridge nobody was
+    looking at. It is memory until it is seen again, and it is re-measured
+    then."""
+    planner = _scaled_planner(None)
+    img = _synth_image()
+    first = _snapshot_with_cart_and_batteries([(5, 5)])
+    first.mm_per_px = 0.50
+    q1 = planner.cycle(first, img)
+    planner.confirm_placement(q1[0].cartridge_id, q1[0].grid_row,
+                              q1[0].grid_col, True)
+    cid = q1[0].cartridge_id
+
+    missing = _snapshot_with_cart_and_batteries([(5, 5)], cartridges=0)
+    missing.mm_per_px = 0.25
+    planner.cycle(missing, img)
+
+    assert planner.rescaled_area_drop_count == 0
+    assert len(planner.env.cartridge(cid).placed_reservations()) == 1
+    assert planner.rescaled_placed_reservation_drop_count == 0

@@ -28,6 +28,35 @@ queue:
   fill_order: row_major  # top-left → bottom-right
   assignment: nearest_available
 
+# Cross-frame identity of the digital twin (plan.scene.TrackingConfig).
+# These decide whether the robot's memory of what is already in a tray
+# survives the next frame, so they are declared here rather than living
+# as function defaults nobody could reach (audit H, finding 4: the IoU
+# threshold was a parameter no caller and no config ever set).
+tracking:
+  # A detection at or above this IoU IS the tracked cartridge. Matching
+  # is global-best-first, so this is a floor on acceptance, not a
+  # tie-break: the highest-scoring pair in the frame is always taken
+  # first.
+  iou_match_threshold: 0.5
+  # Frames a cartridge may go undetected before the twin forgets it and
+  # everything it was holding. Not 0: a single missed frame used to
+  # delete the occupancy grid, the reservations and the ID, and the
+  # cartridge came back empty with its next place target aimed at a slot
+  # that already held a cell. Expiry is counted and logged at WARNING.
+  max_missing_frames: 5
+  # An unmatched detection overlapping a cartridge already observed this
+  # frame by at least this much is a SECOND VIEW of it (split mask,
+  # duplicate box), not a second cartridge. Must be <= the match
+  # threshold.
+  duplicate_iou_threshold: 0.3
+  # How far a matched cartridge's box may move before its measured
+  # placement rectangle and occupancy grid are discarded and
+  # re-extracted at the new position. One occupancy cell: the grid
+  # cannot represent a finer distinction, so beyond it the stale
+  # geometry is a lie the grid could have told the truth about.
+  geometry_refresh_mm: 1.5
+
 camera:
   # Pinhole calibration (mm per px). Replace with real intrinsics when available.
   mm_per_px_x: 0.38

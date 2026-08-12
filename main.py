@@ -441,6 +441,23 @@ def run(config_path: str, receipt_path: Optional[str] = None) -> Dict[str, int]:
     stats["unreachable_place_targets"] = planner.unreachable_place_target_count
     stats["unreachable_batteries"] = planner.unreachable_battery_count
     stats["unreachable_cartridges"] = planner.unreachable_cartridge_count
+    # Cross-frame identity. The twin tracks cartridges through frames
+    # they are not detected in, because deleting one took its occupancy
+    # grid and every PLACED reservation with it and the next queue then
+    # aimed at slots that were already full, reporting success (audit H,
+    # finding 1). Every one of these is a number precisely because that
+    # loss was a silence: `tracks_expired` and `expired_placed_cells` are
+    # the twin admitting it has forgotten physical state, and a run where
+    # they climb is a run whose tray no longer matches its model.
+    stats.update(planner.env.tracking_stats())
+    stats["reprojected_placed_batteries"] = \
+        planner.placed_reservation_reprojected_count
+    stats["unrepresentable_placed_batteries"] = \
+        planner.placed_reservation_lost_count
+    stats["rescale_dropped_placed_batteries"] = \
+        planner.rescaled_placed_reservation_drop_count
+    stats["cross_cartridge_conflicts"] = planner.cross_cartridge_conflict_count
+    stats["untracked_confirmations"] = planner.untracked_confirmation_count
 
     # A segmentation run that planned nothing is a FAILED run, not a
     # quiet one. The two ways this happens are both configuration
@@ -682,14 +699,45 @@ def _write_receipt(
         f"  unreachable batteries    : {stats['unreachable_batteries']}",
         f"  unreachable cartridges   : {stats['unreachable_cartridges']}",
         "",
+        "Cross-frame identity. Cartridges are TRACKED, not re-detected: one",
+        "missing from a frame keeps its occupancy grid and its placed",
+        "batteries and is re-matched when it returns, because deleting it",
+        "took the whole physical record and the next queue aimed at slots",
+        "that were already full. `tracks expired` is the twin forgetting a",
+        "cartridge it has not seen for `planning.tracking.max_missing_frames`",
+        "frames, and `placed cells forgotten` is what that cost - those two",
+        "are the only route by which physical state still leaves the model,",
+        "and they are printed rather than absorbed. `geometry re-measured`",
+        "counts cartridges whose box moved far enough that their placement",
+        "rectangle was re-extracted at the new position; the batteries they",
+        "were holding are re-projected onto the new grid.",
+        "",
+        f"  track dropouts           : {stats['track_dropouts']}",
+        f"  tracks re-acquired       : {stats['tracks_reacquired']}",
+        f"  tracks expired           : {stats['tracks_expired']}",
+        f"  placed cells forgotten   : {stats['expired_placed_cells']} "
+        f"({stats['expired_placed_batteries']} batteries)",
+        f"  duplicate detections     : {stats['duplicate_detections']}",
+        f"  geometry re-measured     : {stats['geometry_refreshes']}",
+        f"  batteries re-projected   : "
+        f"{stats['reprojected_placed_batteries']}",
+        f"  batteries off the new grid: "
+        f"{stats['unrepresentable_placed_batteries']}",
+        f"  batteries dropped (rescale): "
+        f"{stats['rescale_dropped_placed_batteries']}",
+        f"  cross-cartridge conflicts: {stats['cross_cartridge_conflicts']}",
+        f"  confirms into a lost track: {stats['untracked_confirmations']}",
+        "",
         "Execution (mock KUKA unless mode.robot is `real`). A pose needs a",
         "placement area AND a free battery in the SAME frame, and the loop",
         "executes at most one pose per cycle before re-planning (PPR 5.4),",
         "so `placed` is bounded by cycles, not by placement areas.",
-        "`reservations released` is non-zero only when a cartridge SURVIVES",
-        "into the next cycle: on a corpus of unrelated scenes the twin drops",
-        "the whole cartridge and its reservations go with it, uncounted, so",
-        "a 0 there means the scenes did not repeat - not that nothing leaked.",
+        "`reservations released` counts queued-but-unexecuted reservations",
+        "handed back when the queue was rebuilt. It used to read 0 on a",
+        "corpus of unrelated scenes for the wrong reason - the twin deleted",
+        "the whole cartridge and its reservations went with it, uncounted.",
+        "Cartridges now persist across the frames they are missing from, so",
+        "a 0 here means nothing was left over, not that nothing leaked.",
         "",
         f"  loose batteries detected: {stats['batteries_detected']}",
         f"  poses queued           : {stats['queue_poses']}",

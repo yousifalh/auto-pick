@@ -62,9 +62,9 @@ def one_scene_config(tmp_path: Path) -> Path:
     """`demo_config`, but ONE scene, cycled.
 
     `_synthetic_source` wraps around, so every cycle sees the same frame
-    and the twin's IoU matcher keeps the same cartridge alive across
-    them - the fixed-mount-camera case, where a reservation can actually
-    outlive the queue that made it.
+    and the same cartridge is detected in every one of them - the
+    fixed-mount-camera case, where the twin must simply hold identity
+    still: no dropout, no expiry, no re-measurement.
     """
     root = tmp_path / "auto-pick-1"
     (root / "configs").mkdir(parents=True)
@@ -105,6 +105,26 @@ def one_scene_config(tmp_path: Path) -> Path:
     return demo
 
 
+def test_a_fixed_camera_run_never_loses_a_cartridge(one_scene_config: Path):
+    """The case the machine is actually built for: one camera, one
+    fixture, the same cartridge in every frame.
+
+    Tracking must be INERT here. A dropout, an expiry or a
+    re-measurement on a scene that never changes would mean the identity
+    layer is thrashing, and the cost of thrashing is exactly the state
+    it exists to preserve.
+    """
+    stats = main_run(str(one_scene_config))
+
+    assert stats["cycles"] >= 2
+    assert stats["track_dropouts"] == 0
+    assert stats["tracks_expired"] == 0
+    assert stats["expired_placed_cells"] == 0
+    assert stats["geometry_refreshes"] == 0
+    assert stats["untracked_confirmations"] == 0
+    assert stats["cross_cartridge_conflicts"] == 0
+
+
 def test_main_run_short_cycle(demo_config: Path):
     stats = main_run(str(demo_config))
     assert stats["cycles"] >= 1
@@ -113,7 +133,7 @@ def test_main_run_short_cycle(demo_config: Path):
         stats["cycles"]
 
 
-def test_run_surfaces_released_reservations(one_scene_config: Path,
+def test_run_surfaces_released_reservations(demo_config: Path,
                                             tmp_path: Path):
     """`Planner.released_reservation_count` reaches the run's output.
 
@@ -130,17 +150,18 @@ def test_run_surfaces_released_reservations(one_scene_config: Path,
     `== stats["released_reservations"]` self-comparison would pass in
     both cases.
 
-    It needs `one_scene_config`, not `demo_config`, and that is the point
-    of the separate fixture: the twin matches cartridges across frames by
-    IoU and DROPS any it does not see again
-    (`EnvironmentModel.update_from_snapshot`), so on `demo_config`'s three
-    unrelated scenes the previous frame's cartridge is discarded whole and
-    its stale reservations go with it, uncounted - `released_reservations`
-    reads 0 there while nothing is leaking. A repeated scene is the
-    fixed-mount-camera case this counter is actually about.
+    CORRECTED 2026-08-12: this used to need `one_scene_config`, and the
+    reason it did was the defect. The twin DELETED any cartridge it did
+    not see again, so on `demo_config`'s three unrelated scenes the
+    previous frame's cartridge was discarded whole and its reservations
+    went with it, uncounted - the counter read 0 while state was being
+    destroyed, and the single-scene fixture existed to keep the number
+    meaningful. Cartridges are now tracked across the frames they are
+    missing from, so the ordinary multi-scene demo exercises the release
+    path and the workaround is gone.
     """
     receipt = tmp_path / "receipts" / "run.txt"
-    stats = main_run(str(one_scene_config), receipt_path=str(receipt))
+    stats = main_run(str(demo_config), receipt_path=str(receipt))
 
     assert stats["cycles"] >= 2, "fixture must re-plan for this to assert"
     assert stats["queue_poses"] > stats["cycles"], (
@@ -151,6 +172,48 @@ def test_run_surfaces_released_reservations(one_scene_config: Path,
         "stopped releasing them or main stopped reporting the count")
     assert (f"reservations released  : {stats['released_reservations']} "
             in receipt.read_text(encoding="utf-8"))
+
+
+def test_run_surfaces_what_the_twin_retained_and_forgot(demo_config: Path,
+                                                        tmp_path: Path):
+    """The identity layer's numbers reach the statistics and the receipt.
+
+    `demo_config` cycles three UNRELATED scenes, so every cartridge in it
+    disappears and comes back - the exact event that used to delete the
+    occupancy grid, every PLACED reservation and the ID, silently, and
+    hand the returning cartridge a fresh empty grid whose first place
+    target aimed at a slot that was already full (audit H, finding 1).
+
+    Asserted as a group because the failure mode is a MISSING number, not
+    a wrong one: a run in which the twin forgets physical state must say
+    so in its output, and `expired_placed_cells` is the line that says
+    it.
+    """
+    receipt = tmp_path / "receipts" / "run.txt"
+    stats = main_run(str(demo_config), receipt_path=str(receipt))
+
+    for key in ("track_dropouts", "tracks_reacquired", "tracks_expired",
+                "expired_placed_cells", "expired_placed_batteries",
+                "duplicate_detections", "geometry_refreshes",
+                "reprojected_placed_batteries",
+                "unrepresentable_placed_batteries",
+                "rescale_dropped_placed_batteries",
+                "cross_cartridge_conflicts", "untracked_confirmations"):
+        assert key in stats, f"{key} never reached the run statistics"
+
+    assert stats["track_dropouts"] > 0, (
+        "three unrelated scenes must produce dropouts; if this is 0 the "
+        "fixture stopped exercising cross-frame identity at all")
+    text = receipt.read_text(encoding="utf-8")
+    assert f"track dropouts           : {stats['track_dropouts']}" in text
+    assert f"tracks expired           : {stats['tracks_expired']}" in text
+    forgotten = stats["expired_placed_cells"]
+    assert f"placed cells forgotten   : {forgotten}" in text
+    # Two twin entries claiming one piece of physical space is a
+    # perception fault, not a scene condition. On this fixture it must
+    # not happen at all.
+    assert stats["cross_cartridge_conflicts"] == 0
+    assert stats["unrepresentable_placed_batteries"] == 0
 
 
 # ------------------------------- the workspace envelope, end to end ----

@@ -49,6 +49,30 @@ things were being conflated:
   ``PickPlacePose``, and every byte the executor puts on the wire comes
   from one. It is never a clamp.
 
+Cross-frame identity is the twin's (:mod:`plan.scene`), but two of its
+consequences are this module's:
+
+* **Only cartridges VISIBLE in this frame are planned into.** A tracked
+  cartridge the snapshot did not contain keeps its grid and its
+  reservations — that memory is what stops a returning cartridge from
+  being planned into twice — but it is not evidence about the scene in
+  front of the camera, and neither ``_pack_cartridge`` nor
+  ``_ensure_placement_areas`` will touch it.
+* **A cartridge that moved is re-measured, and its batteries move with
+  it.** ``_ensure_placement_areas`` re-extracts whenever the twin has
+  invalidated the geometry, and ``_reproject_placed_reservations`` then
+  re-quantises every physically placed footprint onto the new grid. The
+  rectangle used to be extracted exactly once, ever, so a cartridge that
+  moved 38 mm kept commanding the millimetres it had before it moved
+  (audit H, finding 2).
+
+The millimetre interlock in :meth:`plan.scene.Cartridge.reserve` is
+per-cartridge and cannot see across two twin entries, so
+:meth:`Planner._conflicts_with_another_cartridge` asks the same question
+in the workspace frame, where every cartridge's footprints are
+comparable. Same filter/invariant pairing as the workspace envelope: the
+filter declines and counts, ``_build_pose`` raises.
+
 After the executor reports back, :meth:`Planner.confirm_placement`
 flips each PLANNED cell to PLACED on success, or reverts it to FREE
 on failure so a future cycle can retry.
@@ -56,11 +80,12 @@ on failure so a future cycle can retry.
 from __future__ import annotations
 
 import inspect
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
+from common.logging import get_logger
 from common.types import PickPlacePose, Snapshot, WorkspacePoint
 from plan.bin_packing import Item, PackResult, pack_best_effort
 from plan.placement_area import (
@@ -75,9 +100,13 @@ from plan.scene import (
     Cartridge,
     CellState,
     EnvironmentModel,
+    PlacementCollision,
     Reservation,
+    TrackingConfig,
     WorkspaceBounds,
 )
+
+log = get_logger("autopick.planner")
 
 
 # ------------------------------------------------------ configuration --
@@ -120,6 +149,13 @@ class PlannerConfig:
     pick_grasp_height_mm: float = 5.0
     place_insert_height_mm: float = 2.0
     allow_rotation: bool = True
+    # Cross-frame identity: how the twin decides two frames show the same
+    # cartridge, how long it remembers one it cannot see, and how far a
+    # box may move before its measured geometry is thrown away. Declared
+    # in `planning.yaml` under `tracking:`; every one of these numbers
+    # used to be a hardcoded default no config could reach (audit H,
+    # finding 4).
+    tracking: TrackingConfig = field(default_factory=TrackingConfig)
 
     @classmethod
     def from_dict(cls, cfg: Dict) -> "PlannerConfig":
@@ -154,6 +190,7 @@ class PlannerConfig:
             ),
             place_insert_height_mm=float(motion.get("insert_height_mm", 2.0)),
             allow_rotation=True,
+            tracking=TrackingConfig.from_dict(cfg.get("tracking")),
         )
 
 
@@ -195,7 +232,8 @@ class Planner:
     ) -> None:
         self.cfg = planner_cfg
         self.extractor = placement_extractor
-        self.env = EnvironmentModel(workspace=workspace)
+        self.env = EnvironmentModel(workspace=workspace,
+                                    tracking=planner_cfg.tracking)
         # Computed once here rather than per-cartridge-per-cycle in
         # _ensure_placement_areas - the extractor's signature can't
         # change mid-run. See _accepts_label_map's docstring.
@@ -252,6 +290,31 @@ class Planner:
         self.unreachable_place_target_count = 0
         self.unreachable_battery_count = 0
         self.unreachable_cartridge_count = 0
+        # Physical batteries carried onto a freshly measured occupancy
+        # grid after their cartridge moved, and the ones that could not
+        # be: a footprint whose millimetres fall outside the new
+        # rectangle has nowhere to go in the new grid. The reservation is
+        # KEPT either way (it still answers the millimetre interlock) but
+        # a battery the grid cannot represent is a battery the packer
+        # cannot see, so it is counted rather than absorbed.
+        self.placed_reservation_reprojected_count = 0
+        self.placed_reservation_lost_count = 0
+        # Candidate placements declined because they overlap a footprint
+        # in a DIFFERENT visible cartridge. Expected to be 0: it means
+        # two twin entries claim the same physical space, which is a
+        # perception fault (a split or duplicated cartridge box), not a
+        # scene condition.
+        self.cross_cartridge_conflict_count = 0
+        # Executor results the twin could not record because their
+        # cartridge is no longer tracked. `main` counts these as placed -
+        # a battery WAS put down - so a non-zero count here is the twin
+        # and the world disagreeing about what is in the tray.
+        self.untracked_confirmation_count = 0
+        # PLACED reservations discarded because the frame's scale moved
+        # under their cartridge. `rescaled_area_drop_count` counts the
+        # cartridges; this counts the physical batteries that went with
+        # them.
+        self.rescaled_placed_reservation_drop_count = 0
 
     # ---- main cycle -----------------------------------------------------
 
@@ -289,7 +352,13 @@ class Planner:
         available: List[Battery] = self._reachable_batteries(
             self.env.available_batteries(), scale)
 
-        for ctg in sorted(self.env.cartridges.values(), key=lambda c: c.id):
+        # VISIBLE cartridges only. A tracked-but-unseen cartridge keeps
+        # its grid and its reservations - that memory is what stops a
+        # returning cartridge from being planned into twice - but it is
+        # not evidence about the scene in front of the camera right now,
+        # and planning into it would command the arm into a box that is
+        # not in this frame's snapshot.
+        for ctg in sorted(self.env.visible_cartridges(), key=lambda c: c.id):
             if ctg.placeable_rectangle is None or ctg.occupancy is None:
                 continue
 
@@ -304,23 +373,72 @@ class Planner:
             # deciding it inside the pose loop would let the
             # ran-out-of-batteries early return below report a cartridge
             # as unreachable when it was merely unvisited.
-            reachable = []
+            reachable: List[Tuple[object, Reservation]] = []
             for p in placements:
                 tx, ty = self._place_target(ctg, p)
-                if self._reaches(tx, ty):
-                    reachable.append(p)
+                if not self._reaches(tx, ty):
+                    self.unreachable_place_target_count += 1
                     continue
-                self.unreachable_place_target_count += 1
+                # The reservation is built HERE, before the pose, because
+                # the cross-cartridge interlock needs its workspace
+                # footprint and because building it twice would let the
+                # filter and the guard disagree about the same placement.
+                res = self._reservation_for(ctg, p)
+                clash = self._conflicts_with_another_cartridge(ctg, res)
+                if clash is not None:
+                    self._note_cross_cartridge_conflict(ctg, res, clash)
+                    continue
+                reachable.append((p, res))
             if placements and not reachable:
                 self.unreachable_cartridge_count += 1
 
-            for p in reachable:
+            for p, res in reachable:
                 if not available:
                     return queue
 
-                queue.append(self._build_pose(ctg, p, available, scale))
+                queue.append(self._build_pose(ctg, p, res, available, scale))
 
         return queue
+
+    def _conflicts_with_another_cartridge(
+        self, ctg: Cartridge, res: Reservation,
+    ) -> Optional[Tuple[int, Reservation]]:
+        """The FILTER half of the cross-cartridge interlock.
+
+        A named method for the same reason :meth:`_reaches` is one: it is
+        the seam a test disables in order to prove that the INVARIANT in
+        ``_build_pose`` is still live. They ask the same question of the
+        same reservations and they must — but a guard whose only proof is
+        that nothing has tripped it is not a proven guard.
+        """
+        return self.env.conflicting_reservation(
+            res, exclude_cartridge_id=ctg.id)
+
+    def _note_cross_cartridge_conflict(
+        self, ctg: Cartridge, res: Reservation,
+        clash: Tuple[int, Reservation],
+    ) -> None:
+        """Record a slot declined because another cartridge holds it.
+
+        Skipped and counted rather than raised, on the same reasoning as
+        an unreachable candidate: the usual cause is a segmenter that
+        described one physical cartridge with two boxes, and aborting the
+        run over an ordinary perception artefact would trade a silent
+        collision for a fragile pipeline. What must not happen is that
+        two overlapping place targets are both QUEUED, and after this
+        neither can be — the interlock in ``_build_pose`` re-asks the
+        same question and raises if one ever gets that far.
+        """
+        other_id, other = clash
+        self.cross_cartridge_conflict_count += 1
+        log.warning(
+            "cartridge %d: declining a placement at (%.1f, %.1f) mm - it "
+            "overlaps a %s battery of cartridge %d at (%.1f, %.1f) mm in "
+            "the workspace frame. Two twin entries claiming one piece of "
+            "physical space is a split or duplicated cartridge box, not "
+            "two cartridges",
+            ctg.id, res.wx_mm, res.wy_mm, other.state.name, other_id,
+            other.wx_mm, other.wy_mm)
 
     def _reaches(self, x_mm: float, y_mm: float) -> bool:
         """Whether the arm can serve a candidate at this workspace point.
@@ -387,6 +505,15 @@ class Planner:
         for ctg in self.env.cartridges.values():
             if ctg.placeable_rectangle is None:
                 continue
+            # A cartridge this frame did not contain is not re-measured
+            # against this frame's scale, because it is not being
+            # measured at all: it is memory, the planner will not plan
+            # into it (`cycle` iterates `visible_cartridges`), and
+            # dropping its grid here would destroy the physical record
+            # the tracking layer exists to keep. It is re-measured when
+            # it comes back, by the geometry-refresh path.
+            if not ctg.visible:
+                continue
             if ctg.mm_per_px is not None and ctg.mm_per_px == scale:
                 continue
             self.rescaled_area_drop_count += 1
@@ -399,6 +526,13 @@ class Planner:
             # rectangle that no longer applies. Keeping them would let
             # the collision interlock compare footprints from two
             # different scales, which is worse than not comparing.
+            #
+            # Counted, though. `rescaled_area_drop_count` says a
+            # cartridge lost its geometry; this says how many PHYSICAL
+            # batteries the twin forgot in the process, which is the
+            # number that matters and was previously invisible.
+            self.rescaled_placed_reservation_drop_count += len(
+                ctg.placed_reservations())
             ctg.reservations.clear()
 
     def _release_stale_reservations(self) -> None:
@@ -446,6 +580,12 @@ class Planner:
         """
         for ctg in self.env.cartridges.values():
             if ctg.placeable_rectangle is not None:
+                continue
+            # Extraction reads THIS frame's image inside the cartridge's
+            # box. For a cartridge this frame did not contain, that box
+            # is a memory and the pixels under it belong to whatever is
+            # there now, so there is nothing here to measure.
+            if not ctg.visible:
                 continue
             try:
                 kwargs = {}
@@ -505,6 +645,76 @@ class Planner:
             # and reading it back means an extractor that resolved the
             # scale differently cannot go unnoticed.
             ctg.mm_per_px = pa.mm_per_px
+            # A fresh grid reads all-FREE, and this cartridge may be
+            # holding batteries that were placed against the grid this
+            # one replaces. Put them back before anything packs against
+            # it.
+            self._reproject_placed_reservations(ctg)
+
+    def _reproject_placed_reservations(self, ctg: Cartridge) -> None:
+        """Re-mark physical batteries onto a newly measured grid.
+
+        A cartridge that moves keeps its batteries and loses its
+        measurement (:meth:`plan.scene.Cartridge.invalidate_geometry`).
+        Those batteries are recorded as ``Reservation``s in strip
+        millimetres relative to the placeable rectangle's corner — which
+        is the frame that MOVES WITH THE CARTRIDGE — so re-quantising the
+        same millimetres against the new grid puts each battery back
+        where it physically is.
+
+        The grid is a raster of the reservations; the reservations are
+        the record. That is why this direction is possible at all, and
+        why the reservation is kept even when the new grid cannot hold
+        it: an unrepresentable battery still answers the millimetre
+        interlock, and it is counted so that "the packer cannot see it"
+        is a number rather than a silence.
+        """
+        placed = ctg.placed_reservations()
+        if not placed:
+            return
+        occ = ctg.occupancy
+        restored = 0
+        rekeyed: Dict[Tuple[int, int], Reservation] = {
+            k: r for k, r in ctg.reservations.items()
+            if r.state is not CellState.PLACED
+        }
+        for res in placed:
+            row0, row1, col0, col1 = self._cell_block_for(
+                ctg, res.x_mm, res.y_mm, res.w_mm, res.h_mm, clip=True)
+            if row1 <= row0 or col1 <= col0:
+                self.placed_reservation_lost_count += 1
+                log.warning(
+                    "cartridge %d: a placed battery at (%.1f, %.1f) mm falls "
+                    "outside the re-measured placeable rectangle - the twin "
+                    "still refuses to place over it, but the packer can no "
+                    "longer see it", ctg.id, res.x_mm, res.y_mm)
+                rekeyed[(res.row, res.col)] = res
+                continue
+            res.row0, res.row1, res.col0, res.col1 = row0, row1, col0, col1
+            res.row, res.col = row0, col0
+            occ.set_block(row0, row1, col0, col1, CellState.PLACED)
+            if (row0, col0) in rekeyed:
+                # Two physical batteries quantising to one anchor cell
+                # cannot happen - a 13 x 44 cell footprint and the
+                # millimetre interlock together forbid it - so it means
+                # the reservations have been corrupted, and silently
+                # dropping one of them is how a battery stops existing.
+                raise RuntimeError(
+                    f"cartridge {ctg.id}: two reservations re-project onto "
+                    f"anchor ({row0}, {col0}) — the placed footprints no "
+                    "longer describe distinct batteries")
+            rekeyed[(row0, col0)] = res
+            restored += 1
+            self.placed_reservation_reprojected_count += 1
+        ctg.reservations = rekeyed
+        # The whole point of the exercise: a fresh grid that still reads
+        # empty after re-projecting batteries onto it would let the
+        # packer fill slots that are physically full.
+        if restored and occ.placed_count() == 0:
+            raise RuntimeError(
+                f"cartridge {ctg.id}: re-projected {len(placed)} placed "
+                "batteries onto the new occupancy grid and it still reads "
+                "as holding none")
 
     # ---- FFDH wrapper ---------------------------------------------------
 
@@ -560,6 +770,7 @@ class Planner:
         self,
         ctg: Cartridge,
         placement,
+        res: Reservation,
         available: List[Battery],
         frame_mm_per_px: float,
     ) -> PickPlacePose:
@@ -592,6 +803,23 @@ class Planner:
         self.env.workspace.require(
             target_x, target_y, f"place target for cartridge {ctg.id}")
 
+        # The cross-cartridge interlock, in its invariant form. `cycle`
+        # has already declined every placement that overlaps another
+        # visible cartridge's footprint, so this cannot fire while that
+        # filter is correct — which is why it stays. Two queued poses
+        # aimed at one piece of physical space is the failure it exists
+        # for, and it is a hard stop, never a skip at this altitude.
+        clash = self.env.conflicting_reservation(
+            res, exclude_cartridge_id=ctg.id)
+        if clash is not None:
+            other_id, other = clash
+            raise PlacementCollision(
+                f"cartridge {ctg.id}: placement at ({res.wx_mm:.1f}, "
+                f"{res.wy_mm:.1f}) mm overlaps a {other.state.name} battery "
+                f"of cartridge {other_id} at ({other.wx_mm:.1f}, "
+                f"{other.wy_mm:.1f}) mm — two twin entries are claiming the "
+                "same physical space")
+
         # Choose the nearest battery and consume it.
         bat = self._nearest_battery(available, ctg, placement)
         available.remove(bat)
@@ -602,7 +830,6 @@ class Planner:
         self.env.workspace.require(
             pick_x, pick_y, f"pick point for battery {bat.id}")
 
-        res = self._reservation_for(ctg, placement)
         row, col = res.row, res.col
         ctg.reserve(res)
 
@@ -714,11 +941,57 @@ class Planner:
         rounding lets the mask be tested at one size and marked at
         another.
         """
+        row0, row1, col0, col1 = self._cell_block_for(
+            ctg, placement.x, placement.y, placement.width, placement.height)
+        if ctg.placeable_rectangle is None:
+            # The workspace millimetres below come off the rectangle, and
+            # a Reservation carrying no workspace frame cannot be checked
+            # against any other cartridge's. A cartridge with a grid but
+            # no rectangle is not a state the planner produces (they are
+            # set together in _ensure_placement_areas), so this is a
+            # caller error rather than a case to paper over with a
+            # fallback that would silently disable the interlock.
+            raise RuntimeError(
+                f"cartridge {ctg.id}: cannot build a reservation without a "
+                "placeable_rectangle — there is no workspace frame to place "
+                "the footprint in")
+        wx_mm, wy_mm = self._cell_to_workspace(ctg, placement.x, placement.y)
+
+        return Reservation(
+            row=row0, col=col0, row0=row0, row1=row1, col0=col0, col1=col1,
+            x_mm=float(placement.x), y_mm=float(placement.y),
+            w_mm=float(placement.width), h_mm=float(placement.height),
+            wx_mm=float(wx_mm), wy_mm=float(wy_mm),
+        )
+
+    def _cell_block_for(
+        self, ctg: Cartridge, x_mm: float, y_mm: float,
+        w_mm: float, h_mm: float, clip: bool = False,
+    ) -> Tuple[int, int, int, int]:
+        """Quantise one strip-millimetre footprint to a half-open block.
+
+        One quantiser, two callers — ``_reservation_for`` for a new
+        placement and ``_reproject_placed_reservations`` for a battery
+        being carried onto a re-measured grid. They MUST round
+        identically: a battery marked at one size and tested at another
+        is how the packer seats a cell into space that is already full.
+
+        ``clip`` is the difference between the two. For a new placement,
+        a footprint reaching more than one cell past the grid means the
+        packing strip and the grid disagree about the rectangle and
+        every reservation in the cartridge is off by an unknown amount,
+        so it raises. For a battery being re-projected after the
+        cartridge moved, falling outside the new rectangle is an
+        ordinary consequence of re-measuring, and the caller counts it.
+        """
         occ = ctg.occupancy
+        if occ is None:
+            raise RuntimeError(
+                f"cartridge {ctg.id}: no occupancy grid to quantise against")
         res_mm = occ.resolution_mm
-        row0, col0 = self._xy_mm_to_cell(ctg, placement.x, placement.y)
-        row1 = int(np.ceil((placement.y + placement.height) / res_mm))
-        col1 = int(np.ceil((placement.x + placement.width) / res_mm))
+        row0, col0 = self._xy_mm_to_cell(ctg, x_mm, y_mm)
+        row1 = int(np.ceil((y_mm + h_mm) / res_mm))
+        col1 = int(np.ceil((x_mm + w_mm) / res_mm))
 
         # The strip is `pr.height * scale` mm while the grid is
         # `int(height_px / px_per_cell)` cells, so the far edge can sit
@@ -726,22 +999,23 @@ class Planner:
         # clips. More than one cell means the strip and the grid are
         # describing different rectangles, and every reservation in this
         # cartridge is then off by an unknown amount.
-        if row1 > occ.rows + 1 or col1 > occ.cols + 1:
+        if not clip and (row1 > occ.rows + 1 or col1 > occ.cols + 1):
             raise RuntimeError(
-                f"cartridge {ctg.id}: placement at ({placement.x:.1f}, "
-                f"{placement.y:.1f}) + ({placement.width:.1f} x "
-                f"{placement.height:.1f}) mm needs cells up to "
-                f"({row1}, {col1}) in a {occ.rows} x {occ.cols} grid at "
+                f"cartridge {ctg.id}: placement at ({x_mm:.1f}, "
+                f"{y_mm:.1f}) + ({w_mm:.1f} x {h_mm:.1f}) mm needs cells up "
+                f"to ({row1}, {col1}) in a {occ.rows} x {occ.cols} grid at "
                 f"{res_mm} mm — the packing strip and the occupancy grid "
                 "disagree about the placeable rectangle")
-        row1 = max(row0 + 1, min(occ.rows, row1))
-        col1 = max(col0 + 1, min(occ.cols, col1))
-
-        return Reservation(
-            row=row0, col=col0, row0=row0, row1=row1, col0=col0, col1=col1,
-            x_mm=float(placement.x), y_mm=float(placement.y),
-            w_mm=float(placement.width), h_mm=float(placement.height),
-        )
+        # `_xy_mm_to_cell` clips the near corner INTO the grid, which
+        # would turn a footprint lying entirely past the far edge into a
+        # one-cell block on the boundary — a battery marked somewhere it
+        # is not. Ask the millimetres instead; an empty block is the
+        # honest answer and the caller counts it.
+        if (x_mm >= occ.cols * res_mm or y_mm >= occ.rows * res_mm
+                or x_mm + w_mm <= 0 or y_mm + h_mm <= 0):
+            return (0, 0, 0, 0)
+        return (row0, max(row0 + 1, min(occ.rows, row1)),
+                col0, max(col0 + 1, min(occ.cols, col1)))
 
     # ---- execution feedback --------------------------------------------
 
@@ -762,8 +1036,24 @@ class Planner:
         failure.
         """
         if cartridge_id not in self.env.cartridges:
-            # The twin no longer tracks this cartridge (it was absent
-            # from the last snapshot), so there is no grid to update.
+            # The twin no longer tracks this cartridge, so there is no
+            # grid to update. A cartridge merely MISSING from the last
+            # snapshot still lands above - that is the point of tracking
+            # it - so reaching here means the track expired between the
+            # pose being built and the executor reporting on it, i.e.
+            # `tracking.max_missing_frames` frames went by mid-motion.
+            #
+            # `main` counts this as `placed`, because a battery really
+            # was put down; the twin has no record of where. That
+            # disagreement used to be a bare `return` (audit H, finding
+            # 1) and is now a counted, logged event.
+            self.untracked_confirmation_count += 1
+            log.error(
+                "confirm_placement for cartridge %d (%d, %d) success=%s: the "
+                "twin no longer tracks that cartridge, so this placement is "
+                "recorded NOWHERE. The next queue built for that space will "
+                "not know a battery is in it",
+                cartridge_id, row, col, success)
             return
         self.env.cartridge(cartridge_id).confirm(row, col, success)
 
