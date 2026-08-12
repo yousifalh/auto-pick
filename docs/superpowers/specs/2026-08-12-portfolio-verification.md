@@ -279,6 +279,16 @@ An interviewer who reads `placement-feasibility` §5 will ask this
 question, and it is the only place in the three documents where the
 answer is "not measured" rather than a number.
 
+> **Resolved, 2026-08-12** (added after this pass; the analysis above is
+> unaltered). The re-run was done at `83348fa` and is recorded as the
+> addendum to `2026-08-11-placement-feasibility.md`. The prediction in
+> this section is confirmed: the oracle moves to **25 cells in 11
+> cartridges** at inset 0.0 and the gap to shipping is **zero cells**.
+> `c70` (64.7 mm) is one of the two lost, as predicted; `c76` (65.1 mm)
+> survives, and the second lost cell is one of `c36`'s. At inset 4.25 the
+> oracle is unchanged at 24 / 10, so §1.3's finding stands. The three
+> documents now quote the same-code-state figures.
+
 ---
 
 ## 5. Student ID removed from `README.md`

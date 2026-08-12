@@ -425,3 +425,113 @@ the numbers are here so the trade can be made on evidence.
    region by up to 0.75 mm per edge and is currently *producing*
    placements (§5, finding 3). This is the one item here that argues for
    *less* placement, and it should be decided together with (1).
+
+---
+
+## Addendum, 2026-08-12 — the oracle re-measured at HEAD
+
+**Nothing above is altered.** Every number in §1–§8 was correct for the
+code state it was measured on (`9bfc25f`) and is left as written. This
+section records the same measurement re-run at `83348fa`, 752 tests
+passing, tree clean — and it exists because §5's oracle row and the
+`README`'s shipping row were being compared across two different code
+states, which `2026-08-12-portfolio-verification.md` §4 identified as the
+weakest surviving claim in the published material.
+
+Between the two states, item (5) above was acted on. `0d7d204` made
+`_rasterise_mask` call a grid cell FREE only when **every** pixel it
+covers is free, instead of when its centre pixel is. That change was
+measured on *predicted* masks (`2026-08-11-placement-safety.md` §2.2: the
+same 26 cells in the same 13 cartridges, two of them off the tray wall)
+and never on ground truth. The oracle is the arm it was not measured on.
+
+### Method
+
+Byte-for-byte the harness of §1, changing only the code state: 60 frames
+of `recog/dataset3d_seg` through `recog/checkpoints/best.pt` +
+`recog/checkpoints/seg/best.pt`, cartridge identity from
+`EnvironmentModel`'s running counter, each instance paired to its
+ground-truth unit by IoU between the detector box and the unit's union
+box, `recog.seg_dataset.rasterise_crop` painting the GT annotations into
+that unit's window, `SegmentationPlacementAreaExtractor(mm_per_cell=1.5)`
+at the frame's true GSD, then `Planner._pack_cartridge` /
+`pack_best_effort` with an 18.5 x 65.0 mm cell. Scratch script outside
+the repository; no code, config, metric definition or receipt was
+touched.
+
+**The harness was validated before it was trusted.** Running it with
+`9bfc25f`'s centre-pixel `_rasterise_mask` restored (the only
+monkeypatch, in the validation arm only) reproduces this file exactly:
+the same 30 instance IDs at the same frames, the IoU match range
+0.22–0.95 with 27 of 30 above 0.7, **12 instances / 27 cells at inset
+0.0**, **10 / 24 at inset 4.25**, and §3's per-SKU oracle counts (10000
+2 of 10, 13000 3, 20100 1, 26800 6). The shipping arm reproduces
+`2026-08-11-placement-safety.md` §4 exactly, including every per-instance
+count (`c7` 4, `c14` 2, `c36` 1, `c51` 1, `c53` 1, `c56` 1, `c57` 3,
+`c61` 1, `c64` 6, `c70` 1, `c80` 1, `c82` 3) and `scene_00014/c25` being
+the one crop the extent guard rejects.
+
+### Result
+
+| GT masks, GT unit box, true scale | instances (of 30) | cells |
+| --- | ---: | ---: |
+| inset 0.0, centre-pixel occupancy (`9bfc25f`, §5) | 12 | 27 |
+| **inset 0.0, whole-cell occupancy (HEAD)** | **11** | **25** |
+| inset 4.25, centre-pixel occupancy (`9bfc25f`, §5) | 10 | 24 |
+| **inset 4.25, whole-cell occupancy (HEAD)** | **10** | **24** |
+| *shipping at HEAD, for comparison* | *12* | *25* |
+
+Two cells and one cartridge leave the oracle at inset 0.0, and they are
+the two the whole-cell rule was predicted to take: `scene_00046/c70`
+(the 10000 at 64.7 mm against 65.0 needed — its single cell was pure
+quantisation optimism, and it is the cartridge that drops out) and one of
+`scene_00019/c36`'s two. `scene_00049/c76` at 65.1 mm survives; it clears
+the length on real pixels, not on rounding. §3's per-SKU line for the
+10000 therefore reads **1 of 10** at inset 0.0 at HEAD, not 2.
+
+At inset 4.25 the totals do not move, but the composition does: `c36`
+2 → 1 and `c57` 2 → 3. The whole-cell rule is strictly more restrictive
+(`c57`'s grid goes from 4032 free cells of 4560 to 3873), so the extra
+cell is `pack_best_effort` being a family of heuristics rather than an
+optimal packer — a different forbidden pattern can let the shelf/grid
+arms find a better arrangement. Worth knowing before anyone reads a
++1 as a bug.
+
+### What this does to the published comparison
+
+**The gap between shipping and the oracle is zero cells, not two.** At
+inset 0.0 — how the oracle has always been quoted — shipping matches it
+on cells (25 to 25) and exceeds it by one cartridge (12 to 11). At
+inset 4.25, the value that actually ships, ground truth gives 24 cells in
+10 cartridges and shipping exceeds it outright. The verification pass's
+prediction ("a re-run could plausibly move the oracle to 25 and the gap
+to zero") is confirmed.
+
+Net zero is not eight cells agreeing. Four move each way:
+
+| | shipping | oracle @ 0.0 |
+| --- | ---: | ---: |
+| `c7`, `c53`, `c70`, `c80` | 4, 1, 1, 1 | 3, 0, 0, 0 |
+| `c28`, `c51`, `c64`, `c76` | 0, 1, 6, 0 | 1, 2, 7, 1 |
+
+The two sets of productive cartridges share **nine**, not ten (the
+figure `2026-08-12-portfolio-verification.md` §1.2 computed against the
+old oracle).
+
+**Why shipping can exceed its own ground-truth oracle.** The predicted
+bay is slightly *more permissive* than the true one, so the packer is
+offered floor that ground truth calls wall. `docs/receipts/seg_eval.txt`
+measures exactly this from the segmenter side — 0.949 mm of bay-boundary
+displacement computed at 0.625 mm/px (≈1.30 mm at this corpus's median
+true GSD, §4) and a placeable-area error optimistic by 51.5 mm² per crop.
+`c53` is the instance §6 already singles out: the oracle refuses it
+(`L_free` 55.2 mm, six pieces of debris) and the pipeline places into it
+anyway. This is the same defect as the 2 residual unsafe placements in
+`2026-08-11-placement-safety.md` §4 — 8.3 % and 5.2 % of a footprint on
+`scene_00033/c57`'s left tray wall — counted from the other end: once as
+an extra placement, once as an overlap. It is not the system seeing
+better than ground truth, and it should never be quoted that way.
+
+`README.md`, `docs/PORTFOLIO.md` and `docs/CV_BULLETS.md` were updated to
+these figures in the same pass. `docs/receipts/` was not touched — no
+receipt quotes the oracle.
