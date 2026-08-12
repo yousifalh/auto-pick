@@ -37,6 +37,40 @@ from .materials import apply_to_object, for_role, set_input, rng_range
 
 
 # --------------------------------------------------------------------------- #
+#  surface properties that are also written into the manifest
+# --------------------------------------------------------------------------- #
+
+def _set_recorded(node, name: str, value) -> None:
+    """`materials.set_input`, but loud when the socket is not there.
+
+    `set_input` returns False and continues if the named socket is missing.
+    That tolerance is deliberate and stays: Principled socket names moved in
+    Blender 4.x, and `materials.build` relies on it to try `Coat Weight` then
+    `Clearcoat`. But every call site in THIS module writes the same value into
+    the `drawn` dict it returns, and `scene.py` puts that dict straight into
+    the render's manifest. A silent False therefore produces a render whose
+    surface is Blender's default while the manifest states the value that
+    never reached the shader - which is, exactly, the defect
+    `materials._assert_wear_mix_took` was written for after it discarded the
+    drawn roughness on 100% of surfaces.
+
+    Nothing here can be reached from pytest, so like that assertion this runs
+    on every surface built rather than in a test. The four socket names it
+    guards - Base Color, Roughness - are the ones that have NOT moved across
+    3.x/4.x/5.x; the ones that did move are set through plain `set_input` and
+    keep their tolerance.
+    """
+    if not set_input(node, name, value):
+        raise KeyError(
+            f"this Blender build's {node.name!r} has no {name!r} input, so "
+            f"{value!r} never reached the shader - while the manifest this "
+            f"function returns records it as though it had. The build offers "
+            f"{[s.name for s in node.inputs]}. A generator that renders "
+            f"something other than what it recorded is worse than one that "
+            f"stops, so this stops.")
+
+
+# --------------------------------------------------------------------------- #
 #  colour temperature
 # --------------------------------------------------------------------------- #
 
@@ -168,7 +202,7 @@ def build_backdrop(name: str, rng: random.Random, cfg, size: float = 3.0,
     bright.inputs["Bright"].default_value = drawn["brightness"]
     nt.links.new(color_out, bright.inputs["Color"])
     nt.links.new(bright.outputs["Color"], bsdf.inputs["Base Color"])
-    set_input(bsdf, "Roughness", drawn["roughness"])
+    _set_recorded(bsdf, "Roughness", drawn["roughness"])
     set_input(bsdf, "Metallic", 1.0 if spec.get("proc") == "brushed" else 0.0)
 
     if drawn["bump"] > 0.005:
@@ -609,8 +643,8 @@ def build_jig(pockets, rng: random.Random):
     mat.use_nodes = True
     nt = mat.node_tree
     bsdf = nt.nodes.get("Principled BSDF")
-    set_input(bsdf, "Base Color", tuple(drawn["color"]) + (1.0,))
-    set_input(bsdf, "Roughness", drawn["roughness"])
+    _set_recorded(bsdf, "Base Color", tuple(drawn["color"]) + (1.0,))
+    _set_recorded(bsdf, "Roughness", drawn["roughness"])
     set_input(bsdf, "Metallic", 0.0)
 
     # 3-D-print layer lines: a striped wave along Z, bumped into the normal.
@@ -1111,8 +1145,8 @@ def build_pcb(bounds_xy, floor_z: float, rng: random.Random,
     mat = bpy.data.materials.new("PCBGreen")
     mat.use_nodes = True
     bsdf = mat.node_tree.nodes.get("Principled BSDF")
-    set_input(bsdf, "Base Color", tuple(drawn["color"]) + (1.0,))
-    set_input(bsdf, "Roughness", drawn["roughness"])
+    _set_recorded(bsdf, "Base Color", tuple(drawn["color"]) + (1.0,))
+    _set_recorded(bsdf, "Roughness", drawn["roughness"])
     set_input(bsdf, "Metallic", 0.15)
     board.data.materials.append(mat)
 
@@ -1281,8 +1315,8 @@ def build_bay_proxy(placement, floor_z: float, rng: random.Random,
     mat = bpy.data.materials.new("BayFloor")
     mat.use_nodes = True
     bsdf = mat.node_tree.nodes.get("Principled BSDF")
-    set_input(bsdf, "Base Color", tuple(drawn["color"]) + (1.0,))
-    set_input(bsdf, "Roughness", drawn["roughness"])
+    _set_recorded(bsdf, "Base Color", tuple(drawn["color"]) + (1.0,))
+    _set_recorded(bsdf, "Roughness", drawn["roughness"])
     proxy.data.materials.append(mat)
 
     if rot_deg:

@@ -2526,7 +2526,115 @@ def test_a_brushed_backdrop_is_metallic_and_the_others_are_not(W):
 
 
 # =========================================================================== #
-#  13. source-level checks - what a stub bpy cannot reach
+#  13. _set_recorded - the manifest may not describe a value that never
+#      reached the shader
+#
+#  `materials.set_input` returns False and continues when a socket is
+#  missing. Every call site in world.py also writes that same value into the
+#  `drawn` dict scene.py puts in the render manifest, so a silent False
+#  renders a Blender default while the manifest states the drawn value - the
+#  exact defect `_assert_wear_mix_took` exists for, in a module that had no
+#  equivalent. Like that assertion this runs on every surface built rather
+#  than in a test, so each way it can fire is reproduced here.
+# =========================================================================== #
+
+@contextlib.contextmanager
+def _socket_renamed(old, new):
+    """Rename a Principled input across the whole stub, as a Blender release
+    would. The tolerance in `set_input` exists precisely because this has
+    happened before (Clearcoat -> Coat Weight)."""
+    table = _NODE_SOCKETS["ShaderNodeBsdfPrincipled"]
+    before = list(table[0])
+    table[0][:] = [((new if n == old else n), d) for n, d in before]
+    try:
+        yield
+    finally:
+        table[0][:] = before
+
+
+def test_the_rename_harness_actually_renames_the_socket(W):
+    """Guard the guard: if `_socket_renamed` silently did nothing, the four
+    tests below would pass on any code at all."""
+    with _socket_renamed("Roughness", "Surface Roughness"):
+        node = _Node("ShaderNodeBsdfPrincipled", "Principled BSDF")
+        assert "Roughness" not in node.inputs
+        assert "Surface Roughness" in node.inputs
+    assert "Roughness" in _Node("ShaderNodeBsdfPrincipled", "P").inputs
+
+
+@pytest.mark.parametrize("socket", ["Base Color", "Roughness"])
+def test_a_renamed_socket_stops_the_jig_rather_than_lying_about_it(W, socket):
+    with _socket_renamed(socket, socket + " 2"):
+        with pytest.raises(KeyError, match="never reached the shader"):
+            W.build_jig([_pocket(0, 0, 0.05, 0.03, 0.008)], rng())
+
+
+@pytest.mark.parametrize("socket", ["Base Color", "Roughness"])
+def test_a_renamed_socket_stops_the_board_rather_than_lying_about_it(W, socket):
+    with _socket_renamed(socket, socket + " 2"):
+        with pytest.raises(KeyError, match="never reached the shader"):
+            W.build_pcb((0, 0, 0.1, 0.06), 0.005, rng())
+
+
+@pytest.mark.parametrize("socket", ["Base Color", "Roughness"])
+def test_a_renamed_socket_stops_the_bay_proxy_rather_than_lying_about_it(
+        W, socket):
+    with _socket_renamed(socket, socket + " 2"):
+        with pytest.raises(KeyError, match="never reached the shader"):
+            W.build_bay_proxy((0.0, 0.0, 0.04, 0.02), 0.006, rng())
+
+
+def test_a_renamed_socket_stops_the_backdrop_rather_than_lying_about_it(W):
+    with _socket_renamed("Roughness", "Surface Roughness"):
+        with pytest.raises(KeyError, match="never reached the shader"):
+            W.build_backdrop("bd", rng(), _cfg(
+                backdrops={"bd": dict(_BACKDROP)}))
+
+
+def test_the_error_names_the_socket_and_what_the_build_does_offer(W):
+    """A rename is undiagnosable from the traceback alone unless the message
+    says what the running build actually has - the same requirement
+    `socket_by_identifier` carries."""
+    with _socket_renamed("Roughness", "Surface Roughness"):
+        with pytest.raises(KeyError) as exc:
+            W.build_bay_proxy((0.0, 0.0, 0.04, 0.02), 0.006, rng())
+    assert "Roughness" in str(exc.value)
+    assert "Surface Roughness" in str(exc.value)
+
+
+def test_sockets_that_have_genuinely_moved_keep_their_tolerance(W):
+    """The distinction this helper draws. `Metallic` is set but NOT recorded
+    in any manifest, so it stays on plain `set_input` and a build without it
+    must still render - that tolerance is why `set_input` exists at all."""
+    with _socket_renamed("Metallic", "Metalness"):
+        plate, drawn = W.build_jig([_pocket(0, 0, 0.05, 0.03, 0.008)], rng())
+        assert plate is not None
+        proxy, _ = W.build_bay_proxy((0.0, 0.0, 0.04, 0.02), 0.006, rng())
+        assert proxy is not None
+
+
+def test_every_manifest_recorded_surface_value_goes_through_the_check(W):
+    """The rule stated as source, so a NEW builder that records a colour or a
+    roughness cannot quietly go back to the silent form. Any `set_input` whose
+    value expression mentions `drawn[...]` must be a `_set_recorded`."""
+    tree = ast.parse(WORLD_PY.read_text(encoding="utf-8"))
+    offenders = []
+    for fn in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
+        for call in [n for n in ast.walk(fn) if isinstance(n, ast.Call)]:
+            if not (isinstance(call.func, ast.Name)
+                    and call.func.id == "set_input" and len(call.args) == 3):
+                continue
+            value_src = ast.dump(call.args[2])
+            if "'drawn'" in value_src:
+                offenders.append(f"{fn.name}:{call.args[1].value}")
+    assert offenders == [], (
+        f"these set_input calls write a value the manifest also records, so "
+        f"a missing socket would render a default while the manifest claims "
+        f"the drawn value: {offenders}. Use _set_recorded.")
+
+
+# =========================================================================== #
+#  14. source-level checks - what a stub bpy cannot reach
 # =========================================================================== #
 
 def _function(path: Path, name: str) -> ast.FunctionDef:
