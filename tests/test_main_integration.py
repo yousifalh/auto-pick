@@ -153,6 +153,219 @@ def test_run_surfaces_released_reservations(one_scene_config: Path,
             in receipt.read_text(encoding="utf-8"))
 
 
+# ------------------------------- the workspace envelope, end to end ----
+#
+# `planning.camera.workspace_bounds_mm` is not a preference: it is the
+# only thing in this system that can refuse to command the arm somewhere
+# it cannot go. The mock controller happily accepts MOVE_TO(5000, 5000,
+# 5000) on a 706 mm-reach arm (audit F, finding 2) and the 16-byte frame
+# carries no envelope, so nothing downstream of the planner will catch a
+# pose that gets past it.
+#
+# A camera legitimately sees past the arm's reach, so the planner SKIPS
+# unreachable candidates and counts them rather than aborting the frame
+# (docs/superpowers/specs/2026-08-12-fix-demo-workspace.md). These two
+# tests are the pair that has to hold together: the skipping must be
+# visible, and it must not have opened a route for an out-of-envelope
+# coordinate to reach the socket.
+
+TIGHT_ENVELOPE = (80.0, 350.0, 80.0, 350.0)   # x_min, x_max, y_min, y_max
+
+
+@pytest.fixture
+def tight_envelope_config(tmp_path: Path) -> Path:
+    """`demo_config` with an envelope narrower than the field of view.
+
+    640 x 480 px at 0.38 mm/px is a 243 x 182 mm frame starting at the
+    robot origin (`origin_offset_*` is 0), and the envelope covers only
+    the far corner of it, from 80 mm out. So the arm can serve part of
+    every frame and not the rest - the real cell's condition, and the one
+    `configs/demo_seg.yaml` is in at 1338 mm of field of view against
+    700 mm of envelope.
+
+    The bound is a LOWER one, and that is load-bearing rather than
+    arbitrary. `main` executes `queue[0]` and only `queue[0]`, and
+    row-major fill makes that the pose with the SMALLEST coordinates - so
+    an envelope that only cuts off the far edge could never put a
+    violation on the wire no matter how broken the filter was, and the
+    wire test below would pass while asserting nothing. Cutting off the
+    NEAR edge puts the first pose of every unfiltered queue outside the
+    envelope, which is what makes that test discriminating: with
+    `Planner._reaches` forced True and `WorkspaceBounds.require` stubbed
+    out, this fixture puts 4 out-of-envelope motions on the recorder -
+    MOVE_TO(25, 48), PICK_AND_PLACE(42, 152), MOVE_TO(31, 112),
+    PICK_AND_PLACE(156, 32) - and the test fails as it should.
+
+    Measured on this seed: 1 pose queued, ~23 place targets, ~4 batteries
+    and 1 whole cartridge declined.
+    """
+    root = tmp_path / "auto-pick-tight"
+    (root / "configs").mkdir(parents=True)
+    (root / "recog" / "dataset" / "images").mkdir(parents=True)
+    (root / "recog" / "dataset" / "annotations").mkdir(parents=True)
+
+    from recog.synth_dataset import generate_dataset
+    generate_dataset(str(root / "recog" / "dataset"), n=3, seed=9,
+                     size=(480, 640))
+
+    (root / "configs" / "recognition.yaml").write_text(
+        "dataset:\n"
+        f"  img_dir: {root}/recog/dataset/images\n"
+        "training:\n  checkpoint_dir: /tmp/nothing\n"
+    )
+    x0, x1, y0, y1 = TIGHT_ENVELOPE
+    (root / "configs" / "planning.yaml").write_text(
+        "battery: {diameter_mm: 18.5, length_mm: 65.0}\n"
+        "camera: {mm_per_px_x: 0.38, workspace_bounds_mm: "
+        f"{{x_min: {x0}, x_max: {x1}, y_min: {y0}, y_max: {y1}}}}}\n"
+        "cartridge: {safety_margin_px: 4}\n"
+        "occupancy_grid: {resolution_mm_per_cell: 1.5}\n"
+        "motion: {grasp_height_mm: 5, insert_height_mm: 2}\n"
+    )
+    (root / "configs" / "execution.yaml").write_text(
+        "kuka: {host: 127.0.0.1, port: 54623, max_retries: 3}\n"
+        "motion: {transport_height_mm: 80, vacuum_level_percent: 80}\n"
+        "simulation: {listen_host: 127.0.0.1, listen_port: 54623, "
+        "drop_probability: 0.0, simulated_move_time_ms_per_100mm: 5}\n"
+    )
+    demo = root / "configs" / "demo_tight.yaml"
+    demo.write_text(
+        "recognition: configs/recognition.yaml\n"
+        "planning: configs/planning.yaml\n"
+        "execution: configs/execution.yaml\n"
+        "mode:\n  source: synthetic\n  robot: mock\n  max_cycles: 3\n"
+        "  log_level: WARNING\n  stop_on_empty_queue: false\n"
+    )
+    return demo
+
+
+def test_no_coordinate_outside_the_envelope_reaches_the_wire(
+        tight_envelope_config: Path, monkeypatch):
+    """THE safety property, asserted on the BYTES, not on the queue.
+
+    Every command is intercepted at `KukaClient._send` - the last call
+    before `socket.sendall` - and parsed back with the protocol's own
+    `unpack_command`, so what is checked is the int32 millimetres the
+    controller would actually receive, not the float the planner
+    computed. Asserting on `planner.cycle`'s return value instead would
+    re-ask the module that does the filtering whether it filtered.
+
+    This is the test that must survive any future change to how
+    unreachable candidates are handled. Skipping them is a planning
+    decision and can be revisited; a coordinate outside the envelope
+    arriving at the socket cannot.
+    """
+    from execution.execution import KukaClient
+    from execution.protocol import OpCode, unpack_command
+
+    sent: list[bytes] = []
+    real_send = KukaClient._send
+
+    def _recording_send(self, packet):
+        sent.append(bytes(packet))
+        return real_send(self, packet)
+
+    monkeypatch.setattr(KukaClient, "_send", _recording_send)
+
+    stats = main_run(str(tight_envelope_config))
+
+    x0, x1, y0, y1 = TIGHT_ENVELOPE
+    motions = [
+        c for c in (unpack_command(p) for p in sent)
+        if c.op in (OpCode.MOVE_TO, OpCode.PICK_AND_PLACE)
+    ]
+    assert motions, "no motion command was sent; this test asserted nothing"
+    # The envelope must actually have been in play, or a run that simply
+    # fits inside it would pass this test while proving nothing.
+    assert stats["unreachable_place_targets"] \
+        + stats["unreachable_batteries"] > 0, (
+        "fixture must put part of the frame out of reach")
+
+    for cmd in motions:
+        assert x0 <= cmd.x_mm <= x1 and y0 <= cmd.y_mm <= y1, (
+            f"{cmd.op.name}({cmd.x_mm}, {cmd.y_mm}) mm went on the wire "
+            f"outside the declared envelope x [{x0}, {x1}] y [{y0}, {y1}]")
+
+
+def test_run_reports_what_the_arm_declined_to_serve(
+        tight_envelope_config: Path, tmp_path: Path):
+    """Skipped-as-unreachable has to be a NUMBER, not a shorter queue.
+
+    "The arm cannot reach those cells" and "there are no cells" produce
+    an identical `placed` count, an identical `queue_poses` deficit and
+    an identical clean exit. A demo that serves a third of the scene
+    while every other statistic reads like success is the silent
+    degradation this project keeps finding; these counters are the only
+    thing that distinguishes the two.
+    """
+    receipt = tmp_path / "receipts" / "tight.txt"
+    stats = main_run(str(tight_envelope_config), receipt_path=str(receipt))
+
+    assert stats["unreachable_place_targets"] > 0
+    assert stats["queue_poses"] > 0, (
+        "the reachable part of the frame must still be served")
+
+    text = receipt.read_text(encoding="utf-8")
+    assert (f"unreachable place targets: {stats['unreachable_place_targets']}"
+            in text)
+    assert (f"unreachable batteries    : {stats['unreachable_batteries']}"
+            in text)
+    assert (f"unreachable cartridges   : {stats['unreachable_cartridges']}"
+            in text)
+
+
+def test_a_run_that_can_reach_nothing_is_a_failed_run(tmp_path: Path):
+    """Skipping the unreachable is deliberate. Skipping ALL of it and
+    exiting 0 is not.
+
+    An envelope disjoint from the field of view means the camera and the
+    arm do not describe the same cell - `workspace_bounds_mm`,
+    `origin_offset_*` or `mm_per_px` is wrong - and every other number
+    the run prints is indistinguishable from an empty table.
+    """
+    root = tmp_path / "auto-pick-unreachable"
+    (root / "configs").mkdir(parents=True)
+    (root / "recog" / "dataset" / "images").mkdir(parents=True)
+    (root / "recog" / "dataset" / "annotations").mkdir(parents=True)
+
+    from recog.synth_dataset import generate_dataset
+    generate_dataset(str(root / "recog" / "dataset"), n=2, seed=9,
+                     size=(480, 640))
+
+    (root / "configs" / "recognition.yaml").write_text(
+        "dataset:\n"
+        f"  img_dir: {root}/recog/dataset/images\n"
+        "training:\n  checkpoint_dir: /tmp/nothing\n"
+    )
+    # Entirely in -x, while origin_offset_x_mm = 0 puts the whole frame
+    # in +x. Nothing in view is reachable.
+    (root / "configs" / "planning.yaml").write_text(
+        "battery: {diameter_mm: 18.5, length_mm: 65.0}\n"
+        "camera: {mm_per_px_x: 0.38, workspace_bounds_mm: "
+        "{x_min: -700, x_max: -10, y_min: -350, y_max: 350}}\n"
+        "cartridge: {safety_margin_px: 4}\n"
+        "occupancy_grid: {resolution_mm_per_cell: 1.5}\n"
+        "motion: {grasp_height_mm: 5, insert_height_mm: 2}\n"
+    )
+    (root / "configs" / "execution.yaml").write_text(
+        "kuka: {host: 127.0.0.1, port: 54629, max_retries: 3}\n"
+        "motion: {transport_height_mm: 80, vacuum_level_percent: 80}\n"
+        "simulation: {listen_host: 127.0.0.1, listen_port: 54629, "
+        "drop_probability: 0.0, simulated_move_time_ms_per_100mm: 5}\n"
+    )
+    demo = root / "configs" / "demo_nowhere.yaml"
+    demo.write_text(
+        "recognition: configs/recognition.yaml\n"
+        "planning: configs/planning.yaml\n"
+        "execution: configs/execution.yaml\n"
+        "mode:\n  source: synthetic\n  robot: mock\n  max_cycles: 2\n"
+        "  log_level: WARNING\n  stop_on_empty_queue: false\n"
+    )
+
+    with pytest.raises(RuntimeError, match="outside the robot workspace"):
+        main_run(str(demo))
+
+
 def test_full_cycle_with_a_stub_segmenter_attaches_masks_and_plans():
     """Recognition -> Planning boundary, end to end, with no torch and no
     trained checkpoint involved.

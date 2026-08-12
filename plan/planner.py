@@ -28,6 +28,27 @@ Every pose is checked against the robot's declared
 and place target both, because both are commanded to the arm. That
 envelope was parsed and compared against nothing (audit E, finding 5).
 
+The envelope is applied at **two altitudes**, because two different
+things were being conflated:
+
+* **A cartridge slot or a loose battery that lies outside the arm's
+  reach is a scene condition, not a bug.** A fixed-mount camera
+  legitimately images more table than a 706 mm-reach arm can serve, and
+  ``configs/demo_seg.yaml``'s frames span up to 1338 x 752 mm against a
+  700 mm envelope — no origin offset makes that fit. Those candidates
+  are **filtered out before a pose is built**, and counted
+  (``unreachable_place_target_count``, ``unreachable_battery_count``,
+  ``unreachable_cartridge_count``). Declining to serve part of the scene
+  is normal; declining *silently* is the failure this project keeps
+  finding, so it is a reported number rather than a shorter queue.
+* **A commanded pose outside the envelope is a planning bug**, and
+  :meth:`Planner._build_pose` still raises
+  :class:`plan.scene.OutOfWorkspace` on one. After the filter that
+  branch is unreachable in normal operation — which is the point. It is
+  the invariant on the only thing in this pipeline that constructs a
+  ``PickPlacePose``, and every byte the executor puts on the wire comes
+  from one. It is never a clamp.
+
 After the executor reports back, :meth:`Planner.confirm_placement`
 flips each PLANNED cell to PLACED on success, or reverts it to FREE
 on failure so a future cycle can retry.
@@ -205,6 +226,32 @@ class Planner:
         # with batteries nobody picked, and the alternative to counting
         # them is doing that silently.
         self.released_reservation_count = 0
+        # Candidates declined because the arm cannot reach them. A camera
+        # legitimately sees more table than the arm can serve, so these
+        # are NORMAL scene conditions rather than errors - but a run that
+        # serves 3 of 14 cartridges while reporting success is the
+        # silent-degradation failure this project keeps closing, so
+        # nothing is dropped without incrementing one of these.
+        #
+        # All three are summed over cycles, on the same convention as
+        # `main`'s `cartridges_detected`: the same physical slot seen in
+        # two frames counts twice.
+        #
+        # * place targets: packed placements whose centre falls outside
+        #   the envelope. One cartridge standing off the edge of the
+        #   reachable region contributes one per slot the packer proposed
+        #   in it.
+        # * batteries: loose cells whose pick point falls outside it.
+        #   Filtered from `available_batteries` BEFORE anything can
+        #   consume one, so an unreachable battery does not also spend a
+        #   slot.
+        # * cartridges: cartridges the packer found room in where NOT ONE
+        #   of those slots was reachable. This is the number that answers
+        #   "how much of the scene did the arm decline to serve", which
+        #   the per-slot counts do not.
+        self.unreachable_place_target_count = 0
+        self.unreachable_battery_count = 0
+        self.unreachable_cartridge_count = 0
 
     # ---- main cycle -----------------------------------------------------
 
@@ -239,22 +286,87 @@ class Planner:
             self._ensure_placement_areas(image_rgb, snapshot, scale)
 
         queue: List[PickPlacePose] = []
-        available: List[Battery] = list(self.env.available_batteries())
+        available: List[Battery] = self._reachable_batteries(
+            self.env.available_batteries(), scale)
 
         for ctg in sorted(self.env.cartridges.values(), key=lambda c: c.id):
             if ctg.placeable_rectangle is None or ctg.occupancy is None:
                 continue
 
             pack = self._pack_cartridge(ctg)
-
             # Row-major fill: sort packed placements by (y, x).
-            for p in sorted(pack.placements, key=lambda x: (x.y, x.x)):
+            placements = sorted(pack.placements, key=lambda x: (x.y, x.x))
+
+            # Reachability is decided for the WHOLE cartridge before any
+            # pose is built, deliberately. It is a property of the
+            # cartridge's geometry against the envelope and has nothing
+            # to do with how many loose batteries happen to be left, so
+            # deciding it inside the pose loop would let the
+            # ran-out-of-batteries early return below report a cartridge
+            # as unreachable when it was merely unvisited.
+            reachable = []
+            for p in placements:
+                tx, ty = self._place_target(ctg, p)
+                if self._reaches(tx, ty):
+                    reachable.append(p)
+                    continue
+                self.unreachable_place_target_count += 1
+            if placements and not reachable:
+                self.unreachable_cartridge_count += 1
+
+            for p in reachable:
                 if not available:
                     return queue
 
                 queue.append(self._build_pose(ctg, p, available, scale))
 
         return queue
+
+    def _reaches(self, x_mm: float, y_mm: float) -> bool:
+        """Whether the arm can serve a candidate at this workspace point.
+
+        A named method rather than an inline ``workspace.contains`` call,
+        deliberately. This is the **filter**: it decides which candidates
+        become poses, and answering "no" is an ordinary outcome.
+        :meth:`plan.scene.WorkspaceBounds.require`, in ``_build_pose``, is
+        the **invariant**: it decides whether a pose that already exists
+        may be commanded, and answering "no" is fatal.
+
+        They ask the same question of the same envelope, and they must —
+        but they are separate code paths on purpose, so a test can
+        disable this one and prove the other still fires. A guard whose
+        only proof is that nothing has tripped it is not a proven guard
+        (``tests/test_planner.py::
+        test_the_envelope_guard_fires_when_the_reachability_filter_is_bypassed``).
+        """
+        return self.env.workspace.contains(x_mm, y_mm)
+
+    def _reachable_batteries(
+        self, batteries: List[Battery], frame_mm_per_px: float,
+    ) -> List[Battery]:
+        """The loose batteries the arm can actually reach, counting the rest.
+
+        A battery lying outside the envelope is a **scene condition**: a
+        fixed-mount camera images more table than the arm can serve, and
+        on ``configs/demo_seg.yaml``'s renders it images nearly twice the
+        envelope in each axis. Raising here would make an ordinary frame
+        fatal; clamping would grasp empty table or the neighbour.
+
+        So it is skipped — and *counted*, because the third option, a
+        silently shorter queue, makes "the arm cannot reach those" and
+        "there are no batteries" the same observation. The filter runs
+        before ``_nearest_battery`` can consume anything, so an
+        unreachable cell does not also spend a cartridge slot.
+        """
+        out: List[Battery] = []
+        for bat in batteries:
+            x, y = self._image_to_workspace(
+                bat.bbox.cx, bat.bbox.cy, frame_mm_per_px)
+            if self._reaches(x, y):
+                out.append(bat)
+                continue
+            self.unreachable_battery_count += 1
+        return out
 
     def _drop_areas_measured_at_another_scale(self, scale: float) -> None:
         """Forget any placement area measured at a different scale.
@@ -461,13 +573,22 @@ class Planner:
         different while a cached area outlives a re-calibration - at
         which point using one for the other would put the gripper in the
         wrong place.
+
+        **The two ``require`` calls below are invariants, not filters.**
+        ``cycle`` has already dropped every unreachable place target and
+        every unreachable battery, so neither can fire while the filter
+        is correct — which is exactly why they stay. This method is the
+        only thing in the pipeline that constructs a ``PickPlacePose``,
+        and ``main`` hands ``queue[0]`` to the executor unmodified, so
+        every coordinate that reaches the wire came through here. If a
+        pose ever gets this far out of envelope, the filter is broken and
+        the arm must not be commanded; that is a hard stop, never a
+        clamp. ``tests/test_planner.py`` proves the guard is still live
+        by bypassing the filter and watching it fire.
         """
-        # Target place point (workspace mm).
-        cx_mm = placement.x + placement.width / 2
-        cy_mm = placement.y + placement.height / 2
-        target_x, target_y = self._cell_to_workspace(ctg, cx_mm, cy_mm)
         # Checked BEFORE a battery is consumed, so an out-of-envelope
         # target does not also silently spend one.
+        target_x, target_y = self._place_target(ctg, placement)
         self.env.workspace.require(
             target_x, target_y, f"place target for cartridge {ctg.id}")
 
@@ -508,6 +629,19 @@ class Planner:
         )
 
     # ---- geometry helpers ----------------------------------------------
+
+    def _place_target(self, ctg: Cartridge, placement) -> Tuple[float, float]:
+        """Workspace mm of the centre of one packed placement.
+
+        One function, two callers: ``cycle``'s reachability filter and
+        ``_build_pose``'s envelope invariant. They MUST agree — a filter
+        that computes the target one way and a guard that computes it
+        another is how a pose gets past the first and trips the second on
+        a scene that is perfectly ordinary.
+        """
+        cx_mm = placement.x + placement.width / 2
+        cy_mm = placement.y + placement.height / 2
+        return self._cell_to_workspace(ctg, cx_mm, cy_mm)
 
     def _nearest_battery(
         self,

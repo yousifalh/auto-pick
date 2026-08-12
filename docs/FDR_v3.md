@@ -1392,11 +1392,26 @@ Every way the new path could no-op therefore raises instead, including
 a completed run that produced zero placement areas.
 `configs/demo_seg.yaml` is the shipped instance, and
 `docs/receipts/main_seg_run.txt` is its tooling-generated receipt: **26
-cartridges detected → 26 segmented → 7 placement areas → 6 poses
-queued → 2 pick-and-places over 15 frames**, with one detector box
+cartridges detected → 26 segmented → 7 placement areas → 4 poses
+queued → 1 pick-and-place over 15 frames**, with one detector box
 rejected as not describing a single cartridge, and with every frame
 planned at its own ground sample distance read from that frame's
 render sidecar (15 of 15 frames carried one).
+
+**The same receipt now also reports what the arm declined to serve: 57
+of the 78 loose cells, 2 place targets and 1 whole cartridge, as
+outside `camera.workspace_bounds_mm`.** These renders span 627 × 353 to
+1338 × 752 mm at their own ground sample distances, against a 700 ×
+700 mm envelope, so most of what the camera images is out of reach —
+which is an ordinary property of a cell, not a fault. Until
+2026-08-12 the planner *aborted the whole run* on the first such
+target; it now skips them and counts them, and the counts are in the
+receipt because a shorter queue and an empty table are otherwise the
+same observation (§13.2.2,
+`docs/superpowers/specs/2026-08-12-fix-demo-workspace.md`). That change
+is what moved *6 poses → 4* and *2 pick-and-places → 1* from the
+2026-08-11 receipt: those two poses were never reachable and had been
+counted as though they were.
 
 **That receipt moved again at `b93bbd3`, and the superseded figures
 are worth naming.** It read *8 placement areas → 7 poses → 3
@@ -3087,11 +3102,14 @@ is not — and as of commit `cdd97fc` that is true of the running code
 and not only of this document. Also now demonstrated, and previously
 overstated: the segmenter runs in `main.py`'s end-to-end loop
 (`f40cc1b`, `configs/demo_seg.yaml`, `docs/receipts/main_seg_run.txt` —
-26 detected, 26 segmented, 7 placement areas, 6 poses queued, 2
-pick-and-places and 1 rejected detector box over 15 frames; this read
-"8 areas / 7 poses / 3 pick-and-places / 0 bad boxes" until the
-placement-safety fix at `b93bbd3`, and "1 pick-and-place" before the
-packer fix at `562ca75` and the per-frame calibration at `380e7d5`),
+26 detected, 26 segmented, 7 placement areas, 4 poses queued, 1
+pick-and-place and 1 rejected detector box over 15 frames, with 57 of
+78 loose cells outside the arm's workspace envelope; this read
+"7 areas / 6 poses / 2 pick-and-places" until the envelope became a
+counted filter rather than a fatal error on 2026-08-12, "8 areas / 7
+poses / 3 pick-and-places / 0 bad boxes" until the placement-safety fix
+at `b93bbd3`, and "1 pick-and-place" before the packer fix at `562ca75`
+and the per-frame calibration at `380e7d5`),
 where before it was unreachable under any configuration; see §8. Not
 demonstrated: synthetic-to-real
 transfer — the real-photo comparison now sits at three points (0.211,

@@ -152,14 +152,18 @@ argument and `_build_planner` hardcoded the heuristic. **Any earlier
 statement that the pipeline demonstrated the segmenter end to end was
 overstated; it is true now.** `configs/demo_seg.yaml` plus
 `docs/receipts/main_seg_run.txt`: 26 cartridges detected → 26 segmented
-→ 7 placement areas → 6 poses queued → 2 pick-and-places, with 1
-detector box rejected as not describing one cartridge. (This line read
-*8 placement areas → 1 pick-and-place* and was doubly stale: the pick
-count predated the packer fix at `562ca75`, which FDR §8 had already
-corrected to 3, and the area and box counts predate `b93bbd3`'s
-whole-cell rasterisation and box-contents guard. Regenerated
-2026-08-11 from `python main.py --config configs/demo_seg.yaml
---receipt docs/receipts/main_seg_run.txt`.) Every way the new path could
+→ 7 placement areas → 4 poses queued → 1 pick-and-place, with 1
+detector box rejected as not describing one cartridge and 57 of 78
+loose cells declined as outside the arm's workspace envelope. (This
+line read *6 poses → 2 pick-and-places* until 2026-08-12, when an
+out-of-envelope target stopped aborting the run and started being
+skipped and counted — those two poses were never reachable. Before
+that it read *8 placement areas → 1 pick-and-place* and was doubly
+stale: the pick count predated the packer fix at `562ca75`, which FDR
+§8 had already corrected to 3, and the area and box counts predate
+`b93bbd3`'s whole-cell rasterisation and box-contents guard.
+Regenerated 2026-08-12 from `python main.py --config
+configs/demo_seg.yaml --receipt docs/receipts/main_seg_run.txt`.) Every way the new path could
 no-op raises instead, including a completed run that produced zero
 placement areas. Those frames are the segmenter's own training corpus,
 so the receipt is evidence about the **wiring**, not a generalisation

@@ -13,6 +13,18 @@ NEXT_STEPS, PORTFOLIO, CV_BULLETS.
 
 ## 1. Job 1: `main_seg_run.txt` cannot currently be regenerated at all
 
+> **RESOLVED 2026-08-12**, later the same day, by
+> `2026-08-12-fix-demo-workspace.md`. This section is left as it was
+> measured. Its diagnosis held: the envelope, the origin offset and the
+> frames disagree, and no offset makes `demo_seg.yaml` fit. The missing
+> piece was that they *need not* agree — a fixed-mount camera
+> legitimately images more table than the arm can reach, so an
+> out-of-envelope **candidate** is now skipped and counted while an
+> out-of-envelope **commanded pose** still raises. Both demos run;
+> `main_seg_run.txt` is regenerated (7 areas / **4** poses / **1** pick,
+> with 57 of 78 loose cells declined as unreachable). Declining to widen
+> the envelope until the run completed was the right call.
+
 The receipt was to be refreshed because two behaviour-changing fixes landed
 after it was last written (`a649f43`, whole-footprint reservation;
 `d48dcbc`, latching E-stop and the removal of `place.z_mm`). It was not

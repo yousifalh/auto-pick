@@ -670,29 +670,131 @@ def test_an_unchanged_scale_does_not_drop_anything():
 # than none because it reads like an interlock. The proof it was inert
 # was that a deliberately tiny bound changed no test's outcome.
 #
-# It RAISES rather than clamps. A place target is where a cartridge slot
-# physically is and a pick point is where a battery physically lies;
-# moving either onto the envelope's edge does not make it reachable, it
-# makes it wrong - and a slightly-wrong motion that reports SUCCESS is
-# exactly the silent class this audit is closing.
+# It never clamps. A place target is where a cartridge slot physically
+# is and a pick point is where a battery physically lies; moving either
+# onto the envelope's edge does not make it reachable, it makes it wrong
+# - and a slightly-wrong motion that reports SUCCESS is exactly the
+# silent class this audit is closing.
+#
+# CORRECTED 2026-08-12. The two tests below used to assert that an
+# out-of-envelope CANDIDATE raises, and they were wrong about which
+# condition they were describing. A camera legitimately images more
+# table than the arm can reach: `configs/demo_seg.yaml`'s frames span up
+# to 1338 x 752 mm against a 700 mm envelope, so no origin offset makes
+# them fit and an ordinary frame was aborting the whole run
+# (docs/superpowers/specs/2026-08-12-fix-demo-workspace.md). A candidate
+# out of reach is a SCENE CONDITION and is now skipped and counted; a
+# POSE out of reach is a planning bug and still raises, which
+# `test_the_envelope_guard_fires_when_the_reachability_filter_is_bypassed`
+# is what proves.
 
 
-def test_a_place_target_outside_the_workspace_raises():
+def test_a_place_target_outside_the_workspace_is_skipped_and_counted():
+    """Not raised - and not silently dropped either.
+
+    A five-millimetre envelope reaches no slot in this cartridge, so the
+    queue is empty. The counter is what makes that distinguishable from
+    "the cartridge is full", which is the whole point: they are the same
+    empty queue and they want opposite responses.
+    """
     planner = _make_planner(workspace=WorkspaceBounds(-5, 5, -5, 5))
     snap = _snapshot_with_cart_and_batteries([(5, 5)])
+
+    queue = planner.cycle(snap, _synth_image())
+
+    assert queue == []
+    assert planner.unreachable_place_target_count > 0
+    # The packer found room and not one slot of it was reachable.
+    assert planner.unreachable_cartridge_count == 1
+
+
+def test_a_pick_point_outside_the_workspace_is_skipped_and_counted():
+    """A battery the camera can see but the arm cannot reach is not a
+    pose to attempt at the nearest reachable point, and not a reason to
+    abort a frame either. It is one cell the robot declines to serve."""
+    planner = _make_planner()
+    # 2000 px * 0.38 mm/px = 760 mm, well past the +/-350 envelope, while
+    # the place targets stay inside it.
+    snap = _snapshot_with_cart_and_batteries([(2000, 2000)])
+
+    queue = planner.cycle(snap, _synth_image())
+
+    assert queue == []
+    assert planner.unreachable_battery_count == 1
+    # The CARTRIDGE was reachable; only the battery was not. Collapsing
+    # the two would be the same conflation this change is undoing.
+    assert planner.unreachable_cartridge_count == 0
+
+
+def test_a_camera_that_sees_further_than_the_arm_reaches_still_plans():
+    """The demo's actual condition, and the regression test for it.
+
+    Part of the field of view is served, the rest is declined, the run
+    continues, and every pose that comes out is inside the envelope.
+    """
+    planner = _make_planner(workspace=WorkspaceBounds(-150, 150, -150, 150))
+    # 20 cells well inside the reachable region, 4 well outside it.
+    reachable = [(20 + 10 * i, 20) for i in range(20)]
+    unreachable = [(2000, 2000)] * 4
+    snap = _snapshot_with_cart_and_batteries(reachable + unreachable)
+
+    queue = planner.cycle(snap, _synth_image())
+
+    assert queue, "the reachable part of the cartridge must still be planned"
+    ws = planner.env.workspace
+    for p in queue:
+        assert ws.contains(p.place.x_mm, p.place.y_mm), p.place
+        assert ws.contains(p.pick.x_mm, p.pick.y_mm), p.pick
+    # Both kinds of skip are visible, and the cartridge is NOT declared
+    # unreachable - part of it was served.
+    assert planner.unreachable_battery_count == 4
+    assert planner.unreachable_place_target_count > 0
+    assert planner.unreachable_cartridge_count == 0
+
+
+def test_the_envelope_guard_fires_when_the_reachability_filter_is_bypassed():
+    """THE proof that the invariant is still load-bearing.
+
+    With the filter skipping unreachable candidates, `_build_pose`'s two
+    `WorkspaceBounds.require` calls can no longer fire in normal
+    operation - which is exactly how a guard rots into decoration. So the
+    filter is disabled here (`Planner._reaches` exists as a named seam
+    for precisely this) and the guard must still refuse to emit the pose.
+
+    If this test goes green after someone deletes those `require` calls
+    because "nothing reaches them", the deletion has been caught.
+    """
+    planner = _make_planner(workspace=WorkspaceBounds(-150, 150, -150, 150))
+    # Everything now looks reachable to the filter. Nothing has changed
+    # about the envelope itself.
+    planner._reaches = lambda x_mm, y_mm: True
+
+    snap = _snapshot_with_cart_and_batteries([(20 + 10 * i, 20)
+                                              for i in range(20)])
     with pytest.raises(OutOfWorkspace, match="place target"):
         planner.cycle(snap, _synth_image())
 
 
-def test_a_pick_point_outside_the_workspace_raises():
-    """A battery the camera can see but the arm cannot reach is not a
-    pose to attempt at the nearest reachable point."""
-    planner = _make_planner()
-    # 2000 px * 0.38 mm/px = 760 mm, well past the +/-350 envelope, while
-    # the place target stays inside it.
-    snap = _snapshot_with_cart_and_batteries([(2000, 2000)])
-    with pytest.raises(OutOfWorkspace, match="pick point"):
-        planner.cycle(snap, _synth_image())
+def test_an_unreachable_slot_does_not_consume_a_battery():
+    """Skipping must happen BEFORE `_nearest_battery` takes one.
+
+    Row-major fill visits the low-x slots first, and this envelope makes
+    exactly those unreachable. With one battery on the table, a filter
+    that ran after the assignment would spend it on the first skipped
+    slot and return an empty queue; the battery has to survive to the
+    first slot the arm can actually serve.
+    """
+    planner = _make_planner(workspace=WorkspaceBounds(100, 350, -350, 350))
+    # 400 px * 0.38 = 152 mm, inside x [100, 350].
+    snap = _snapshot_with_cart_and_batteries([(400, 100)])
+
+    queue = planner.cycle(snap, _synth_image())
+
+    assert planner.unreachable_place_target_count > 0, (
+        "fixture must actually skip some slots for this to assert anything")
+    assert planner.unreachable_battery_count == 0
+    assert len(queue) == 1
+    assert queue[0].place.x_mm >= 100.0
 
 
 def test_poses_inside_the_envelope_are_emitted_unchanged():

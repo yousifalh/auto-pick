@@ -36,6 +36,19 @@ mode:
 # ephemeral TCP port and wall-clock timings. Detector jitter would have
 # moved those counts, and cannot produce a pick_failed at all.
 #
+# RE-MEASURED 2026-08-12, 10 runs, after the workspace envelope became
+# load-bearing: same 37 / 77 / 33 / 0 / 0, released_reservations 2, and
+# queue_poses 41 rather than 62. The 21 lost poses were pick or place
+# points outside `planning.camera.workspace_bounds_mm` that the loop used
+# to command anyway, because the envelope was parsed and compared against
+# nothing. It is enforced now - and because a fixed-mount camera
+# legitimately images more table than the arm can reach, an out-of-reach
+# candidate is SKIPPED AND COUNTED rather than aborting the run (this
+# config aborted outright between 2026-08-11 and 2026-08-12). Each of the
+# ten runs declined 14 place targets, 15 loose cells and 2 whole
+# cartridges; those three counts are in the run summary and the receipt.
+# See docs/superpowers/specs/2026-08-12-fix-demo-workspace.md.
+#
 # The actual cause is a DELIBERATE simulated hardware failure, injected
 # behind the robot protocol and downstream of everything torch touches:
 # mock_kuka_server.py draws `random.random() < drop_prob` for a failed

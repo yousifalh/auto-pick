@@ -300,6 +300,17 @@ def _planned_cartridge_ids(planner: Planner) -> Set[int]:
             if c.placeable_rectangle is not None}
 
 
+def _unreachable_total(planner: Planner) -> int:
+    """Every candidate the planner has declined as out of envelope.
+
+    Place targets plus batteries; the cartridge counter is deliberately
+    NOT summed in, because it is a roll-up of the place-target count over
+    the same skips and adding it would double-count them.
+    """
+    return (planner.unreachable_place_target_count
+            + planner.unreachable_battery_count)
+
+
 # --------------------------------------------------------- main loop ---
 
 def run(config_path: str, receipt_path: Optional[str] = None) -> Dict[str, int]:
@@ -419,6 +430,17 @@ def run(config_path: str, receipt_path: Optional[str] = None) -> Dict[str, int]:
     # goes empty and the run reports "queue empty, job done" over a tray
     # that is still full. `placed` would look identical.
     stats["released_reservations"] = planner.released_reservation_count
+    # Candidates the arm declined to serve because they lie outside
+    # `planning.camera.workspace_bounds_mm`. A fixed-mount camera images
+    # more table than the arm can reach - `configs/demo_seg.yaml`'s
+    # frames span up to 1338 x 752 mm against a 700 mm envelope - so
+    # these are ordinary scene conditions, not errors, and the planner
+    # skips them instead of aborting the run. They are reported because
+    # the alternative is a demo that serves 3 of 14 cartridges while
+    # every other number here reads like a clean success.
+    stats["unreachable_place_targets"] = planner.unreachable_place_target_count
+    stats["unreachable_batteries"] = planner.unreachable_battery_count
+    stats["unreachable_cartridges"] = planner.unreachable_cartridge_count
 
     # A segmentation run that planned nothing is a FAILED run, not a
     # quiet one. The two ways this happens are both configuration
@@ -437,6 +459,29 @@ def run(config_path: str, receipt_path: Optional[str] = None) -> Dict[str, int]:
             "trained on Blender renders (recog/dataset3d_seg); on other "
             "corpora it predicts no `bay` and this pipeline plans "
             "nothing while still exiting cleanly.")
+
+    # A run that queued NOTHING while declining candidates as out of
+    # envelope has not observed an empty scene - it has observed a scene
+    # it cannot reach any part of, which is a configuration error about
+    # `workspace_bounds_mm`, `origin_offset_*` or `mm_per_px` and looks
+    # identical to "no batteries today" in every other statistic here.
+    # Skipping the unreachable is deliberate; skipping ALL of it and
+    # exiting 0 is the silent success this project keeps closing.
+    #
+    # The threshold is zero rather than a ratio on purpose: any ratio
+    # would be a number nobody measured, and a partly-reachable scene is
+    # a legitimate cell layout that the counters above already describe.
+    if stats["queue_poses"] == 0 and _unreachable_total(planner) > 0:
+        raise RuntimeError(
+            f"no pose was queued in "
+            f"{stats['cycles'] + stats['empty_queue']} cycles and "
+            f"{stats['unreachable_place_targets']} place targets, "
+            f"{stats['unreachable_batteries']} batteries and "
+            f"{stats['unreachable_cartridges']} whole cartridges were "
+            "declined as outside the robot workspace envelope. The camera "
+            "and the arm do not overlap: check "
+            "planning.camera.workspace_bounds_mm against origin_offset_* "
+            "and the frame's mm_per_px.")
 
     log.info("Run summary: %s", stats)
 
@@ -503,14 +548,21 @@ def _run_one_cycle(
     # 2. Planning.
     t0 = time.perf_counter()
     before = _planned_cartridge_ids(planner)
+    unreachable_before = _unreachable_total(planner)
     queue: List[PickPlacePose] = planner.cycle(snap, img_rgb)
     stats["placement_areas"] += len(_planned_cartridge_ids(planner) - before)
     stats["queue_poses"] += len(queue)
     dt_plan = (time.perf_counter() - t0) * 1000
 
+    # Per-cycle, not cumulative: `queue=0 unreachable=0` is an empty
+    # scene and `queue=0 unreachable=31` is a scene the arm cannot
+    # reach, and those two lines have to be distinguishable while the
+    # run is happening rather than only in the summary.
     log.info(
-        "cycle=%d perc=%.1fms plan=%.1fms cartridges=%d masks=%d queue=%d",
+        "cycle=%d perc=%.1fms plan=%.1fms cartridges=%d masks=%d queue=%d "
+        "unreachable=%d",
         cycle_idx, dt_perc, dt_plan, n_cartridges, n_masks, len(queue),
+        _unreachable_total(planner) - unreachable_before,
     )
 
     if not queue:
@@ -618,15 +670,31 @@ def _write_receipt(
         f"  bad detector boxes     : {stats['bad_detector_boxes']}",
         f"  areas dropped (rescale): {stats['rescaled_area_drops']}",
         "",
+        "Outside the arm's reach. The camera images more table than the",
+        "arm can serve, so the planner declines those candidates and",
+        "carries on rather than aborting - `unreachable cartridges` counts",
+        "cartridges where the packer found room but NOT ONE slot was",
+        "reachable. Nothing here is an error; a zero `poses queued` beside",
+        "a non-zero count here means the envelope and the field of view",
+        "disagree (planning.camera.workspace_bounds_mm, origin_offset_*).",
+        "",
+        f"  unreachable place targets: {stats['unreachable_place_targets']}",
+        f"  unreachable batteries    : {stats['unreachable_batteries']}",
+        f"  unreachable cartridges   : {stats['unreachable_cartridges']}",
+        "",
         "Execution (mock KUKA unless mode.robot is `real`). A pose needs a",
         "placement area AND a free battery in the SAME frame, and the loop",
         "executes at most one pose per cycle before re-planning (PPR 5.4),",
         "so `placed` is bounded by cycles, not by placement areas.",
+        "`reservations released` is non-zero only when a cartridge SURVIVES",
+        "into the next cycle: on a corpus of unrelated scenes the twin drops",
+        "the whole cartridge and its reservations go with it, uncounted, so",
+        "a 0 there means the scenes did not repeat - not that nothing leaked.",
         "",
         f"  loose batteries detected: {stats['batteries_detected']}",
         f"  poses queued           : {stats['queue_poses']}",
         f"  reservations released  : {stats['released_reservations']} "
-        f"(queued, then re-planned before execution - expected non-zero)",
+        f"(queued, then re-planned before execution)",
         f"  placed                 : {stats['placed']}",
         f"  pick failed            : {stats['pick_failed']}",
         f"  place failed           : {stats['place_failed']}",

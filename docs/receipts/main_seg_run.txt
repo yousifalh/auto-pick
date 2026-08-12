@@ -1,7 +1,7 @@
 
 End-to-end run: recognition -> planning -> execution
 ==================================================================
-  generated     : 2026-08-11T20:08:13
+  generated     : 2026-08-12T17:16:13
   command       : python main.py --config configs/demo_seg.yaml --receipt docs/receipts/main_seg_run.txt
   config        : configs/demo_seg.yaml
   frames        : recog/dataset3d_seg/images
@@ -18,7 +18,7 @@ counts twice); `placement areas` counts twin cartridges that newly
 obtained one, and IDs are never reused, so it does not double-count
 a cartridge that simply persisted.
 
-  cycles executed        : 2
+  cycles executed        : 1
   cartridges detected    : 26
   cartridges segmented   : 26
   placement areas        : 7
@@ -26,17 +26,34 @@ a cartridge that simply persisted.
   bad detector boxes     : 1
   areas dropped (rescale): 0
 
+Outside the arm's reach. The camera images more table than the
+arm can serve, so the planner declines those candidates and
+carries on rather than aborting - `unreachable cartridges` counts
+cartridges where the packer found room but NOT ONE slot was
+reachable. Nothing here is an error; a zero `poses queued` beside
+a non-zero count here means the envelope and the field of view
+disagree (planning.camera.workspace_bounds_mm, origin_offset_*).
+
+  unreachable place targets: 2
+  unreachable batteries    : 57
+  unreachable cartridges   : 1
+
 Execution (mock KUKA unless mode.robot is `real`). A pose needs a
 placement area AND a free battery in the SAME frame, and the loop
 executes at most one pose per cycle before re-planning (PPR 5.4),
 so `placed` is bounded by cycles, not by placement areas.
+`reservations released` is non-zero only when a cartridge SURVIVES
+into the next cycle: on a corpus of unrelated scenes the twin drops
+the whole cartridge and its reservations go with it, uncounted, so
+a 0 there means the scenes did not repeat - not that nothing leaked.
 
   loose batteries detected: 78
-  poses queued           : 6
-  placed                 : 2
+  poses queued           : 4
+  reservations released  : 0 (queued, then re-planned before execution)
+  placed                 : 1
   pick failed            : 0
   place failed           : 0
-  empty queue (run ended): 13
+  empty queue (run ended): 14
 
 The remaining cartridges are not errors. The segmenter
 predicts no `bay` channel on most crops - those raise a plain
