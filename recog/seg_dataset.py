@@ -6,7 +6,7 @@ physical UNIT into one training crop: the image inside a jittered union
 box, plus a dense label map over the same window.
 
 Grouping is by unit, not by `cartridge` annotation. BEFORE the
-tray-interior fix (commits 27cbd97..9fcf136), an OPEN cartridge had no
+tray-interior fix (commits a31ac28..043e92d), an OPEN cartridge had no
 surviving `cartridge` mask at all - the electronics module and bay proxy
 sat flush on the outer top face and covered it entirely, so the index
 pass reported no shell pixels, and cropping to `cartridge` annotations
@@ -26,7 +26,7 @@ obstruction annotations, because both come from the one physical
 object. This is no longer the disjoint case the paragraph above
 describes for the pre-fix generator: as a snapshot (measured
 2026-08-09 on the 502-scene / 841-crop dataset that shipped in
-`43aa607`, not a claim that holds for whatever dataset exists when you
+`cd86d1f`, not a claim that holds for whatever dataset exists when you
 read this), 210 of 841 units/crops carry a `cartridge` annotation
 together with at least one of `placement_area`/`electronics_module`/
 `obstruction` on the SAME `unit_id` (176 of 502 scenes at the coarser
@@ -236,7 +236,7 @@ class BaySegDataset:
         # One sample per UNIT, not per `cartridge` annotation.
         #
         # This is not a stylistic choice. BEFORE the tray-interior fix
-        # (27cbd97..9fcf136), an OPEN cartridge had no surviving
+        # (a31ac28..043e92d), an OPEN cartridge had no surviving
         # `cartridge` mask at all: the electronics module and bay proxy
         # covered the shell's entire top face, so the index pass reported
         # no shell pixels. Cropping to `cartridge` annotations therefore

@@ -613,7 +613,7 @@ class SegmentationPlacementAreaExtractor:
 
         Needs the frame's scale, which is why it could not have been
         written before ``mm_per_px`` became a property of the frame
-        (`58dd21d`): at the old fixed 0.625 this same P_safe measured
+        (`380e7d5`): at the old fixed 0.625 this same P_safe measured
         67.5 mm on its short axis and would have passed.
         """
         short_mm, long_mm = placeable_extent_mm(safe, mm_per_px)

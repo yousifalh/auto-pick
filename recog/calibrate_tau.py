@@ -515,8 +515,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # Two corrections against the version that shipped before
     # 2026-08-11, both of which made this CLI unrunnable or wrong:
     # `coco_path` was never passed, so this line raised TypeError before
-    # reaching a single measurement ever since 138105d added the argument
-    # (the same defect 58dd21d fixed in recog.seg_ablation - and the
+    # reaching a single measurement ever since 75db46a added the argument
+    # (the same defect 380e7d5 fixed in recog.seg_ablation - and the
     # reason docs/receipts/tau_calibration.txt could not be regenerated);
     # and `out_size` was left at native while seg_training's stored
     # counts come off a DataLoader that rasterises at crop_size, so the
