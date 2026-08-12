@@ -81,7 +81,22 @@ class PlannerConfig:
     mm_per_px: Optional[float] = None
     origin_offset_x_mm: float = 0.0
     origin_offset_y_mm: float = 0.0
-    pick_approach_height_mm: float = 60.0
+    # The Z that goes on the wire as the PICK target, and it is a GRASP
+    # height, not an approach. `krl_prog/routines.src` takes the
+    # commanded pick pose as the point to close the gripper at and
+    # DERIVES its own approach from it (`approach_pos.Z = pick_pos.Z +
+    # 60`, then `LIN pick_pos`). Putting an approach height here made
+    # the controller approach at +120 mm and "grasp" at 60 mm - clear
+    # of the part - after which `$IN[10]` reports no vacuum and the
+    # cycle returns PICK_FAILED. `mock_kuka_server` cannot fail that
+    # grasp (it models no parts) so it warns once above
+    # `_GRASP_BAND_MM`; `tests/test_planner.py` asserts the queue stays
+    # inside that band.
+    #
+    # There is deliberately no approach height in this config: the
+    # approach is controller-side and the frame has no field to carry a
+    # second Z. See docs/superpowers/specs/2026-08-12-fix-execution-safety.md.
+    pick_grasp_height_mm: float = 5.0
     place_insert_height_mm: float = 2.0
     allow_rotation: bool = True
 
@@ -90,6 +105,19 @@ class PlannerConfig:
         battery = cfg.get("battery", {}) or {}
         camera = cfg.get("camera", {}) or {}
         motion = cfg.get("motion", {}) or {}
+        # `approach_height_mm` used to feed the pick Z. Silently ignoring
+        # it now would leave a key that looks like it still sets the
+        # pick height and does not - the exact failure mode
+        # `configs/execution.yaml`'s five deleted motion keys were, so
+        # it is refused by name instead.
+        if "approach_height_mm" in motion:
+            raise ValueError(
+                "motion.approach_height_mm no longer configures anything: "
+                "the wire Z is the GRASP pose and krl_prog/routines.src "
+                "derives the approach from it (+60 mm). Use "
+                "motion.grasp_height_mm if you mean the grasp height, or "
+                "delete the key - the approach is controller-side and the "
+                "16-byte frame has no field for it.")
         raw_scale = camera.get("mm_per_px_x")
         return cls(
             battery_width_mm=float(battery.get("diameter_mm", 18.5)),
@@ -100,8 +128,8 @@ class PlannerConfig:
             mm_per_px=None if raw_scale is None else float(raw_scale),
             origin_offset_x_mm=float(camera.get("origin_offset_x_mm", 0.0)),
             origin_offset_y_mm=float(camera.get("origin_offset_y_mm", 0.0)),
-            pick_approach_height_mm=float(
-                motion.get("approach_height_mm", 60.0),
+            pick_grasp_height_mm=float(
+                motion.get("grasp_height_mm", 5.0),
             ),
             place_insert_height_mm=float(motion.get("insert_height_mm", 2.0)),
             allow_rotation=True,
@@ -457,11 +485,16 @@ class Planner:
         row, col = res.row, res.col
         ctg.reserve(res)
 
+        # `pick.z_mm` is the GRASP height and reaches the wire;
+        # `place.z_mm` is the insert depth and does NOT (the 16-byte
+        # frame has one Z field, and the pick needs it - see
+        # KukaClient.pick_and_place). Both are documented on
+        # PlannerConfig.
         return PickPlacePose(
             pick=WorkspacePoint(
                 x_mm=pick_x,
                 y_mm=pick_y,
-                z_mm=self.cfg.pick_approach_height_mm,
+                z_mm=self.cfg.pick_grasp_height_mm,
             ),
             place=WorkspacePoint(
                 x_mm=target_x,

@@ -88,8 +88,51 @@ def test_cycle_produces_poses():
     for p in queue:
         assert p.cartridge_id >= 0
         assert 0 <= p.grid_row < 10_000
-        assert p.pick.z_mm == planner.cfg.pick_approach_height_mm
+        assert p.pick.z_mm == planner.cfg.pick_grasp_height_mm
         assert p.place.z_mm == planner.cfg.place_insert_height_mm
+
+
+def test_pick_z_is_a_grasp_height_the_controller_can_actually_grasp_at():
+    """CORRECTED contract. `pick.z_mm` used to carry
+    `pick_approach_height_mm` (60 mm), and the assertion above passed
+    just as happily because it compared the pose against the same field.
+
+    `krl_prog/routines.src` takes the commanded pick pose as the GRASP
+    point and derives its own approach from it (`approach_pos.Z =
+    pick_pos.Z + 60`, then `LIN pick_pos`). An approach height on the
+    wire therefore made the controller descend to 60 mm - clear of an
+    18.5 mm cell lying on the table - close the gripper on air, read
+    `$IN[10]` false and return PICK_FAILED on every cycle.
+
+    Asserted against `mock_kuka_server`'s own band constant rather than
+    a number copied into this file, so the two cannot drift apart: the
+    simulator warns above that band precisely because it models no parts
+    and cannot fail the grasp itself.
+    """
+    from execution.mock_kuka_server import _GRASP_BAND_MM, Z_MIN_MM
+
+    planner = _make_planner()
+    queue = planner.cycle(
+        _snapshot_with_cart_and_batteries([(5, 5), (10, 5), (15, 5)]),
+        _synth_image())
+    assert queue, "fixture must produce poses for this to assert anything"
+    for p in queue:
+        assert Z_MIN_MM < p.pick.z_mm <= _GRASP_BAND_MM, (
+            f"pick.z_mm = {p.pick.z_mm} is outside the grasp band "
+            f"(0, {_GRASP_BAND_MM}] the controller grasps in; "
+            "mock_kuka_server would warn and a real KRC would return "
+            "PICK_FAILED")
+
+
+def test_planner_config_refuses_the_retired_approach_height_key():
+    """A `motion.approach_height_mm` that silently did nothing would be
+    the same trap `configs/execution.yaml`'s five deleted motion keys
+    were: parsed, plausible, and read by nothing."""
+    with pytest.raises(ValueError, match="approach_height_mm"):
+        PlannerConfig.from_dict({
+            "camera": {"mm_per_px_x": 0.5},
+            "motion": {"approach_height_mm": 60.0},
+        })
 
 
 def test_cycle_marks_the_whole_footprint_of_every_queued_cell():
@@ -320,13 +363,13 @@ def test_planner_config_from_dict():
         "battery": {"diameter_mm": 21.0, "length_mm": 70.0},
         "camera": {"mm_per_px_x": 0.5, "origin_offset_x_mm": 10.0,
                    "origin_offset_y_mm": -5.0},
-        "motion": {"approach_height_mm": 50.0, "insert_height_mm": 3.0},
+        "motion": {"grasp_height_mm": 6.0, "insert_height_mm": 3.0},
     })
     assert cfg.battery_width_mm == 21.0
     assert cfg.battery_length_mm == 70.0
     assert cfg.mm_per_px == 0.5
     assert cfg.origin_offset_x_mm == 10.0
-    assert cfg.pick_approach_height_mm == 50.0
+    assert cfg.pick_grasp_height_mm == 6.0
     assert cfg.place_insert_height_mm == 3.0
 
 
