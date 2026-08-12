@@ -896,6 +896,64 @@ as this item's next steps in Step 5 below. Measurement:
 `docs/superpowers/specs/2026-08-11-placement-safety.md` §2.3–§2.4;
 decision and rationale: FDR §13.2.1.
 
+### 7. Three gaps the 2026-08-12 claim audit opened, that documentation cannot close
+
+The FDR corrections of 2026-08-12
+(`docs/superpowers/specs/2026-08-12-fdr-claim-corrections.md`) fixed
+sixteen claims by making the report match the code. Three of them can
+only be *fully* closed by writing code, and are recorded here so they
+are not mistaken for finished:
+
+**(a) No vacuum-dwell bound exists, and none is specified** (FDR §11.2).
+The report claimed one for months; there is no timer in
+`execution/execution.py`, none in `krl_prog/routines.src`, and no
+configured dwell to enforce. The fix is *not* host-side: a pick is one
+`PICK_AND_PLACE` opcode and the whole on–transport–off sequence runs
+controller-side, so the host is never told when the vacuum came on and
+cannot time it. It belongs in `PickAndPlace` — a KRL timer or interrupt
+armed at `VacuumControl(..., TRUE, ...)` that drops `$OUT[1]` and
+returns a fault after a specified dwell — plus that dwell written down
+as a requirement. Neither exists. Note what the mock can and cannot
+check: `mock_kuka_server` does track `vacuum_on` and correctly drops it
+on a Cat-0 stop, but it has no notion of *elapsed* dwell, so a bound
+added controller-side would need a test that measures time rather than
+state.
+
+**(b) O3's published latency distribution has no artefact.**
+`bench_cycles.py` was never committed (`git log --all` is empty for it),
+so "mean 5.0 / median 3.0 / p95 13.0 ms" — and the 10 % `empty_queue`
+rate in FDR §10.6 — cannot be checked in either direction. The budget
+itself is fine: two committed tests and §13.2.1 exercise it, and audit K
+measured the true worst case at 2.04 ms against 8 ms. What is missing is
+a committed cycle benchmark emitting the distribution, in the shape
+`scripts/forbidden_bench.py` and `scripts/detector_bench.py` already
+take. **Related and load-bearing:** that 3.9× margin is held by
+`_MAX_CARTRIDGE_EXTENT_MM = (81.7, 180.0)` in
+`plan/placement_area.py`, a safety interlock written to reject bad
+detector boxes, which incidentally caps the packer's input size. Raising
+it for a larger SKU raises the packing cost and no test would notice.
+A comment at that constant saying so is the cheapest change on this
+list.
+
+**(c) Nine `configs/planning.yaml` keys are read by nothing**, including
+`packing.algorithm: ffdh` — which names an algorithm the planner
+stopped running on 2026-08-11 (both call sites use `pack_best_effort`)
+— and `packing.rotation_allowed`, which `PlannerConfig` overrides with a
+hardcoded `allow_rotation=True`. This is the defect class
+`configs/execution.yaml` had its five `motion:` keys deleted for: a key
+that looks live and is not is worse than a missing one. `planning.yaml`
+never got that pass. FDR Appendix B now strikes them from the schema
+list; the file itself is unchanged. Two of them,
+`cartridge.morph_close_ksize` / `.morph_open_ksize`, are the worst to
+leave: real constructor parameters of
+`HeuristicPlacementAreaExtractor` exist with the same names and the same
+values, so a reader checking whether the config reaches the code will
+find the parameter and stop looking. The mirror-image finding: there is
+**no `motion:` block in `planning.yaml` at all**, so
+`pick_grasp_height_mm` (5.0) and `place_insert_height_mm` (2.0) — both
+read by `PlannerConfig.from_dict` — come from dataclass defaults that no
+config states.
+
 ---
 
 ## What to do, in order

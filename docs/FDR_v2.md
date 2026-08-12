@@ -886,8 +886,8 @@ bottleneck.
 | ID | Threshold | Verdict | Receipt |
 |----|-----------|:-------:|---------|
 | O1 | mAP@0.5 ≥ 0.90 | **Partial** — 0.87 default anchors / 0.76 custom anchors / 0.40 heuristic; 0.03 short of 0.90 inside envelope | §10.1, §10.7 |
-| O2 | Centroid error ≤ 2 px | Pass (in-domain) | `tests/test_evaluate.py` |
-| O3 | Queue rebuild ≤ 8 ms median | Pass (0.14 ms FFDH; 3 ms full-planner median) | §10.2, §10.4 |
+| O2 | Centroid error ≤ 2 px | ~~Pass (in-domain)~~ **Fail as an absolute bound** — corrected 2026-08-12; `tests/test_evaluate.py` unit-tests the metric and measures no detector. Measured: shipped detector 1.13 px median / 4.37 px p95, 24 % outside the bound. See FDR v3 §10.5. | `docs/receipts/detector_bench.txt` |
+| O3 | Queue rebuild ≤ 8 ms median | Pass on the threshold; the **3 ms median is not reproducible** — `bench_cycles.py` was never committed (FDR v3 §10.4) | §10.2, §10.4 |
 | O4 | Recover from single pick failure | Pass | `test_execution.py` |
 | O5 | Deterministic queue | Pass | `test_planner.py` |
 | O6 | ≥ 70 % coverage | Pass (86 %) | `pytest --cov`, §9.3 |
@@ -905,10 +905,18 @@ The heuristic-detector failures across the 100-image synthetic dataset
 were exhaustively categorised against the IoU ≥ 0.5 ground-truth match
 criterion. Of the 134 ground-truth objects in the dataset, the heuristic
 matched 134 − 391 / 100 ≈ 41 % of batteries and 52 % of cartridges (this
-is the recall axis on Figure 8). It produced **zero false positives**
+is the recall axis on Figure 8). ~~It produced **zero false positives**
 across all 100 frames — when it fires it is right 100 % of the time —
-which means the entire recall gap is explained by misses, broken down
+which means the entire recall gap is explained by misses~~, broken down
 as follows:
+
+**Withdrawn 2026-08-12.** The claim was never measured. Run over all
+100 frames at the IoU ≥ 0.5 criterion this section declares, the
+heuristic returns 431 detections of which **50 are false positives**:
+precision **0.884** overall, **0.970** on batteries and **0.687** on
+cartridges. The `(LOW_IOU) 50` row that used to close the table below
+*was* that count under another name. Receipt
+`docs/receipts/detector_bench.txt`; full correction in FDR v3 §10.6.
 
 | Failure mode | Count | Share of misses |
 |--------------|------:|----------------:|
@@ -1016,7 +1024,14 @@ place a cell across exposed contacts, and never retain a cell under
 vacuum beyond the specified dwell. The vacuum gripper eliminates crushing
 forces because holding force is set by controlled vacuum, not jaw
 closure. The cartridge PCB subtraction prevents any place pose over an
-exposed busbar. The executor bounds vacuum dwell to 5 s by construction.
+exposed busbar. ~~The executor bounds vacuum dwell to 5 s by
+construction.~~ **Withdrawn 2026-08-12: no vacuum-dwell bound exists
+anywhere in this system, no dwell is specified, and
+`execution/execution.py`'s own `_emergency_stop` docstring says the arm
+"may be holding a cell with the vacuum on and nothing can tell it to
+let go". The nearest 5 s is `command_timeout_ms`, which bounds one
+status wait. Full assessment, including whether a host-side bound is
+implementable at all, in FDR v3 §11.2.**
 Beyond cell safety, the project collects no personal data; imagery is
 industrial components only. Professional responsibility follows the
 Engineering Council *Statement of Ethical Principles* (2023) —
@@ -1172,8 +1187,10 @@ projects where hardware is available, is a defensible default
 strategy and would shift more verification effort to the
 reproducible side of the line.
 
-What surprised: the heuristic detector's *zero false positives*
-across 100 frames (§10.6). Going in, it was assumed that the
+**Withdrawn 2026-08-12 — see §10.6 above and FDR v3 §13.3. Measured
+precision is 0.884, not 1.0.**
+~~What surprised: the heuristic detector's *zero false positives*
+across 100 frames (§10.6).~~ Going in, it was assumed that the
 heuristic's primary risk was wild firing on workbench glare or
 saturated regions; the data showed the opposite — when the rule
 fires it is right 100 % of the time, and the entire failure budget
@@ -1417,8 +1434,8 @@ included so the matrix doubles as a compliance audit trail.
 | O1      | mAP@0.5 ≥ 0.90 on val                            | `recog/model.py`        | T + A  | `train_default.log`, `frcnn_map_default.txt`, §10.1 | **Partial** — 0.874     |
 | O1.a    | Heuristic baseline measurable                    | `recog/inference.py`    | T      | `pr_summary.txt`, Figure 8                         | Pass — mAP 0.479 (val)  |
 | O1.b    | Custom-anchor design ablation-justified          | `recog/training.py`     | T + A  | `train_curve.csv`, `train_curve_default.csv`, §10.7| Pass — defaults +0.16   |
-| O2      | Centroid error ≤ 2 px on detected cells          | `recog/evaluate.py`     | T      | `tests/test_evaluate.py`                           | Pass                    |
-| O3      | Queue rebuild ≤ 8 ms median                      | `plan/planner.py`       | T + A  | `bench_cycles.py`, Figure 4                        | Pass — 3 ms median      |
+| O2      | Centroid error ≤ 2 px on detected cells          | `recog/evaluate.py`     | T      | `docs/receipts/detector_bench.txt`, `scripts/detector_bench.py` | ~~Pass~~ **Fail as a bound** (2026-08-12) — the former artefact, `tests/test_evaluate.py`, measures no detector and asserts a 5 px error as correct. See FDR v3 §10.5. |
+| O3      | Queue rebuild ≤ 8 ms median                      | `plan/planner.py`       | T + A  | `tests/test_planner.py`, `tests/test_packing_ceiling.py` | Pass on the threshold; **the 3 ms median is unreproducible** — `bench_cycles.py` was never committed (2026-08-12). |
 | O3.a    | FFDH no-overlap invariant                        | `plan/bin_packing.py`   | T      | `tests/test_bin_packing.py::_assert_no_overlaps`   | Pass                    |
 | O3.b    | FFDH rotation gain quantified                    | `plan/bin_packing.py`   | T + A  | `ffdh_ablation.csv`, Figure 7                      | Pass — 0–57 % gain      |
 | O4      | Recover from a single pick failure               | `execution/execution.py`| D      | `tests/test_execution.py`                          | Pass                    |
