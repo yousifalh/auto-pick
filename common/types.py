@@ -233,6 +233,15 @@ class RobotStatusCode(IntEnum):
     TIMEOUT = 4
     CRC_ERROR = 5
     ESTOP = 6
+    # 7 and 8 exist because a controller that answers "I could not parse
+    # that" must be able to say WHY. Reporting an unknown opcode or a
+    # version mismatch as CRC_ERROR (which the simulator did) makes a
+    # build mismatch indistinguishable from a noisy cable, and the two
+    # want opposite responses: retry the line, versus stop and fix the
+    # build. execution.KukaClient retries CRC_ERROR and treats these two
+    # as fatal.
+    UNSUPPORTED_COMMAND = 7
+    VERSION_MISMATCH = 8
 
 
 @dataclass(frozen=True)

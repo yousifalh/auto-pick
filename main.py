@@ -51,7 +51,8 @@ except Exception as exc:  # pragma: no cover - hard dep
 from common.config import load_demo_config
 from common.logging import get_logger
 from common.types import ClassLabel, PickPlacePose, RobotStatusCode
-from execution.execution import ExecutionConfig, KukaClient
+from execution.execution import (ExecutionConfig, KukaClient, RobotEstop,
+                                 RobotFault)
 from plan.placement_area import (HeuristicPlacementAreaExtractor,
                                  SegmentationPlacementAreaExtractor)
 from plan.planner import Planner, PlannerConfig
@@ -380,6 +381,27 @@ def run(config_path: str, receipt_path: Optional[str] = None) -> Dict[str, int]:
                     stop_on_empty,
                 ):
                     break
+    except RobotEstop:
+        # The controller is in a Category-0 stop. This loop's previous
+        # behaviour was to record it as a failed placement and command
+        # the next motion; a controller saying it is stopped must stop
+        # the host. The run ends here, loudly, and the summary stats are
+        # deliberately NOT returned - a stopped run is not a run that
+        # produced numbers.
+        log.critical(
+            "RUN ABORTED after %d cycles: the robot is in a Category-0 "
+            "stop. No further motion has been or will be commanded. "
+            "Partial statistics: %s", stats["cycles"], stats,
+        )
+        raise
+    except RobotFault:
+        log.critical(
+            "RUN ABORTED after %d cycles: the EthernetKRL channel failed "
+            "and an E-stop was attempted. The arm's state is UNKNOWN - it "
+            "may be holding a cell. Partial statistics: %s",
+            stats["cycles"], stats,
+        )
+        raise
     finally:
         if srv is not None:
             srv.shutdown()
@@ -489,6 +511,10 @@ def _run_one_cycle(
     #    PPR §5.4: a failure triggers a fresh queue rebuild; a success
     #    marks the cell PLACED and pops it off.
     pose = queue[0]
+    # Raises RobotEstop / RobotFault rather than returning ESTOP,
+    # CRC_ERROR, TIMEOUT or an unrecognised code; `run` catches those
+    # and ends the run. What reaches the branches below is therefore
+    # only an ordinary placement OUTCOME.
     status = kuka.pick_and_place(pose)
 
     if status.code == RobotStatusCode.SUCCESS:
@@ -501,11 +527,22 @@ def _run_one_cycle(
             pose.cartridge_id, pose.grid_row, pose.grid_col, False,
         )
         stats["pick_failed"] += 1
-    else:
+    elif status.code == RobotStatusCode.PLACE_FAILED:
         planner.confirm_placement(
             pose.cartridge_id, pose.grid_row, pose.grid_col, False,
         )
         stats["place_failed"] += 1
+    else:
+        # This used to be the `else` that swallowed ESTOP, CRC_ERROR and
+        # every unrecognised code as a failed place and carried on. If
+        # the client's classification ever lets a new code through, that
+        # is a bug in the mapping and it stops the run here rather than
+        # being counted as a placement failure.
+        raise RuntimeError(
+            f"cycle {cycle_idx}: the controller returned "
+            f"{status.code.name}, which execution.KukaClient should have "
+            "classified as retryable or fatal before returning. Refusing "
+            "to command further motion.")
 
     stats["cycles"] += 1
     return True

@@ -29,6 +29,40 @@ from dataclasses import dataclass
 from enum import IntEnum
 
 
+# ------------------------------------------------------ parse errors ---
+
+class ProtocolError(ValueError):
+    """Base class for every integrity failure ``unpack_*`` can report.
+
+    It subclasses :class:`ValueError` so that callers written against
+    the original contract — ``except ValueError`` — keep working
+    unchanged. The subclasses exist because the three failures are not
+    the same fault and a controller must not answer them identically: a
+    CRC mismatch is a line fault, an unsupported version is a firmware
+    mismatch, and an unknown opcode is a command this end cannot
+    execute. Collapsing all three into ``CRC_ERROR`` (which
+    :mod:`execution.mock_kuka_server` used to do) leaves the host unable
+    to tell corruption from a protocol mismatch, and the two want
+    opposite responses — retry the line, versus stop and fix the build.
+    """
+
+
+class FrameLengthError(ProtocolError):
+    """The buffer handed to ``unpack_*`` was not exactly 16 bytes."""
+
+
+class CrcError(ProtocolError):
+    """The CRC-16 trailer does not match the body."""
+
+
+class VersionMismatch(ProtocolError):
+    """The version byte names a protocol revision this end cannot parse."""
+
+
+class UnsupportedOpCode(ProtocolError):
+    """A well-formed frame carrying an opcode this end does not implement."""
+
+
 PROTOCOL_VERSION = 0x01
 COMMAND_LEN = 16
 STATUS_LEN = 16
@@ -107,7 +141,7 @@ def pack_command(
 def unpack_command(buf: bytes) -> Command:
     """Parse a command packet. Raises ValueError on any integrity failure."""
     if len(buf) != COMMAND_LEN:
-        raise ValueError(
+        raise FrameLengthError(
             f"command must be {COMMAND_LEN} bytes, got {len(buf)}"
         )
 
@@ -115,14 +149,19 @@ def unpack_command(buf: bytes) -> Command:
     (crc_rx,) = struct.unpack(_CRC_FMT, buf[_BODY_LEN:])
     crc_calc = crc16_modbus(body)
     if crc_rx != crc_calc:
-        raise ValueError(
+        raise CrcError(
             f"CRC mismatch: rx=0x{crc_rx:04X} calc=0x{crc_calc:04X}"
         )
 
     version, op_byte, x, y, z, aux = struct.unpack(_BODY_FMT, body)
     if version != PROTOCOL_VERSION:
-        raise ValueError(f"unsupported protocol version 0x{version:02X}")
-    return Command(OpCode(op_byte), x, y, z, aux)
+        raise VersionMismatch(
+            f"unsupported protocol version 0x{version:02X}")
+    try:
+        op = OpCode(op_byte)
+    except ValueError as exc:
+        raise UnsupportedOpCode(f"unknown opcode 0x{op_byte:02X}") from exc
+    return Command(op, x, y, z, aux)
 
 
 # ---------------------------------------------------------- status --
@@ -148,12 +187,13 @@ def pack_status(
 def unpack_status(buf: bytes) -> dict:
     """Parse a status packet. Raises ValueError on length or CRC failure."""
     if len(buf) != STATUS_LEN:
-        raise ValueError(f"status must be {STATUS_LEN} bytes, got {len(buf)}")
+        raise FrameLengthError(
+            f"status must be {STATUS_LEN} bytes, got {len(buf)}")
 
     body = buf[:_BODY_LEN]
     (crc_rx,) = struct.unpack(_CRC_FMT, buf[_BODY_LEN:])
     if crc_rx != crc16_modbus(body):
-        raise ValueError("CRC mismatch")
+        raise CrcError("CRC mismatch")
 
     _version, code, x, y, z, cycle_ms = struct.unpack(_BODY_FMT, body)
     return {
@@ -168,9 +208,14 @@ def unpack_status(buf: bytes) -> dict:
 __all__ = [
     "COMMAND_LEN",
     "Command",
+    "CrcError",
+    "FrameLengthError",
     "OpCode",
     "PROTOCOL_VERSION",
+    "ProtocolError",
     "STATUS_LEN",
+    "UnsupportedOpCode",
+    "VersionMismatch",
     "crc16_modbus",
     "pack_command",
     "pack_status",

@@ -3,25 +3,46 @@ kuka:
   host: 172.31.1.147
   port: 54600
   protocol: ethernet_krl_3_1
+  # The three keys below are declarations ABOUT execution/protocol.py,
+  # not knobs on it. They used to be read by nothing, so editing
+  # crc_polynomial changed no CRC and editing command_length_bytes
+  # changed no frame. ExecutionConfig.from_dict now cross-checks all
+  # three against the code and raises if they disagree.
   command_length_bytes: 16
   crc_polynomial: 0xA001   # CRC-16/MODBUS
-  handshake_timeout_ms: 2000
-  command_timeout_ms: 5000
-  heartbeat_interval_ms: 50
-  max_retries: 3
   stop_category: 0  # IEC 60204 Cat-0 immediate stop on fatal error
+  handshake_timeout_ms: 2000  # bounds the handshake ack, not just connect()
+  command_timeout_ms: 5000    # deadline for a whole status frame
+  heartbeat_interval_ms: 50   # the pause between retries; NOT a heartbeat —
+                              # nothing in this repository sends OpCode.HEARTBEAT
+  max_retries: 3
 
 motion:
-  approach_height_mm: 60.0
-  grasp_height_mm: 5.0
   transport_height_mm: 80.0
-  insert_height_mm: 2.0
-  default_velocity_mm_s: 150.0
-  safety_max_velocity_mm_s: 250.0
   vacuum_level_percent: 80
+  # Removed 2026-08-12, all five read by nothing and none of them
+  # reachable from here (docs/superpowers/specs/2026-08-12-fix-execution-safety.md):
+  #
+  #   approach_height_mm / grasp_height_mm / insert_height_mm
+  #     The 16-byte frame carries ONE Z per command. The pick Z is on the
+  #     wire; the approach (+60 mm) and the insert descent are derived
+  #     controller-side in krl_prog/routines.src. Editing these keys
+  #     changed nothing anywhere in the system. The planner's own
+  #     approach/insert heights live in planning.yaml's `motion:` block,
+  #     which plan.PlannerConfig.from_dict reads.
+  #
+  #   default_velocity_mm_s / safety_max_velocity_mm_s
+  #     The frame carries no velocity field, so the host can neither
+  #     command a speed nor cap one. `safety_max_velocity_mm_s: 250` was a
+  #     safety-named key enforced by nothing. The real cap is
+  #     controller-side: `$VEL.CP = 0.150` in krl_prog/routines.src, plus
+  #     the KRC's own T1/T2 limits. Do not re-add a host-side speed cap
+  #     without a velocity field to enforce it with.
 
 simulation:
-  # Used by mock_kuka_server.py
+  # Used by mock_kuka_server.py. The simulator's workspace envelope is
+  # NOT configurable: it is the KR 6 R700's 706 mm reach, a property of
+  # the modelled machine (mock_kuka_server.REACH_MM).
   listen_host: 127.0.0.1
   listen_port: 54600
   simulated_move_time_ms_per_100mm: 180
