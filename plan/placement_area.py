@@ -50,7 +50,7 @@ except Exception as exc:  # pragma: no cover - hard dep
     raise ImportError("opencv-python is required") from exc
 
 from common.types import BBox
-from plan.scene import Cartridge, CellState, OccupancyGrid
+from plan.scene import CellState, OccupancyGrid
 
 
 # ------------------------------------------------------------- result ---
@@ -493,6 +493,23 @@ _DEFAULT_WALL_INSET_MM = 4.25
 # bound that only fires on the physically
 # impossible needs no tolerance term, and a tolerance term is a knob
 # somebody would later tune to make a number move.
+#
+# THIS CONSTANT ALSO BOUNDS PACKING LATENCY, which is an accident and is
+# recorded here because nothing else would say so. `common.packing.
+# pack_best_effort` costs grow with the occupancy grid's cell count and
+# with the item count, and `plan/planner.py` ties the two together
+# (`n_est = 2*area/(18.5*65)`). Bisected against FDR requirement O3's
+# 8 ms per-cartridge budget (audit K, 2026-08-12, worst over wall,
+# 15 %-blob and checkerboard masks): a floor at this bound - 81.7 x 180.0
+# mm, 6 480 cells, n_est 24 - packs in 2.04 ms; 140 x 278 mm takes
+# 5.70 ms; 158 x 314 mm takes 8.16 ms and BREACHES. The packer never sees
+# such an input only because `reject_if_not_one_cartridge_floor` refuses
+# it here, BEFORE the occupancy grid is built. O3's 3.9x margin is
+# therefore held up by a bound written for an unrelated correctness
+# reason, and the breach point is only ~1.94x this bound's long axis and
+# ~1.93x its short axis. Raising this for a larger SKU raises the packing
+# cost with it: re-measure `pack_best_effort` against the 8 ms budget
+# before doing so, and see that function's own docstring.
 _MAX_CARTRIDGE_EXTENT_MM = (81.7, 180.0)
 
 
@@ -760,29 +777,18 @@ class SegmentationPlacementAreaExtractor:
         )
 
 
-# ----------------------------------------------- convenience helper ----
-
-def attach_placement_area(
-    cartridge: Cartridge,
-    extractor: PlacementAreaExtractor,
-    image_rgb: np.ndarray,
-    pcb_template_mask: Optional[np.ndarray] = None,
-    mm_per_px: Optional[float] = None,
-) -> Cartridge:
-    """Extract the placement area for ``cartridge`` and attach it.
-
-    ``mm_per_px`` is carried onto the cartridge alongside the rectangle
-    it measured, not discarded: the rectangle is in pixels and means
-    nothing without it.
-    """
-    pa = extractor.extract(image_rgb, cartridge.bbox, pcb_template_mask,
-                           mm_per_px=mm_per_px)
-    cartridge.placeable_rectangle = pa.rectangle
-    cartridge.occupancy = pa.occupancy
-    cartridge.pcb_mask = pa.pcb_mask
-    cartridge.mm_per_px = pa.mm_per_px
-    return cartridge
-
+# There is deliberately no ``attach_placement_area(cartridge, extractor,
+# ...)`` helper here any more. It existed until 2026-08-12, was called by
+# nothing, and duplicated the four-field assignment inside
+# ``Planner._ensure_placement_areas`` while omitting both of the things
+# that make that assignment safe: the ``try/except`` that turns
+# ``UnknownScale`` / ``BadDetectorBox`` / ``PlacementDisagreement`` into a
+# counted skip instead of an exception the caller never expected, and
+# participation in ``_drop_areas_measured_at_another_scale``, without
+# which a cartridge carries a rectangle whose scale-consistency invariant
+# nothing maintains. Being in ``__all__`` made the unsafe one look like
+# the supported way to attach a placement area. Attach through the
+# planner.
 
 __all__ = [
     "PlacementArea",
@@ -792,6 +798,5 @@ __all__ = [
     "PlacementDisagreement",
     "BadDetectorBox",
     "UnknownScale",
-    "attach_placement_area",
     "placeable_extent_mm",
 ]

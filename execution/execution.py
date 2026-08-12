@@ -107,6 +107,35 @@ _FATAL_STATUS = (
 _TRANSIENT = (socket.timeout, ValueError)
 
 
+def wire_mm(v: float) -> int:
+    """Quantise a millimetre float to the signed integer the wire carries.
+
+    This is the ONE lossy step between the planner's float millimetres
+    and the controller, and it used to be ``int()``. ``int()`` truncates
+    toward zero, so every commanded coordinate lost up to 0.999 mm,
+    always toward the workspace origin, and — because the truncation is
+    toward *zero*, not toward negative infinity — the bias **reverses
+    sign at 0**: ``int(12.9) == 12`` but ``int(-12.9) == -12``, so two
+    cartridges on opposite sides of the origin were both pulled inward,
+    toward each other. On a 4.25 mm shipping-wall inset that is 23 % of
+    the margin, the same order as the 8.3 % / 5.2 % unsafe placements
+    the README documents.
+
+    ``round`` instead: the error is bounded by 0.5 mm, it is symmetric
+    about zero (``round(-x) == -round(x)`` for every x), and Python's
+    round-half-to-even makes it unbiased over a population of poses
+    rather than systematically outward. Half-integers are the only
+    values where the two differ from round-half-up, and no planner
+    output is a half-integer by construction.
+
+    Nothing clamps here on purpose. A coordinate outside int32 raises
+    ``struct.error`` in :func:`execution.protocol.pack_command`, which
+    the caller turns into an E-stop; silently saturating a pose to
+    2**31-1 would command a motion nobody asked for.
+    """
+    return int(round(v))
+
+
 # ---------------------------------------------------- configuration ---
 
 @dataclass
@@ -303,7 +332,7 @@ class KukaClient:
     def move_to(self, target: WorkspacePoint) -> RobotStatus:
         return self._cmd_and_wait(
             OpCode.MOVE_TO,
-            int(target.x_mm), int(target.y_mm), int(target.z_mm),
+            wire_mm(target.x_mm), wire_mm(target.y_mm), wire_mm(target.z_mm),
         )
 
     def vacuum(self, on: bool) -> RobotStatus:
@@ -334,15 +363,15 @@ class KukaClient:
         """
         self._cmd_and_wait(
             OpCode.MOVE_TO,
-            int(pose.place.x_mm),
-            int(pose.place.y_mm),
-            int(self.cfg.transport_height_mm),
+            wire_mm(pose.place.x_mm),
+            wire_mm(pose.place.y_mm),
+            wire_mm(self.cfg.transport_height_mm),
         )
         return self._cmd_and_wait(
             OpCode.PICK_AND_PLACE,
-            int(pose.pick.x_mm),
-            int(pose.pick.y_mm),
-            int(pose.pick.z_mm),
+            wire_mm(pose.pick.x_mm),
+            wire_mm(pose.pick.y_mm),
+            wire_mm(pose.pick.z_mm),
             aux=self.cfg.vacuum_level_percent,
         )
 
@@ -505,9 +534,15 @@ class KukaClient:
                 f"unknown status code {s['code']}") from exc
         return RobotStatus(
             code=code,
+            # Integral by construction: the wire carries int32
+            # millimetres, so a reported pose has whole-millimetre
+            # resolution even though the field is typed float. Nothing
+            # here can distinguish "the arm is at exactly 10 mm" from
+            # "it is at 10.4 mm and the controller reported 10".
             current_pose=WorkspacePoint(s["x_mm"], s["y_mm"], s["z_mm"]),
             cycle_time_ms=float(s["cycle_ms"]),
         )
 
 
-__all__ = ["ExecutionConfig", "KukaClient", "RobotEstop", "RobotFault"]
+__all__ = ["ExecutionConfig", "KukaClient", "RobotEstop", "RobotFault",
+           "wire_mm"]

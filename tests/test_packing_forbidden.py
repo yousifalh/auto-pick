@@ -296,3 +296,90 @@ def test_unmasked_behaviour_is_unchanged():
     assert [(p.item.id, p.x, p.y, p.rotated) for p in a.placements] == \
            [(p.item.id, p.x, p.y, p.rotated) for p in b.placements]
     assert a.count == 12
+
+
+# ---- the marked block and the tested region must be the SAME cells ----
+#
+# `plan/scene.py:79` and `plan/planner.py:939` both state the invariant:
+# a reservation quantises its footprint OUTWARD - floor the near edge,
+# ceil the far one - "matching `_overlaps_forbidden` exactly", because
+# "any other rounding lets the mask be tested at one size and marked at
+# another", and a footprint "marked smaller than it is tested against is
+# exactly how a battery gets packed into space another one already
+# occupies".
+#
+# Both sides were tested separately and their AGREEMENT was asserted
+# nowhere - which is the only thing the docstring actually claims. These
+# two tests assert it as a set equality, in both directions, against the
+# real `Planner._cell_block_for` and the real `_overlaps_forbidden`.
+
+def _planner_and_cartridge(rows=80, cols=80, res_mm=1.5):
+    from common.types import BBox
+    from plan.placement_area import PlacementAreaExtractor
+    from plan.planner import Planner, PlannerConfig
+    from plan.scene import Cartridge, OccupancyGrid, WorkspaceBounds
+
+    cfg = PlannerConfig(battery_width_mm=18.5, battery_length_mm=65.0,
+                        mm_per_px=0.38)
+    ext = PlacementAreaExtractor.__new__(PlacementAreaExtractor)
+    planner = Planner(cfg, ext, WorkspaceBounds(-1e6, 1e6, -1e6, 1e6))
+    ctg = Cartridge(
+        id=0, bbox=BBox(0, 0, 100, 100), confidence=0.9,
+        placeable_rectangle=BBox(0, 0, 100, 100), mm_per_px=0.38,
+        occupancy=OccupancyGrid(rows=rows, cols=cols, resolution_mm=res_mm),
+    )
+    return planner, ctg
+
+
+# 18.5 x 65 mm cells at both orientations, and offsets that are
+# deliberately NOT multiples of the 1.5 mm cell: whole-cell footprints
+# agree trivially, sub-cell ones are where a floor/round mismatch shows.
+_FOOTPRINTS = [
+    (0.0, 0.0, 18.5, 65.0),
+    (0.1, 0.1, 18.5, 65.0),
+    (1.4, 2.9, 18.5, 65.0),
+    (3.0, 4.5, 65.0, 18.5),      # rotated
+    (7.25, 11.75, 18.5, 65.0),
+    (0.75, 0.75, 65.0, 18.5),
+    (13.6, 27.3, 18.5, 65.0),
+    (2.999, 5.999, 65.0, 18.5),
+]
+
+
+@pytest.mark.parametrize("x,y,w,h", _FOOTPRINTS)
+def test_every_marked_cell_is_a_cell_the_packer_tests(x, y, w, h):
+    """Marked subset of tested: no cell is reserved that the packer
+    would not have looked at when deciding whether the space was free."""
+    rows, cols, res_mm = 80, 80, 1.5
+    planner, ctg = _planner_and_cartridge(rows, cols, res_mm)
+    r0, r1, c0, c1 = planner._cell_block_for(ctg, x, y, w, h)
+    assert r1 > r0 and c1 > c0, "fixture must produce a non-empty block"
+
+    from common.packing import _overlaps_forbidden
+    for r in range(r0, r1):
+        for c in range(c0, c1):
+            m = np.zeros((rows, cols), dtype=np.uint8)
+            m[r, c] = 1
+            assert _overlaps_forbidden(m, x, y, w, h, res_mm), (
+                f"cell ({r}, {c}) is MARKED by the reservation but the "
+                f"packer does not test it — that cell can be handed out "
+                f"twice")
+
+
+@pytest.mark.parametrize("x,y,w,h", _FOOTPRINTS)
+def test_every_cell_the_packer_tests_is_a_cell_the_reservation_marks(
+        x, y, w, h):
+    """Tested subset of marked: the packer looks at no cell outside the
+    block, so nothing it rejects on is left unreserved."""
+    rows, cols, res_mm = 80, 80, 1.5
+    planner, ctg = _planner_and_cartridge(rows, cols, res_mm)
+    r0, r1, c0, c1 = planner._cell_block_for(ctg, x, y, w, h)
+
+    from common.packing import _overlaps_forbidden
+    # Everything forbidden EXCEPT the block the reservation marks. If the
+    # packer tested any cell outside the block it would see a 1 here.
+    m = np.ones((rows, cols), dtype=np.uint8)
+    m[r0:r1, c0:c1] = 0
+    assert not _overlaps_forbidden(m, x, y, w, h, res_mm), (
+        "the packer tests a cell the reservation does not mark — the "
+        "footprint is tested at one size and marked at another")

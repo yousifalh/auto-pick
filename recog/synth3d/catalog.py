@@ -12,13 +12,17 @@ which is what you should actually run to import CAD:
     pip install cascadio trimesh
     python -m recog.convert_cad --src cad/ --out recog/synth3d/assets/
 
-It wraps `convert_step`/`inspect_glb` with the things a bare `build_catalog`
-call does not do: it MERGES into the existing catalog instead of clobbering
-it, reads each file's declared length unit, and refuses to write an entry
-whose extents are implausible for this domain. Prefer it.
+It wraps `convert_step`/`inspect_glb` with the things a bare batch convert
+does not do: it MERGES into the existing catalog instead of clobbering it,
+reads each file's declared length unit, and refuses to write an entry whose
+extents are implausible for this domain. It is the only supported way in.
 
-`build_catalog` below converts every .stp/.step in the source directory and
-REWRITES assets/catalog.json from scratch, dropping anything already in it.
+There used to be a `build_catalog` here that looped `convert_step` over a
+directory and rewrote assets/catalog.json from scratch. It was called by
+nothing, it clobbered whatever was already in the catalog, and it skipped
+every one of the guards listed above - it wrote `{"units": "m"}`
+unconditionally and asserted nothing about the geometry it had just
+imported. Deleted 2026-08-12; use `recog.convert_cad`.
 """
 
 from __future__ import annotations
@@ -266,43 +270,6 @@ def inspect_glb(path: str) -> dict:
         out["tray_floor_mm"] = round(_role_zmin("cell"), 2)
 
     return out
-
-
-def build_catalog(src_dir: str, out_dir: str, tol_linear: float = 0.05,
-                  tol_angular: float = 0.3,
-                  patterns=(".stp", ".step")) -> dict:
-    """Convert every STEP file in src_dir and write assets/catalog.json."""
-    os.makedirs(out_dir, exist_ok=True)
-    files = sorted(f for f in os.listdir(src_dir)
-                   if f.lower().endswith(patterns))
-    if not files:
-        raise FileNotFoundError(f"no STEP files in {src_dir}")
-
-    assets: List[dict] = []
-    for f in files:
-        stem = os.path.splitext(f)[0]
-        # "004708_A_2-AnkerPowerCore26800" -> "AnkerPowerCore26800"
-        pretty = stem.split("-", 1)[-1] if "-" in stem else stem
-        glb = os.path.join(out_dir, pretty + ".glb")
-        convert_step(os.path.join(src_dir, f), glb, tol_linear, tol_angular)
-
-        info = inspect_glb(glb)
-        info.update({"name": pretty, "source": f,
-                     "file": os.path.basename(glb)})
-        assets.append(info)
-        print(f"  {pretty:26s} {info['extents_mm']}  "
-              f"{info['triangles']:6d} tris  {info['role_counts']}")
-
-    catalog = {
-        "units": "m",
-        "note": "glTF geometry is in metres; extents_mm are millimetres",
-        "tol_linear_mm": tol_linear,
-        "tol_angular": tol_angular,
-        "assets": assets,
-    }
-    with open(os.path.join(out_dir, "catalog.json"), "w") as fh:
-        json.dump(catalog, fh, indent=2)
-    return catalog
 
 
 def load_catalog(assets_dir: str) -> dict:

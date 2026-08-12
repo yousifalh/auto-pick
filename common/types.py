@@ -11,13 +11,67 @@ module:
 2.  Every type provides a ``to_dict()`` method that emits
     JSON-compatible primitives. This is what makes the pipeline
     serialisable for logging, regression fixtures, and inspection.
+3.  A type that states an invariant in its docstring **checks it in
+    ``__post_init__``**. Frozen guarantees a value will not change; it
+    guarantees nothing about the value being possible, and until
+    2026-08-12 possible was not checked anywhere in this file. An
+    inverted ``BBox(100, 100, 0, 0)`` constructed with ``width == -100``
+    and then laundered itself into a plausible ``area == 0.0``;
+    ``Detection(confidence=17.5)``, ``grid_row=-5`` and
+    ``cycle_time_ms=-42.0`` all constructed. See §"What is NOT checked"
+    below for the line drawn.
+
+**What is NOT checked, on purpose.** Only invariants that are both cheap
+and unambiguous live here. ``WorkspacePoint`` is not range-checked: any
+finite triple is a physically meaningful pose and the envelope that
+decides reachability is per-deployment configuration
+(``plan.scene.WorkspaceBounds``), not a property of the type.
+``PickPlacePose.battery_detection_id`` is not checked because ``-1`` is
+its documented "no battery" sentinel.
+
+``Snapshot`` gets no ``__post_init__`` at all, and that is a decision
+rather than an omission. It is the one type here that is not frozen, and
+every real writer of ``mm_per_px`` sets it by attribute assignment
+*after* construction (``main.py:540``, ``recog.inference``), which
+``__post_init__`` cannot see. A constructor check would read as
+protection while being structurally unable to fire on the only path that
+sets the field. The honest guard for scale is
+``plan.placement_area._resolve_scale``, which already rejects ``<= 0.0``
+with "a pixel cannot span zero or negative millimetres", and it sits
+where the value is consumed.
+
+**Cost, measured rather than assumed.** ``__post_init__`` on a frozen
+dataclass is one extra Python call per construction. Per construction,
+mean of two 200 k-iteration runs each side:
+
+===============  =========  ========  =======
+type             before     after     delta
+===============  =========  ========  =======
+``BBox``            284 ns    317 ns   +33 ns
+``Detection``       224 ns    257 ns   +33 ns
+``PickPlacePose``   514 ns    543 ns   +29 ns
+``RobotStatus``     408 ns    442 ns   +34 ns
+``WorkspacePoint``  219 ns    213 ns    -6 ns
+===============  =========  ========  =======
+
+``WorkspacePoint`` is the control: it gained no ``__post_init__``, and
+its -6 ns is the measurement noise floor.
+
+Instrumented, one ``Planner.cycle`` on the planner's own fixture (one
+cartridge, 20 batteries) constructs **21** of these types in total — 1
+``BBox`` and 20 ``PickPlacePose``. At +33 ns that is **0.7 microseconds
+on an 8.4 ms cycle, 0.008 %**, four orders of magnitude below the
+7.9-9.9 ms run-to-run spread of the cycle itself, which is dominated by
+OpenCV and the packer. Not material. The detections themselves are
+built once per frame by the recogniser, tens per frame, against a
+~12.6 ms segmentation forward pass.
 """
 from __future__ import annotations
 
 
 from dataclasses import dataclass, field
 from enum import Enum, IntEnum
-from typing import Any, Iterable
+from typing import Any
 
 
 # ----------------------------------------------------------- geometry ------
@@ -43,6 +97,27 @@ class BBox:
     ymin: float
     xmax: float
     ymax: float
+
+    def __post_init__(self) -> None:
+        """Enforce the ordering the class docstring states.
+
+        An inverted box is self-concealing: ``area`` clamps with
+        ``max(0.0, ...)`` and ``iou`` returns ``0.0``, so
+        ``BBox(100, 100, 0, 0)`` used to launder a negative width into a
+        plausible zero-area value and propagate it into ``Detection``,
+        ``Cartridge``, ``Battery`` and ``PlacementArea.rectangle``.
+        Zero-area (``xmin == xmax``) stays legal — the docstring calls it
+        a valid value and :meth:`iou` round-trips it as ``0.0``.
+
+        NaN fails this test, which is intended: a NaN coordinate is a
+        detector that has diverged, and it should stop here rather than
+        at the first arithmetic that quietly propagates it.
+        """
+        if not (self.xmin <= self.xmax and self.ymin <= self.ymax):
+            raise ValueError(
+                f"BBox is inverted or non-finite: "
+                f"({self.xmin}, {self.ymin}, {self.xmax}, {self.ymax}) — "
+                f"xmin <= xmax and ymin <= ymax is the stated convention")
 
     # --- derived scalars --------------------------------------------------
 
@@ -109,6 +184,20 @@ class Detection:
     bbox: BBox
     label: ClassLabel
     confidence: float
+
+    def __post_init__(self) -> None:
+        """``confidence`` is a probability, so it lives in [0, 1].
+
+        Both ends are closed: a detector may legitimately saturate at
+        exactly 0.0 or 1.0. Out of range is not a near miss — confidence
+        feeds every score threshold and the NMS ordering in
+        :mod:`recog.inference`, and a value above 1 or below 0 sorts
+        first or last unconditionally, ahead of every real detection.
+        """
+        if not (0.0 <= self.confidence <= 1.0):
+            raise ValueError(
+                f"Detection.confidence must be a probability in [0, 1], "
+                f"got {self.confidence!r}")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -217,6 +306,28 @@ class PickPlacePose:
     grid_col: int
     battery_detection_id: int = -1
 
+    def __post_init__(self) -> None:
+        """Grid indices are cell coordinates, so they are non-negative.
+
+        A negative index is the classic numpy silent-wraparound hazard:
+        ``grid[-5]`` addresses the fifth row from the end and marks a
+        cell nobody asked for. :meth:`plan.scene.OccupancyGrid.set_block`
+        already refuses one, but that defence lives in the *consumer* —
+        any future consumer re-derives it or does not. It belongs on the
+        contract.
+
+        ``battery_detection_id`` is deliberately exempt: ``-1`` is its
+        documented default, meaning "no battery is associated".
+        """
+        if self.grid_row < 0 or self.grid_col < 0:
+            raise ValueError(
+                f"PickPlacePose grid indices must be non-negative, got "
+                f"row={self.grid_row}, col={self.grid_col}")
+        if self.cartridge_id < 0:
+            raise ValueError(
+                f"PickPlacePose.cartridge_id must be non-negative, got "
+                f"{self.cartridge_id}")
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "pick": self.pick.to_dict(),
@@ -260,6 +371,20 @@ class RobotStatus:
     cycle_time_ms: float = 0.0
     message: str = ""
 
+    def __post_init__(self) -> None:
+        """A duration cannot be negative.
+
+        ``cycle_time_ms`` flows straight into the latency statistics the
+        demo prints and the FDR quotes. A negative value there is not a
+        smaller number, it is a number that makes a mean meaningless,
+        and the wire format (unsigned on the controller side) cannot
+        produce one honestly.
+        """
+        if self.cycle_time_ms < 0.0:
+            raise ValueError(
+                f"RobotStatus.cycle_time_ms is a duration and cannot be "
+                f"negative, got {self.cycle_time_ms!r}")
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "code": int(self.code),
@@ -270,14 +395,10 @@ class RobotStatus:
         }
 
 
-# ---------------------------------------------------------- small helpers --
-
-def iter_labels(names: Iterable[str]) -> list[ClassLabel]:
-    """Parse a sequence of label strings, silently dropping unknown ones."""
-    out: list[ClassLabel] = []
-    for n in names:
-        try:
-            out.append(ClassLabel(n))
-        except ValueError:
-            continue
-    return out
+# There is deliberately no ``iter_labels(names)`` helper here. It existed
+# until 2026-08-12 with zero callers — not even a test — and its
+# documented behaviour was to drop an unrecognised class label silently:
+# no exception, no log, one fewer detection than the caller passed in.
+# In the module that declares itself the boundary between all three
+# subsystems, that is a defect waiting for its first caller. Parse a
+# label with ``ClassLabel(name)`` and let the ``ValueError`` out.

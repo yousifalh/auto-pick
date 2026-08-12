@@ -58,3 +58,59 @@ jobs:
         run: |
           python -m recog.synth_dataset --out recog/dataset --n 50
           python main.py --config configs/demo.yaml
+
+  # recog/synth3d/_gate_orientation.py called itself a CI gate for months
+  # while no CI ran it. It is the ONLY executable check against the
+  # class of failure that actually happened here: `lay_flat` and
+  # `place_item` were complete no-ops for their entire life, every
+  # cartridge rendered unturned, and nothing noticed because the scene
+  # still renders. Check 2 in that file - two rot_deg values must give
+  # two different bounding boxes - is the assertion that would have
+  # caught it. This job is what makes that guarantee real rather than
+  # aspirational.
+  #
+  # It is a separate job because it needs Blender, which the torch-free
+  # job above deliberately does not have. `bpy` is the Blender
+  # Foundation's own PyPI wheel: it is Blender-as-a-module, so no
+  # `blender` binary and no display are needed. It is cp311-only, which
+  # is why this job pins 3.11 while the suite above runs the declared
+  # 3.10/3.12/3.14 matrix.
+  #
+  # NOT continue-on-error, and not conditional on the diff touching
+  # recog/synth3d/: the no-op it guards against was invisible in the
+  # renders, so "it looked fine" is exactly the evidence that does not
+  # count here. If the wheel or its shared libraries stop resolving,
+  # this job must go red and be fixed - a gate that skips itself when
+  # inconvenient is the state this job exists to leave behind.
+  orientation-gate:
+    name: Blender orientation gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      # The bpy wheel links against Blender's usual X/GL stack even when
+      # it never opens a window. Without these it imports and dies.
+      - name: Blender shared libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libx11-6 libxi6 libxrender1 libxxf86vm1 libxfixes3 \
+            libxkbcommon0 libsm6 libgl1 libegl1
+
+      - name: Install (package + bpy)
+        run: |
+          pip install -e .
+          pip install bpy
+
+      # The gate imports `recog.synth3d.assets` and loads the four .glb
+      # templates that are committed under recog/synth3d/assets/, so it
+      # needs no dataset generation and no GPU. It exits 1 on any failed
+      # check and prints which one.
+      - name: Orientation gate
+        run: python recog/synth3d/_gate_orientation.py

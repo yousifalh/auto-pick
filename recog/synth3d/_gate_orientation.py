@@ -2,8 +2,19 @@
 Orientation gate for recog.synth3d.assets. Requires bpy.
 
     blender -b --python recog/synth3d/_gate_orientation.py
+    python recog/synth3d/_gate_orientation.py        # with `pip install bpy`
 
-Exits 0 if every check passes, 1 otherwise, so it works as a CI gate.
+Exits 0 if every check passes, 1 otherwise.
+
+**This is a CI gate, and CI runs it.** `.github/workflows/ci.yml`'s
+`orientation-gate` job installs the `bpy` wheel and runs the second form
+above on every push and pull request. That sentence used to be false:
+the file described itself as a CI gate for months while no workflow
+named it, which made its guarantee aspirational and its 0 % coverage
+accurate. `tests/test_orientation_gate.py` now asserts the workflow
+still invokes it, so removing the step fails the torch-free suite rather
+than quietly disarming the only check this repository has against the
+failure below.
 
 Why this exists
 ---------------

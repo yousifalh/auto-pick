@@ -154,6 +154,169 @@ def test_robot_status_defaults():
     assert s.message == ""
 
 
+# --------------------- contract enforcement, not just freezing ------------
+#
+# Frozen guarantees a value will not change. It guarantees nothing about
+# the value being possible, and until 2026-08-12 possible was checked
+# nowhere in common/types.py — the file whose own docstring calls itself
+# the only thing that crosses Recognition -> Planning -> Execution. Each
+# test below pins one value that used to construct cleanly.
+
+class TestBBoxOrdering:
+    """`xmin`/`ymin` inclusive, `xmax`/`ymax` exclusive — so
+    `xmin <= xmax`. Stated in the docstring since the file was written,
+    enforced by nothing."""
+
+    def test_inverted_in_x_is_refused(self):
+        with pytest.raises(ValueError, match="inverted"):
+            BBox(100, 100, 0, 0)
+
+    def test_inverted_in_x_only(self):
+        with pytest.raises(ValueError):
+            BBox(10, 0, 5, 10)
+
+    def test_inverted_in_y_only(self):
+        with pytest.raises(ValueError):
+            BBox(0, 10, 10, 5)
+
+    def test_an_inverted_box_used_to_launder_itself_into_zero_area(self):
+        """Why this one matters more than it looks.
+
+        `area` clamps with `max(0.0, ...)` and `iou` returns 0.0, so
+        BBox(100, 100, 0, 0) — width -100 — produced a perfectly
+        plausible zero-area value and propagated into Detection,
+        Cartridge, Battery and PlacementArea.rectangle with nothing
+        downstream able to tell it from a legitimately empty box.
+        """
+        with pytest.raises(ValueError):
+            BBox(100, 100, 0, 0)
+        # And the shape it used to take: the same numbers as a genuinely
+        # empty box, which is why nothing downstream could tell them
+        # apart.
+        assert BBox(0, 0, 0, 0).area == 0.0
+
+    def test_zero_area_is_still_legal(self):
+        """The docstring calls a zero-area box a valid value and says it
+        round-trips through iou as 0.0. Degenerate is not inverted."""
+        b = BBox(5, 5, 5, 5)
+        assert b.area == 0.0
+        assert b.iou(b) == 0.0
+
+    def test_ordinary_boxes_are_unaffected(self):
+        b = BBox(10, 20, 30, 50)
+        assert (b.width, b.height, b.area) == (20, 30, 600)
+
+    def test_nan_is_refused(self):
+        """A NaN coordinate is a detector that has diverged. It should
+        stop at the boundary, not at the first arithmetic that
+        propagates it silently."""
+        with pytest.raises(ValueError):
+            BBox(0, 0, float("nan"), 10)
+
+    def test_replace_cannot_route_around_the_check(self):
+        """`dataclasses.replace` re-runs __init__, so it re-runs
+        __post_init__. Worth pinning: `replace` is the usual way
+        validation gets skipped, and it was moot here only because there
+        was no validation to skip."""
+        import dataclasses
+        with pytest.raises(ValueError):
+            dataclasses.replace(BBox(0, 0, 10, 10), xmax=-5)
+
+
+class TestDetectionConfidence:
+    """Confidence feeds every score threshold and the NMS ordering in
+    recog.inference. Out of [0, 1] it sorts first or last
+    unconditionally, ahead of every real detection."""
+
+    @pytest.mark.parametrize("c", [17.5, -3.0, 1.0000001, float("nan")])
+    def test_out_of_range_is_refused(self, c):
+        with pytest.raises(ValueError, match="probability"):
+            Detection(BBox(0, 0, 1, 1), ClassLabel.BATTERY, c)
+
+    @pytest.mark.parametrize("c", [0.0, 0.5, 1.0])
+    def test_the_closed_unit_interval_is_accepted(self, c):
+        """Both ends closed: a detector may saturate at exactly 0 or 1."""
+        assert Detection(BBox(0, 0, 1, 1), ClassLabel.BATTERY, c).confidence \
+            == c
+
+    def test_replace_cannot_route_around_the_check(self):
+        import dataclasses
+        d = Detection(BBox(0, 0, 1, 1), ClassLabel.BATTERY, 0.9)
+        with pytest.raises(ValueError):
+            dataclasses.replace(d, confidence=-1.0)
+
+
+class TestPickPlacePoseIndices:
+    """Negative grid indices are the classic numpy silent-wraparound
+    hazard: grid[-5] addresses the fifth row from the END and marks a
+    cell nobody asked for. OccupancyGrid.set_block already refuses one,
+    but that defence is in the consumer, not on the contract."""
+
+    def _pose(self, **kw):
+        kw = {"pick": WorkspacePoint(0, 0, 0),
+              "place": WorkspacePoint(0, 0, 0),
+              "cartridge_id": 0, "grid_row": 0, "grid_col": 0, **kw}
+        return PickPlacePose(**kw)
+
+    @pytest.mark.parametrize("field", ["grid_row", "grid_col"])
+    def test_negative_grid_index_is_refused(self, field):
+        with pytest.raises(ValueError, match="non-negative"):
+            self._pose(**{field: -5})
+
+    def test_negative_cartridge_id_is_refused(self):
+        with pytest.raises(ValueError, match="cartridge_id"):
+            self._pose(cartridge_id=-99)
+
+    def test_zero_indices_are_legal(self):
+        assert self._pose().grid_row == 0
+
+    def test_the_no_battery_sentinel_survives(self):
+        """battery_detection_id defaults to -1 meaning "no battery is
+        associated". Validating it would break the documented default."""
+        assert self._pose().battery_detection_id == -1
+        assert self._pose(battery_detection_id=-1).battery_detection_id == -1
+
+
+class TestRobotStatusDuration:
+    def test_negative_cycle_time_is_refused(self):
+        """It flows straight into the latency statistics the demo prints
+        and the FDR quotes; a negative duration makes a mean
+        meaningless."""
+        with pytest.raises(ValueError, match="duration"):
+            RobotStatus(code=RobotStatusCode.OK,
+                        current_pose=WorkspacePoint(0, 0, 0),
+                        cycle_time_ms=-42.0)
+
+    def test_zero_is_legal(self):
+        s = RobotStatus(code=RobotStatusCode.OK,
+                        current_pose=WorkspacePoint(0, 0, 0))
+        assert s.cycle_time_ms == 0.0
+
+
+def test_workspace_point_is_deliberately_unvalidated():
+    """The line this module draws, asserted so it stays drawn.
+
+    Any finite triple is a physically meaningful pose. What makes one
+    unreachable is the deployment's envelope
+    (`plan.scene.WorkspaceBounds`), which is configuration, not a
+    property of the type — and `WorkspaceBounds.require` already raises
+    rather than clamps. Range-checking here would hardcode one cell's
+    geometry into the shared contract.
+    """
+    p = WorkspacePoint(-9999.0, 9999.0, -1.0)
+    assert p.to_dict() == {"x_mm": -9999.0, "y_mm": 9999.0, "z_mm": -1.0}
+
+
+def test_iter_labels_is_gone():
+    """It had zero callers, not even a test, and its documented contract
+    was to drop an unrecognised label silently — no exception, no log,
+    one fewer detection than the caller passed in."""
+    import common.types as types
+    assert not hasattr(types, "iter_labels")
+    with pytest.raises(ValueError):
+        ClassLabel("not-a-real-label")
+
+
 # ------------------------- YAML loader ------------------------------------
 
 def test_load_yaml_roundtrip(tmp_path: Path):

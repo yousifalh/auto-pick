@@ -18,11 +18,22 @@ crosses the strip anywhere inside the first shelf's row band kills the
 whole pack: measured on frame ``scene_00005``, zero cells placed on a
 93 %-free grid containing a clear 48 × 112 mm rectangle. Across 30 real
 cartridge instances FFDH placed 8 cells where 18 were demonstrably
-achievable. :func:`pack_cartridge` therefore calls
+achievable. :meth:`plan.planner.Planner._pack_cartridge` therefore calls
 :func:`common.packing.pack_best_effort`, which competes FFDH against two
 obstacle-tolerant arms and returns whichever placed most — never fewer
 than FFDH alone. See ``docs/superpowers/specs/
 2026-08-11-packing-ceiling.md`` for the diagnosis and the measurements.
+
+This module used to also carry a ``pack_cartridge(cartridge, ...)``
+adapter. It was dead — nothing but a test named it — and it was a weaker
+twin of the live ``Planner._pack_cartridge``: it took
+``mm_per_px: float = 0.38``, re-arming the exact placeholder constant
+whose removal is recorded in ``docs/superpowers/specs/
+2026-08-11-scale-calibration.md`` as having under-read 24 of 30
+cartridges by 27 % at the median and produced 3 unsafe placements. The
+live path resolves scale through ``_resolve_scale``, which raises
+``UnknownScale`` rather than guessing. Exporting the guessing version in
+``__all__`` made it read as the supported API. Deleted 2026-08-12.
 
 :func:`first_fit_decreasing` itself is unchanged and still exported; the
 synthetic-scene generators in :mod:`recog.synth3d` depend on its exact
@@ -46,70 +57,10 @@ from common.packing import (  # noqa: F401  (re-exported for existing callers)
 )
 
 
-# ---------------------------------- adapter for the digital twin ----
-
-def pack_cartridge(
-    cartridge,
-    battery_width_mm: float,
-    battery_length_mm: float,
-    allow_rotation: bool = True,
-    mm_per_px: float = 0.38,
-) -> PackResult:
-    """Build a packing instance for ``cartridge`` and solve it.
-
-    The cartridge's placement rectangle (in pixels) is converted to a
-    strip in millimetres. The forbidden mask is derived from the
-    cartridge's occupancy grid, unioning FORBIDDEN / PLACED / PLANNED
-    cells so already-assigned positions aren't packed over.
-
-    Solved with :func:`common.packing.pack_best_effort` rather than FFDH
-    directly — see the module docstring.
-    """
-    pr = cartridge.placeable_rectangle
-    if pr is None:
-        raise ValueError(
-            "cartridge.placeable_rectangle is None — "
-            "extract placement area first"
-        )
-
-    strip_w_mm = pr.width * mm_per_px
-    strip_h_mm = pr.height * mm_per_px
-
-    # Build an upper-bound number of candidate items. We over-estimate
-    # so FFDH has enough identical items to saturate the strip.
-    n_max_est = max(
-        4,
-        int((strip_w_mm * strip_h_mm)
-            / (battery_width_mm * battery_length_mm)) * 2,
-    )
-    items = [
-        Item(id=i, width=battery_width_mm, height=battery_length_mm)
-        for i in range(n_max_est)
-    ]
-
-    forbidden = None
-    mm_per_cell = 1.5
-    if cartridge.occupancy is not None:
-        from plan.scene import CellState
-
-        forbidden = cartridge.occupancy.mask_of(
-            CellState.FORBIDDEN, CellState.PLACED, CellState.PLANNED,
-        )
-        mm_per_cell = cartridge.occupancy.resolution_mm
-
-    return pack_best_effort(
-        items, strip_w_mm, strip_h_mm,
-        allow_rotation=allow_rotation,
-        forbidden_mask=forbidden,
-        mm_per_cell=mm_per_cell,
-    )
-
-
 __all__ = [
     "Item",
     "PackedItem",
     "PackResult",
     "first_fit_decreasing",
     "pack_best_effort",
-    "pack_cartridge",
 ]

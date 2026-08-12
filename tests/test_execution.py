@@ -16,6 +16,8 @@ bytes on the wire rather than against a log line.
 from __future__ import annotations
 
 import logging
+import os
+import re
 import socket
 import struct
 import threading
@@ -53,6 +55,9 @@ class _ScriptedServer:
     def __init__(self, reply):
         self._reply = reply
         self.ops: list = []
+        # The whole parsed command, not just the opcode: the coordinate
+        # quantisation tests below assert what actually reached the wire.
+        self.cmds: list = []
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._sock.bind(("127.0.0.1", 0))
@@ -86,9 +91,11 @@ class _ScriptedServer:
                         return
                     buf += chunk
                 try:
-                    op = unpack_command(buf).op
+                    cmd = unpack_command(buf)
                 except ValueError:
                     return
+                op = cmd.op
+                self.cmds.append(cmd)
                 self.ops.append(op)
                 out = self._reply(op, n)
                 n += 1
@@ -106,6 +113,24 @@ class _ScriptedServer:
                     return
                 if len(out) < STATUS_LEN:
                     return            # truncated frame, then hang up
+
+    def wait_for_op(self, op, timeout: float = 3.0):
+        """Block until ``op`` has been recorded, or ``timeout`` elapses.
+
+        The client sends its E-stop and closes the socket in a
+        ``finally``, so ``KukaClient.__exit__`` can return before this
+        server's reader thread has appended the opcode. Asserting on
+        ``ops`` the instant the client returns is therefore a race:
+        measured at HEAD, ``test_out_of_range_coordinate_fires_the_estop``
+        failed roughly 1 run in 15 for that reason and for no other —
+        the E-stop had gone out, and the CRITICAL log line proved it.
+        Waiting does not weaken any assertion below; the opcode still has
+        to arrive, it is just given a bounded chance to.
+        """
+        deadline = time.monotonic() + timeout
+        while op not in self.ops and time.monotonic() < deadline:
+            time.sleep(0.005)
+        return self.ops
 
     def close(self):
         self._stop.set()
@@ -220,7 +245,7 @@ def test_out_of_range_coordinate_fires_the_estop():
         with KukaClient(_fast_cfg(srv.port)) as k:
             with pytest.raises(RobotFault):
                 k.move_to(WorkspacePoint(2 ** 31, 0, 0))
-        assert OpCode.ESTOP in srv.ops, (
+        assert OpCode.ESTOP in srv.wait_for_op(OpCode.ESTOP), (
             "the socket was alive; the E-stop had to go out")
         # Not retried: a coordinate that does not fit in the frame will
         # not fit on the second attempt either.
@@ -328,7 +353,7 @@ def test_corrupt_status_frames_retry_then_escalate():
             with pytest.raises(RobotFault):
                 k.move_to(WorkspacePoint(10, 10, 10))
         assert srv.ops.count(OpCode.MOVE_TO) == 3
-        assert srv.ops[-1] is OpCode.ESTOP
+        assert srv.wait_for_op(OpCode.ESTOP)[-1] is OpCode.ESTOP
     finally:
         srv.close()
 
@@ -377,7 +402,7 @@ def test_controller_crc_error_is_retried_then_escalates():
                 k.move_to(WorkspacePoint(10, 10, 10))
         assert "CRC_ERROR" in str(err.value)
         assert srv.ops.count(OpCode.MOVE_TO) == 3
-        assert srv.ops[-1] is OpCode.ESTOP
+        assert srv.wait_for_op(OpCode.ESTOP)[-1] is OpCode.ESTOP
     finally:
         srv.close()
 
@@ -394,7 +419,7 @@ def test_protocol_mismatch_is_fatal_without_retrying(code):
                 k.move_to(WorkspacePoint(10, 10, 10))
         assert code.name in str(err.value)
         assert srv.ops.count(OpCode.MOVE_TO) == 1, "must not be retried"
-        assert srv.ops[-1] is OpCode.ESTOP
+        assert srv.wait_for_op(OpCode.ESTOP)[-1] is OpCode.ESTOP
     finally:
         srv.close()
 
@@ -411,7 +436,7 @@ def test_unknown_status_code_is_not_silently_a_timeout():
             with pytest.raises(RobotFault) as err:
                 k.move_to(WorkspacePoint(10, 10, 10))
         assert "unknown status code 99" in str(err.value)
-        assert srv.ops[-1] is OpCode.ESTOP
+        assert srv.wait_for_op(OpCode.ESTOP)[-1] is OpCode.ESTOP
     finally:
         srv.close()
 
@@ -451,7 +476,7 @@ def test_handshake_timeout_retries_then_escalates():
         with pytest.raises(RobotFault):
             k.connect()
         assert srv.ops.count(OpCode.HANDSHAKE) == 3, "no retry at all before"
-        assert srv.ops[-1] is OpCode.ESTOP, (
+        assert srv.wait_for_op(OpCode.ESTOP)[-1] is OpCode.ESTOP, (
             "the socket is alive at handshake time, so the stop goes out")
         assert k._sock is None
     finally:
@@ -498,6 +523,186 @@ def test_command_timeout_is_a_whole_frame_deadline():
         assert time.perf_counter() - t0 < 1.5
     finally:
         srv.close()
+
+
+# -------------------- RobotStatusCode <-> the KRL subroutine -------------
+#
+# `common.types.RobotStatusCode` says "Values must not be renumbered
+# without matching updates in execution.protocol and the KRL
+# subroutine". `execution/protocol.py` names the enum only in prose and
+# packs a raw int; the KRL side is a bare `RETURN 2 ; PICK_FAILED`
+# literal in a file no test read and no import touches. Renumbering the
+# enum therefore silently redefined what the real controller means by
+# `2` - on hardware, and with nothing to notice until a cell was
+# dropped. These tests are the missing coupling.
+
+_KRL_SRC = os.path.join(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))), "execution", "krl_prog", "routines.src")
+
+# `      RETURN 2                 ; PICK_FAILED`
+_KRL_RETURN = re.compile(
+    r"^\s*RETURN\s+(-?\d+)\s*;\s*([A-Z_][A-Z0-9_]*)\s*$", re.MULTILINE)
+
+
+def _krl_returns() -> list:
+    with open(_KRL_SRC, encoding="utf-8", errors="replace") as fh:
+        return [(int(v), name) for v, name in _KRL_RETURN.findall(fh.read())]
+
+
+def test_krl_subroutine_returns_the_numbers_this_enum_declares():
+    """Every `RETURN n ; NAME` in routines.src must equal
+    RobotStatusCode[NAME].value."""
+    returns = _krl_returns()
+    for value, name in returns:
+        assert name in RobotStatusCode.__members__, (
+            f"routines.src returns {value} labelled {name}, which is not a "
+            f"RobotStatusCode. The controller and the host disagree about "
+            f"what the wire means.")
+        assert RobotStatusCode[name].value == value, (
+            f"routines.src returns {value} for {name} but "
+            f"RobotStatusCode.{name} is {RobotStatusCode[name].value}. "
+            f"Renumbering the enum without editing the KRL redefines what "
+            f"the real controller is saying.")
+
+
+def test_the_krl_coupling_test_is_not_vacuous():
+    """A reformat of routines.src must not silently disarm the test above.
+
+    The regex is the whole mechanism; if it stops matching, the previous
+    test passes over an empty list and the coupling is gone again — the
+    exact failure mode this pair exists to prevent.
+    """
+    returns = _krl_returns()
+    assert len(returns) >= 2, (
+        f"parsed {len(returns)} `RETURN n ; NAME` lines out of "
+        f"{_KRL_SRC}; the coupling test needs the comment labels to "
+        f"survive. Keep the `; NAME` suffix, or update the regex here.")
+    names = {name for _, name in returns}
+    assert {"SUCCESS", "PICK_FAILED"} <= names, (
+        f"routines.src no longer returns both SUCCESS and PICK_FAILED "
+        f"(found {sorted(names)})")
+
+
+def test_codes_the_real_controller_never_emits_are_named_as_such():
+    """7 and 8 are simulator-only, and that is worth pinning.
+
+    `UNSUPPORTED_COMMAND` and `VERSION_MISMATCH` exist so a controller
+    that cannot parse a frame can say WHY, and `KukaClient` treats them
+    as fatal rather than retryable. The KRL subroutine does not
+    participate: it returns neither. The reasoning is sound and the gap
+    is real, so it is asserted rather than left to be rediscovered.
+    """
+    emitted = {name for _, name in _krl_returns()}
+    assert "UNSUPPORTED_COMMAND" not in emitted
+    assert "VERSION_MISMATCH" not in emitted
+
+
+# ------------------------------- millimetre -> wire quantisation ---------
+#
+# `WorkspacePoint` carries floats; the 16-byte frame carries signed
+# int32 millimetres. That conversion used to be `int()`, which truncates
+# TOWARD ZERO: every commanded coordinate lost up to 0.999 mm, always
+# toward the workspace origin, and the bias REVERSED SIGN at 0 - two
+# cartridges either side of the origin were both pulled inward, toward
+# each other. On a 4.25 mm shipping-wall inset that is 23 % of the
+# margin. It is also applied AFTER `WorkspaceBounds.require` has
+# validated the float, so the value that was checked was not the value
+# that was commanded.
+
+def _record(fn) -> list:
+    """Run ``fn(client)`` against a server that records every command."""
+    srv = _ScriptedServer(lambda op, n: _ok(RobotStatusCode.SUCCESS))
+    try:
+        with KukaClient(_fast_cfg(srv.port)) as k:
+            fn(k)
+        return [c for c in srv.cmds if c.op is not OpCode.HANDSHAKE]
+    finally:
+        srv.close()
+
+
+def test_wire_mm_rounds_and_is_symmetric_about_zero():
+    """The unit test of the quantiser itself, both signs and the tie."""
+    from execution.execution import wire_mm
+
+    # The measured defect: int() gave 12 and -12 for these two.
+    assert wire_mm(12.9) == 13
+    assert wire_mm(-12.9) == -13
+    assert wire_mm(0.6) == 1
+    assert wire_mm(-0.6) == -1
+    assert wire_mm(349.9) == 350
+    assert wire_mm(-349.9) == -350
+
+    # Symmetric about zero: no coordinate may be treated differently for
+    # being on the far side of the origin. This is the property `int()`
+    # broke, and it is the one that matters for a workspace that
+    # straddles zero.
+    for v in (0.1, 0.5, 0.9, 1.4, 1.5, 2.5, 12.3, 12.5, 12.9, 349.4999):
+        assert wire_mm(-v) == -wire_mm(v), v
+
+    # Bounded by half a millimetre everywhere, which `int()`'s 0.999 mm
+    # was not. Exact halves are included deliberately: round-half-to-even
+    # is what makes the error unbiased over a population of poses.
+    for i in range(-4000, 4001):
+        v = i / 8.0                      # 0.125 mm steps, both signs
+        assert abs(wire_mm(v) - v) <= 0.5, v
+
+    assert wire_mm(0.5) == 0 and wire_mm(1.5) == 2 and wire_mm(2.5) == 2, (
+        "banker's rounding: ties go to even, so a population of poses "
+        "gains no net outward or inward drift")
+
+    # Integers must survive untouched - a pose already on a millimetre
+    # is not a rounding question.
+    for v in (-350.0, -1.0, 0.0, 1.0, 350.0):
+        assert wire_mm(v) == int(v)
+
+
+def test_move_to_rounds_the_commanded_coordinate():
+    cmds = _record(lambda k: k.move_to(WorkspacePoint(12.9, -12.9, 0.6)))
+    assert len(cmds) == 1
+    c = cmds[0]
+    assert c.op is OpCode.MOVE_TO
+    # int() would have sent (12, -12, 0): 0.9 mm lost on x, 0.9 mm lost
+    # on y in the OPPOSITE direction, and z collapsed to the origin.
+    assert (c.x_mm, c.y_mm, c.z_mm) == (13, -13, 1)
+
+
+def test_pick_and_place_rounds_every_coordinate_it_sends():
+    pose = PickPlacePose(
+        pick=WorkspacePoint(-100.5, 100.4, 30.7),
+        place=WorkspacePoint(-49.6, 100.5, 5.0),
+        cartridge_id=0, grid_row=1, grid_col=2,
+    )
+    cmds = _record(lambda k: k.pick_and_place(pose))
+    assert [c.op for c in cmds] == [OpCode.MOVE_TO, OpCode.PICK_AND_PLACE]
+
+    transport, pick = cmds
+    # The transport MOVE_TO latches the place XY. int() sent (-49, 100).
+    assert (transport.x_mm, transport.y_mm) == (-50, 100)
+    assert transport.z_mm == round(80.0)          # cfg.transport_height_mm
+    # int() sent (-100, 100, 30) for the pick.
+    assert (pick.x_mm, pick.y_mm, pick.z_mm) == (-100, 100, 31)
+
+
+def test_no_commanded_coordinate_is_displaced_by_more_than_half_a_mm():
+    """The property `WorkspaceBounds.require` is entitled to assume.
+
+    `require` validates the float pose in the planner; this quantiser is
+    what turns it into the integers the controller receives. The two are
+    only reconcilable if the displacement between them is bounded, and
+    bounded symmetrically - which is asserted here against the bytes on
+    the wire rather than against the helper in isolation.
+    """
+    from execution.execution import wire_mm
+
+    poses = [(x / 7.0, -x / 7.0, x / 11.0) for x in range(-40, 41)]
+    cmds = _record(
+        lambda k: [k.move_to(WorkspacePoint(*p)) for p in poses])
+    assert len(cmds) == len(poses)
+    for (x, y, z), c in zip(poses, cmds):
+        assert abs(c.x_mm - x) <= 0.5 and abs(c.y_mm - y) <= 0.5
+        assert abs(c.z_mm - z) <= 0.5
+        assert (c.x_mm, c.y_mm, c.z_mm) == (
+            wire_mm(x), wire_mm(y), wire_mm(z))
 
 
 def test_connect_to_a_closed_port_raises_robotfault():
