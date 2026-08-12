@@ -1979,6 +1979,119 @@ same 836 held-out CAD test crops from a 500-scene render disjoint from
 every training set, per-SKU and per-class. Receipts:
 `docs/receipts/seg_eval_*_on_cad_test.txt`.
 
+**Scope of the word "cross-distribution", established by an adversarial
+audit on 2026-08-12 and added here because the audit could not find it
+stated anywhere.** The audit's brief was to invalidate this subsection's
+headline; it did not, and the four checks that could have shown a leak
+are recorded first because a null result from a hostile search is
+evidence and should read as such. Asset pools are **disjoint by
+content**, checked against the `asset` field of every annotation rather
+than against directory names: zero CAD assets in any procedural training
+set, zero procedural assets in the CAD test set. **No rendered image is
+shared** — MD5 over all 4 536 renders across the nine datasets returns 0
+identical images in any of the 36 pairings. **No model trained on any
+`cad_test` crop**: that config sets `train_val_split: 0.0`, all 836 crops
+are validation, and no checkpoint directory corresponds to it. And the
+four leave-one-SKU-out controls **do hold out their SKU** — zero
+instances of the excluded SKU in all four, again from the annotations.
+The eight compared models differ in nothing but their dataset: all ten
+`segmentation*.yaml` configs are byte-identical across every leaf key
+except `dataset.coco_path`, `dataset.img_dir`, `training.checkpoint_dir`
+and (for the eval-only CAD test config) `train_val_split`, verified
+mechanically. The result stands.
+
+What the audit did establish is the **boundary** of the claim, and three
+statements belong beside the numbers.
+
+*First, the measured shift is tray geometry and nothing else.* All nine
+datasets were generated at `seed = 0`, and `scene_generator` builds the
+per-scene RNG before `sample_params` draws any asset — so the scene-level
+parameter dict (`n_assemblies`, `backdrop`, `lighting`, `layout_mode`,
+`exposure`, `zoom`, `allow_overlap`) is **byte-identical for all 500
+scene indices** between the CAD test set and `anchored`, `wide`,
+`anchored_crown` and the controls. Measured off the render sidecars, not
+inferred. This is **not a leak** — no information about a test label
+reaches training through a matched nuisance draw, and pairing the
+nuisance parameters is a variance-reduction benefit for the comparison —
+but it means the models are *not* tested on unseen lighting rigs, unseen
+backdrops, unseen exposure, unseen framing or unseen obstruction
+geometry. This project already knew the fact and used it for a different
+purpose: the matched appearance parameters are what ruled out an
+appearance explanation for the transfer gap earlier in this subsection.
+It is the same fact, and it is also the honest scope of the claim.
+
+*Second, this is interpolation within the sampling band, not
+extrapolation beyond it.* All four CAD SKUs lie strictly inside the
+anchored band on every scalar axis — wall 3.70–4.25 mm inside 3.3–4.7,
+case half-height 11.1 mm inside 10.5–11.7, tray floor 1.95 mm inside
+1.6–2.3, bay margin 19.45–30.75 mm inside 17.0–34.0. That is exactly what
+"anchored" was *defined* to mean in the design spec ("within and slightly
+beyond the range the four Anker assemblies span"), so it is disclosed by
+construction — but it has not been restated at the point of claim, and it
+should be, because the extrapolation test is `wide` and `wide` came out
+null.
+
+*Third, the in-distribution column of the comparison below is
+optimistically biased, and that is a genuine defect this audit found.*
+`_split_dataset` calls `random_split` over the flat crop list, and
+`BaySegDataset` emits one crop per physical unit, so crops from the same
+rendered frame land on both sides of the split. Measured at
+`split_seed: 0`, `train_val_split: 0.85`: **93 of `anchored`'s 127
+validation crops (73.2 %) come from a frame that also contributed to
+training**, and 97 (76.4 %) use a tray asset that is also in training;
+`wide` is 90 of 124 and 95 of 124. Only 30 and 23 respectively carry tray
+geometry the model never saw. This is not pixel duplication — across
+`anchored` only 7 val×train crop-box pairs from a shared frame overlap at
+all, three above box-IoU 0.05 — what is shared is the frame's backdrop,
+lighting realisation, exposure and framing, and in three quarters of
+cases the procedural tray sample itself. **Consequence: the own-val
+figures in the in-distribution/out-of-distribution table are optimistic,
+so the published Δ is an upper bound on the in-distribution → OOD drop
+rather than the drop.** The same split selects every `best.pt`, where the
+exposure is small (0.0013 and 0.0031 between `best.pt` and `last.pt`).
+**It does not touch the headline.** `cad_test` is a separate render with
+a disjoint asset pool at `train_val_split: 0.0`, so every 836-crop figure
+in this subsection — 0.6801, 0.6794, 0.7645, 0.6677, the four control
+rows and the per-SKU tables — is unaffected. Fixing it means splitting on
+`image_id` and retraining all eight models, which is out of proportion to
+what it would change; stating it is the right response and this is that
+statement.
+
+Two reporting caveats on the per-SKU tables, from the same audit.
+`format_per_sku_table` prints one `n_crops` column per SKU row — the
+*union* crop count, 202–218 — and it is not the n behind any individual
+cell in that row. Every per-SKU **`obstruction`** figure in this
+subsection rests on **n = 27** (20100), **31** (10000), **34** (26800) or
+**36** (13000), against a printed 202–218. Two claims sit on those cells:
+that `20100` is the hardest SKU for `obstruction` for every model
+measured, and that `obstruction` is at or slightly above the control on
+3 of 4 SKUs. Both are defended by holding across six independently
+trained models, which is the right defence, but neither carries its n and
+both should be read at the density they actually have — the same
+~24–36-instance floor already applied to AnkerPowerCore10000's 14-crop
+`battery` figure. Second, "wide is meaningfully worse on its own
+validation split (0.6489 vs 0.7161)" compares **two different validation
+sets**, drawn from two different datasets with different class
+composition and roughly half the `electronics` instances on one side
+(18 against 35). "Meaningfully worse" is not supported by that
+comparison. The conclusion it is used to support — that widening the band
+bought nothing — is safe, because it rests on the CAD-test comparison,
+which is like-for-like on 836 identical crops.
+
+**Provenance of the decomposition figures, stated once.** The present-only
+`bay` figures (0.8801, 0.8856, 0.9013), the composite ceiling 0.9009, the
+"91.4 % of the gap" statistic and the 136/623 and 16/623 sealed-crop rates
+below come from a **read-only scratch diagnostic that was not committed
+and emitted no receipt in `docs/receipts/`**. Their anchor — pooled `bay`
+= 0.6555 — *is* a receipt figure, the diagnostic reuses
+`recog.seg_evaluate`'s own pixel path, and it reproduces every published
+pooled figure to four decimal places, which is why they are quoted with
+confidence. They are nevertheless not covered by this project's "every
+published number is regenerated by committed tooling" discipline, and
+that discipline has been narrowed in `README.md` and
+`docs/CV_BULLETS.md` rather than left to imply otherwise. Audit:
+`docs/superpowers/audit/2026-08-12-C-methodology.md`.
+
 Pooled over all 836 CAD test crops (selected mean over
 `bay`/`electronics`/`obstruction`):
 

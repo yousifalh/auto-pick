@@ -210,6 +210,54 @@ set). Receipts: `docs/receipts/seg_eval_{anchored,wide}_on_cad_test.txt`,
 `seg_eval_cad_control_<SKU>_on_cad_test.txt` (×4),
 `seg_eval_{anchored,wide}_on_{anchored,wide}_val.txt`.
 
+**Added 2026-08-12 after an adversarial audit of this measurement
+(`docs/superpowers/audit/2026-08-12-C-methodology.md`). It went looking
+for a leak and did not find one — say that first.** Asset pools are
+disjoint by *content*, checked against every annotation's `asset` field
+rather than against directory names (zero CAD assets in any procedural
+training set, zero procedural assets in `cad_test`). MD5 over all 4 536
+renders across the nine datasets: **0 identical images** in any of the 36
+pairings. `cad_test` trains nothing (`train_val_split: 0.0`). All four
+controls hold out their SKU with **zero** instances of the excluded one.
+And the eight configs are byte-identical across every leaf key except
+dataset/checkpoint paths. Nothing here needs withdrawing.
+
+Four things do need saying next to the numbers, and none of them was
+written down anywhere before:
+
+1. **The measured shift is tray geometry only.** All nine datasets use
+   `seed = 0`, and `scene_generator` builds the per-scene RNG before
+   `sample_params` draws any asset, so the scene-level parameter dict
+   (`n_assemblies`, `backdrop`, `lighting`, `layout_mode`, `exposure`,
+   `zoom`, `allow_overlap`) is **byte-identical for 500 of 500 scene
+   indices** between `cad_test` and each of `anchored`, `wide`,
+   `anchored_crown` and the controls. Measured off the sidecars. It is
+   not a leak — matched nuisance draws carry no label information and
+   reduce variance in the comparison — but it means nothing here is
+   tested on unseen lighting, backdrop, exposure, framing or obstruction
+   geometry. This is the same fact this project already used to rule out
+   an appearance explanation for the gap; it is also the scope of the
+   claim.
+2. **This is interpolation, not extrapolation.** All four CAD SKUs sit
+   strictly inside the anchored band on every scalar axis (wall
+   3.70–4.25 in 3.3–4.7; case half-height 11.1 in 10.5–11.7; tray floor
+   1.95 in 1.6–2.3; bay margin 19.45–30.75 in 17.0–34.0). That is what
+   Decision 2 defined "anchored" to mean, so it is disclosed by
+   construction — but the extrapolation test was `wide`, and `wide` came
+   out null.
+3. **`_split_dataset` partitions crops, not scenes** — see the
+   in-distribution section below, where it bites.
+4. **The decomposition figures in the next section have no receipt.**
+   Present-only `bay` (0.8801 / 0.8856 / 0.9013), the 0.9009 composite,
+   "91.4 %" and the 136/623 and 16/623 rates came from a scratch
+   diagnostic that was never committed. Their anchor, pooled `bay`
+   0.6555, is the receipt's, and the diagnostic reuses
+   `recog.seg_evaluate`'s own pixel path and reproduces every pooled
+   figure to four decimals — but "every published number is regenerated
+   by committed tooling" is not true of them, and `README.md` and
+   `docs/CV_BULLETS.md` have been narrowed accordingly rather than the
+   figures being dropped.
+
 ### Headline: procedural training reaches the CAD-trained ceiling on some classes and not others
 
 Pooled over all 836 CAD test crops (selected mean is over
@@ -356,16 +404,47 @@ same shared-code artefact as above, not a win. `20100` is the hardest SKU
 for `obstruction` for *every* model measured (0.488–0.514), procedural
 and CAD alike.
 
+⚠ **Added 2026-08-12: the `n` in the leftmost column is not the `n`
+behind any cell in the row.** `format_per_sku_table` prints the *union*
+crop count for the SKU — the 202/218/214/202 above — while the per-class
+counts are much smaller. Measured on `cad_test`:
+
+| SKU | printed `n_crops` | bay | electronics | **obstruction** | battery |
+|---|---:|---:|---:|---:|---:|
+| 10000 | 202 | 47 | 46 | **31** | 14 ⚠ |
+| 13000 | 218 | 61 | 61 | **36** | 42 |
+| 20100 | 214 | 53 | 53 | **27** | 45 |
+| 26800 | 202 | 52 | 53 | **34** | 44 |
+
+So **every per-SKU `obstruction` figure above rests on 27–36 crops**, at
+or barely above the ~24–36 reportable floor this project applies
+elsewhere — including both claims in the paragraph above it. The "hardest
+SKU" claim rests on **27**. Both are defended by holding across six
+independently trained models, which is the right defence and is why they
+are not withdrawn; they should be read at that density and not at 214.
+The cheapest fix is for `format_per_sku_table` to print the per-class
+`instance_counts` it already has in the result dict.
+
 ### Wide vs anchored: extra variation neither helped nor hurt
 
 Decision 2 asked whether widening the procedural sampling band beyond
 what the real SKUs span helps transfer. **It did not, in either
 direction**: 0.6801 vs 0.6794 selected mean, and no per-SKU per-class
 difference larger than the noise these instance counts support. The
-honest conclusion is that this comparison came out null. Wide is
-meaningfully worse on its *own* validation split (0.6489 vs anchored's
-0.7161) — it is a harder distribution to fit — without buying anything on
-the CAD test set.
+honest conclusion is that this comparison came out null. Wide scores
+lower on its *own* validation split (0.6489 vs anchored's 0.7161)
+without buying anything on the CAD test set.
+
+**Corrected 2026-08-12: that sentence said wide is "meaningfully worse on
+its own validation split", and the comparison does not support the
+word.** The two figures come from **two different validation sets**, drawn
+from two different datasets, with different class composition and roughly
+half the `electronics` instances on one side (wide 18 against anchored's
+35; bay 36 vs 43, obstruction 19 vs 29). "Harder distribution to fit" may
+well be true, but this pair of numbers cannot establish it. The
+*conclusion* is unaffected — that widening the band bought nothing rests
+on the CAD-test comparison, which is like-for-like on 836 identical
+crops.
 
 ### In-distribution vs out-of-distribution
 
@@ -382,6 +461,36 @@ The procedural module bay varies far more than any real one does, so the
 procedural val split is simply harder for that class than the CAD test
 set is. Both procedural models lose ground where it matters (`bay`
 −0.21/−0.23, `battery` −0.20/−0.30 going out of distribution).
+
+**⚠ Added 2026-08-12 — the "own val split" column is optimistically
+biased, and the Δ is an upper bound rather than the drop.**
+`_split_dataset` calls `torch.utils.data.random_split` over the flat crop
+list, and `BaySegDataset` emits one crop per physical *unit*, so several
+crops from one rendered frame land on both sides of the split. Measured
+at `split_seed: 0`, `train_val_split: 0.85`:
+
+| dataset | val crops | from a frame also in train | using a tray asset also in train | genuinely unseen tray |
+|---|---:|---:|---:|---:|
+| `anchored` | 127 | **93 (73.2 %)** | **97 (76.4 %)** | 30 |
+| `wide` | 124 | **90 (72.6 %)** | **95 (76.6 %)** | 23 |
+| `cad_control_holdout_10000` | 128 | 106 (82.8 %) | 128 (100 %, by design — 3 assets exist) | 0 |
+| `cad_control_holdout_26800` | 128 | 96 (75.0 %) | 128 (100 %) | 0 |
+
+It is **not pixel duplication** — across `anchored` only 7 val×train
+crop-box pairs from a shared frame overlap at all, 3 above box-IoU 0.05,
+max 0.176. What is shared is the frame's backdrop, lighting realisation,
+exposure and camera framing, and in ~76 % of val crops the procedural
+tray sample itself. So the in-distribution number is easier than a
+scene-disjoint one would be, and −0.036 / +0.031 are upper bounds on the
+in-dist → OOD movement. The same split selects every `best.pt`, where
+the exposure is small (both procedural receipts already record 0.0013 and
+0.0031 between `best.pt` and `last.pt`). **The 836-crop CAD-test figures
+are untouched** — `cad_test` is a separate render, disjoint asset pool,
+`train_val_split: 0.0`. The fix is to split on `image_id` and would need
+all eight models retrained, which is out of proportion to what it would
+change; stating it is the response. `docs/PORTFOLIO.md`'s "the crowned
+model is very slightly worse on its own validation split" rests on the
+same split and carries the same caveat.
 
 ### What got worse
 
