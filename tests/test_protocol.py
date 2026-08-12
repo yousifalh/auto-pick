@@ -19,6 +19,14 @@ from execution.protocol import (
 def test_crc16_modbus_known_vectors():
     # Reference vectors for CRC-16/MODBUS (polynomial 0xA001, init 0xFFFF).
     # Cross-checked against an independent reference implementation.
+    #
+    # The first is the CRC catalogue's CHECK VALUE - the published
+    # constant for CRC-16/MODBUS over b"123456789", the one number that
+    # identifies this variant among the ~20 CRC-16s that share a
+    # polynomial and differ in init / reflection / output XOR. It is
+    # what lets a reader confirm `execution.protocol`'s framing claim
+    # against a spec rather than against this repository.
+    assert crc16_modbus(b"123456789") == 0x4B37
     assert crc16_modbus(b"\x01\x03\x00\x00\x00\x01") == 0x0A84
     # Empty input → initial value
     assert crc16_modbus(b"") == 0xFFFF

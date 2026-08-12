@@ -18,9 +18,32 @@ Status replies reuse the same layout: byte 1 is the status code
 the cycle time in milliseconds so the host can log control-loop
 latency.
 
-CRC-16/MODBUS (polynomial 0xA001, initial 0xFFFF, no output XOR) is
-the standard integrity check on the KUKA EthernetKRL XML transport
-(PPR §7.3, R4).
+This framing is **modelled on** the KUKA EthernetKRL 3.1 specification
+and **augmented with** a CRC-16/MODBUS trailer (polynomial 0xA001,
+initial 0xFFFF, no output XOR) — the phrasing FDR §7.1 uses, and the
+accurate one. EthernetKRL's own transport is XML, and this project's own
+``krl_prog/laptop-comm.xml`` declares an XML payload schema with **no
+checksum element**, so the CRC here is not "the standard integrity check
+on the XML transport": it is a binary framing this repository defines,
+and the CRC is part of that definition rather than of anything KUKA
+publishes.
+
+What the CRC does and does not protect, since a checksum invites
+assumptions:
+
+* it covers **bytes 0..13 of one frame** — every field including the
+  version byte and the opcode — so a bit flip anywhere in a packet is
+  caught before any field is interpreted (see :func:`unpack_command`,
+  which verifies the CRC first and only then reads version and opcode);
+* it does **not** delimit or resynchronise the stream. There is no
+  length prefix and no sync word, so framing is positional: readers take
+  exactly 16 bytes. A stream that loses or gains a byte does not
+  resynchronise, it fails CRC on every subsequent frame — a real and
+  observed behaviour (audit F §1.6), not a hypothetical;
+* it is an **integrity** check, not an authentication or authorisation
+  one. Anyone who can reach the socket can emit a correctly-CRC'd
+  command; the channel is unauthenticated and plaintext by design, and
+  is meant for a point-to-point robot-cell link.
 """
 from __future__ import annotations
 
@@ -92,8 +115,12 @@ class OpCode(IntEnum):
 def crc16_modbus(data: bytes) -> int:
     """Compute CRC-16/MODBUS of ``data``.
 
-    Matches the algorithm used by KUKA EthernetKRL 3.1's XML transport
-    (poly 0xA001, init 0xFFFF, no output XOR).
+    The standard MODBUS variant — poly 0xA001 (reflected 0x8005), init
+    0xFFFF, reflected in and out, no output XOR — chosen for this
+    project's binary framing because it is ubiquitous and independently
+    checkable, NOT because EthernetKRL's XML transport uses it (it
+    carries no checksum; see the module docstring).
+    ``tests/test_protocol.py`` pins it to the published check value.
     """
     crc = 0xFFFF
     for b in data:
