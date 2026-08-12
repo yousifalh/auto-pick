@@ -305,6 +305,213 @@ def _find_transform(t, name):
     raise AssertionError(f"{name} not found in the pipeline")
 
 
+# ------------------------------------------- the JOINT distribution of ops --
+#
+# Every other geometric test in this file is structurally blind to a
+# correlation BETWEEN two ops, and that is how the worst defect in this
+# module survived: they either force p=1.0 on one op (a correlation needs
+# two) or rebuild the pipeline with a fresh seed per draw (which re-imposes
+# the same correlation identically every time, so it cannot show up as a
+# difference). The tests below are the shape that was missing - seed ONCE,
+# draw a few thousand samples, and look at the ops jointly.
+#
+# What they would have caught: recog.seeding.seed_transform used to call
+# albumentations' Compose.set_random_seed once, which in 2.0.8 hands all 17
+# child transforms the SAME seed. HorizontalFlip and VerticalFlip are
+# structurally identical - one p draw per call - so their streams never
+# desynchronised and they fired in lockstep forever. Measured: 4 distinct
+# orientations where 8 are possible, losing exactly the horizontal-only and
+# vertical-only mirrors, and an Affine block that fired on 0.495 of flipped
+# samples and 0.000 of unflipped ones.
+
+_DIHEDRAL_SEED = 20260812
+
+
+def _dihedral_images(img):
+    """The eight symmetries of the square, as arrays. Exact, no resampling."""
+    out = []
+    for k in range(4):
+        r = np.rot90(img, k)
+        out.append(r)
+        out.append(np.fliplr(r))
+    return out
+
+
+def _geometry_only_cfg():
+    """AUG_CFG with every resampling / pixel-value block switched off.
+
+    The dihedral ops are exact permutations of pixels, so with the
+    photometric, affine and camera blocks off, each output is bit-identical
+    to one of the eight symmetries and the orientation can be identified by
+    equality rather than inferred.
+    """
+    cfg = dict(AUG_CFG)
+    cfg.update(p_photometric=0.0, p_geometric=0.0, p_camera=0.0)
+    return cfg
+
+
+def _fire_counter(pipeline, name):
+    """Count how often one transform actually FIRES, without touching its RNG.
+
+    Wrapping ``apply_with_params`` is the honest probe: albumentations calls
+    it only after the transform's own ``p`` gate has passed, and the wrapper
+    draws no random numbers of its own, so instrumenting the pipeline does
+    not change the stream being measured.
+    """
+    node = _find_transform(pipeline, name)
+    count = [0]
+    original = node.apply_with_params
+
+    def wrapped(*args, **kwargs):
+        count[0] += 1
+        return original(*args, **kwargs)
+
+    node.apply_with_params = wrapped
+    return count
+
+
+@requires_alb
+def test_one_seeding_call_leaves_all_eight_dihedral_orientations_reachable():
+    """Seed once, draw many: the group must not collapse to a subgroup.
+
+    The module docstring justifies the dihedral block on the grounds that it
+    "multiplies the effective dataset by eight". This is the test that the
+    eight are all actually reachable from a single seeding call - which is
+    how the pipeline is seeded in training.py and seg_training.py, once,
+    before the loop.
+    """
+    from recog.seeding import seed_transform
+
+    t = build_train_transform(_geometry_only_cfg())
+    seed_transform(t, _DIHEDRAL_SEED, "test")
+
+    base = np.random.default_rng(7).integers(0, 255, (48, 48, 3), dtype=np.uint8)
+    orientations = _dihedral_images(base)
+    counts = [0] * 8
+    n = 2000
+    for _ in range(n):
+        out = t(image=base, bboxes=[[4, 4, 20, 30]], class_labels=[1])["image"]
+        hit = [i for i, o in enumerate(orientations) if np.array_equal(o, out)]
+        assert len(hit) == 1, (
+            "output is not one of the eight symmetries; a non-exact op leaked "
+            "into the geometry-only pipeline")
+        counts[hit[0]] += 1
+
+    missing = [i for i, c in enumerate(counts) if c == 0]
+    assert not missing, (
+        f"only {8 - len(missing)} of the 8 dihedral orientations occurred in "
+        f"{n} draws from one seeding call (counts {counts}). The flips are "
+        "firing in lockstep, so the group has collapsed to a subgroup and "
+        "half the claimed augmentation does not exist.")
+    # The four rotations carry 0.1875 each and the four reflections 0.0625
+    # each (rot90's own gate fires at 0.5 and then picks k uniformly), so
+    # the rarest expected count is 125. A floor of 40 is a wide margin on
+    # sampling noise and still nowhere near the 0 the defect produced.
+    assert min(counts) >= 40, counts
+
+
+@requires_alb
+def test_one_seeding_call_leaves_the_two_flips_independent():
+    """The exact failure: HorizontalFlip and VerticalFlip fired together.
+
+    Under the defect the (h, v) joint was {(0,0): 0.494, (1,1): 0.506} and
+    the two off-diagonal cells - the horizontal-only and vertical-only
+    mirrors, which are the ones that matter for cylinders lying at arbitrary
+    angles - were empty.
+    """
+    from recog.seeding import seed_transform
+
+    t = build_train_transform(_geometry_only_cfg())
+    seed_transform(t, _DIHEDRAL_SEED, "test")
+    h_count = _fire_counter(t, "HorizontalFlip")
+    v_count = _fire_counter(t, "VerticalFlip")
+
+    img = np.random.default_rng(7).integers(0, 255, (48, 48, 3), dtype=np.uint8)
+    n = 2000
+    joint = {(0, 0): 0, (0, 1): 0, (1, 0): 0, (1, 1): 0}
+    for _ in range(n):
+        before = (h_count[0], v_count[0])
+        t(image=img, bboxes=[[4, 4, 20, 30]], class_labels=[1])
+        joint[(h_count[0] - before[0], v_count[0] - before[1])] += 1
+
+    fractions = {k: v / n for k, v in joint.items()}
+    for cell, frac in fractions.items():
+        assert 0.20 <= frac <= 0.30, (
+            f"P(hflip, vflip) = {fractions} — cell {cell} is at {frac:.4f} "
+            "where two independent fair coins give 0.25. The two flips share "
+            "an RNG stream.")
+
+
+@requires_alb
+def test_one_seeding_call_leaves_the_affine_gate_free_of_the_flip_gate():
+    """The second-order consequence, on the block the config reasons about.
+
+    configs/recognition.yaml spends fourteen lines tuning ``scale_limit`` on
+    the premise that the affine block fires on ``p_geometric * Affine.p`` =
+    25% of samples. Its MARGINAL rate was never the problem; under the
+    defect it was 0.25 and the config looked satisfied. What was wrong was
+    the conditional: affine fired on 0.495 of the samples that were flipped
+    and 0.000 of the ones that were not, so no unflipped sample in the whole
+    training set ever received a camera-pose perturbation.
+    """
+    from recog.seeding import seed_transform
+
+    t = build_train_transform(AUG_CFG)
+    seed_transform(t, _DIHEDRAL_SEED, "test")
+    h_count = _fire_counter(t, "HorizontalFlip")
+    a_count = _fire_counter(t, "Affine")
+
+    img = np.random.default_rng(7).integers(0, 255, (48, 48, 3), dtype=np.uint8)
+    n = 2000
+    with_flip = [0, 0]      # [affine fires, samples]
+    without_flip = [0, 0]
+    for _ in range(n):
+        before = (h_count[0], a_count[0])
+        t(image=img, bboxes=[[4, 4, 20, 30]], class_labels=[1])
+        flipped = h_count[0] > before[0]
+        affine = a_count[0] > before[1]
+        bucket = with_flip if flipped else without_flip
+        bucket[0] += int(affine)
+        bucket[1] += 1
+
+    assert min(with_flip[1], without_flip[1]) > 500, (with_flip, without_flip)
+    rate_flipped = with_flip[0] / with_flip[1]
+    rate_unflipped = without_flip[0] / without_flip[1]
+    for label, rate in (("flipped", rate_flipped),
+                        ("unflipped", rate_unflipped)):
+        assert 0.19 <= rate <= 0.31, (
+            f"P(affine | {label}) = {rate:.4f}, against the documented "
+            f"p_geometric * Affine.p = 0.25. flipped={rate_flipped:.4f} "
+            f"unflipped={rate_unflipped:.4f} — the affine gate is riding the "
+            "flip gate's RNG stream.")
+
+
+@requires_alb
+def test_the_independent_child_seeds_are_still_perfectly_reproducible():
+    """Independence must not have been bought with entropy.
+
+    The fix for the lockstep gives every child transform its own seed. If
+    those seeds came from anywhere but the run seed, augmentation would go
+    back to being unreproducible - which is the defect recog.seeding exists
+    to prevent, reintroduced by its own repair.
+    """
+    from recog.seeding import seed_transform
+
+    def draw(seed, n=30):
+        t = build_train_transform(AUG_CFG)
+        seed_transform(t, seed, "test")
+        img = np.random.default_rng(7).integers(
+            0, 255, (48, 48, 3), dtype=np.uint8)
+        return [int(t(image=img, bboxes=[[4, 4, 20, 30]],
+                      class_labels=[1])["image"].sum()) for _ in range(n)]
+
+    assert draw(_DIHEDRAL_SEED) == draw(_DIHEDRAL_SEED), (
+        "two pipelines seeded identically produced different draws")
+    assert draw(_DIHEDRAL_SEED) != draw(_DIHEDRAL_SEED + 1), (
+        "two different seeds produced identical draws — the child seeds are "
+        "not actually derived from the run seed")
+
+
 # --------------------------------------------------------- mask-aware path --
 
 def test_apply_with_mask_moves_image_and_mask_together():

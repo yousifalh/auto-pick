@@ -8,7 +8,10 @@ only paid for when actually running a training job. The entry point is::
 The design follows the PPR:
 
 * COCO-pretrained ResNet-34 + FPN backbone.
-* BatchNorm frozen for ``training.frozen_bn_epochs`` (default 20).
+* BatchNorm frozen — statistics and affine parameters — for the whole
+  run, torchvision-detection style. There is no ``frozen_bn_epochs``
+  knob; see :func:`recog.model.freeze_batchnorm` for why the one that
+  used to be here was removed rather than repaired.
 * Cosine learning-rate schedule.
 * Smooth-L1 box regression (torchvision's default).
 * Per-epoch checkpointing plus a best-mAP tracker.
@@ -225,16 +228,28 @@ def train_one_epoch(
     scheduler,
     device,
     epoch: int,
-    frozen_bn: bool,
 ) -> float:
-    """Run one training epoch, returning the mean loss."""
+    """Run one training epoch, returning the mean loss.
+
+    ``model.train()`` puts every BatchNorm back into training mode, so
+    the freeze has to be re-applied after it on EVERY epoch — see
+    :func:`recog.model.freeze_batchnorm` for why BN is frozen for the
+    whole run and why the old ``frozen_bn_epochs`` knob was removed
+    rather than repaired.
+    """
     import torch
 
-    model.train()
-    if frozen_bn:
-        from recog.model import freeze_batchnorm
+    from recog.model import freeze_batchnorm
 
-        freeze_batchnorm(model)
+    model.train()
+    n_frozen = freeze_batchnorm(model)
+    if n_frozen == 0:
+        raise RuntimeError(
+            "freeze_batchnorm() found no BatchNorm2d in the detector, so it "
+            "froze nothing. Either the backbone no longer uses BatchNorm — in "
+            "which case delete this call rather than leave it looking like it "
+            "does something — or the model handed in is not the one "
+            "build_fasterrcnn() returns.")
 
     total = 0.0
     n = 0
@@ -428,15 +443,10 @@ def train(cfg: Dict[str, Any], seed: Optional[int] = None,
     # ---- Main loop ----
     best_map = -1.0
     for epoch in range(int(train_cfg.get("epochs", 60))):
-        frozen_bn = epoch < int(train_cfg.get("frozen_bn_epochs", 20))
         mean_loss = train_one_epoch(
-            model, train_loader, optimiser, scheduler,
-            device, epoch, frozen_bn,
+            model, train_loader, optimiser, scheduler, device, epoch,
         )
-        log.info(
-            "epoch=%d loss=%.4f bn_frozen=%s",
-            epoch, mean_loss, frozen_bn,
-        )
+        log.info("epoch=%d loss=%.4f bn_frozen=all", epoch, mean_loss)
 
         # Both metrics are reported every epoch: the full set as the sanity
         # check that nothing has broken, the hard subset as the thing

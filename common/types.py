@@ -26,10 +26,17 @@ from typing import Any, Iterable
 class BBox: 
     """An axis-aligned bounding box in image-pixel coordinates.
 
-    The convention matches Pascal VOC: ``xmin``/``ymin`` are inclusive
-    and ``xmax``/``ymax`` are exclusive. A zero-area box is a valid
-    value and round-trips through :meth:`iou` as ``0.0``, matching the
-    VOC evaluation convention.
+    The convention is 0-based with inclusive ``xmin``/``ymin`` and
+    exclusive ``xmax``/``ymax``, the same order and units as Pascal
+    VOC's ``<bndbox>`` — but *not* VOC's indexing. The real VOC devkit
+    is 1-based with inclusive max edges and carries a ``+1`` in its IoU
+    (``iw = xmax - xmin + 1``); this codebase is 0-based exclusive
+    throughout, which is the modern convention (torchvision,
+    albumentations' ``pascal_voc`` format, COCO after the xywh
+    conversion) and is self-consistent end to end. The IoU therefore
+    differs from the devkit's by a sub-percent amount that grows as
+    boxes get smaller. A zero-area box is a valid value and round-trips
+    through :meth:`iou` as ``0.0``.
     """
 
     xmin: float

@@ -114,14 +114,49 @@ def build_fasterrcnn(cfg: Dict[str, Any]) -> "FasterRCNN":
     )
 
 
-def freeze_batchnorm(model: "nn.Module") -> None:
-    """Freeze all BatchNorm layers — used for the first 20 epochs per PPR."""
+def freeze_batchnorm(model: "nn.Module") -> int:
+    """Freeze every BatchNorm2d — running statistics *and* affine params.
+
+    Freezing means both halves, permanently, for the whole run. That is
+    torchvision's own detection recipe (its reference backbones ship as
+    ``FrozenBatchNorm2d``) and it is the right one here: this trains at
+    ``batch_size: 2``, and batch statistics estimated from two images are
+    noise, so letting the running stats drift off ImageNet's is a way to
+    make the model worse, not better.
+
+    It is written as one permanent operation rather than a per-epoch
+    switch because the per-epoch switch was a lie. Before 2026-08-12 this
+    function was called only while ``epoch < training.frozen_bn_epochs``
+    and there was no inverse: ``model.train()`` restored ``bn.training``
+    on the next epoch, so the running statistics resumed updating, but
+    nothing anywhere set ``requires_grad`` back to ``True``. Measured
+    (audit G, finding 3): γ and β stayed pinned at their pretrained
+    values for all 35 epochs while the config said 8.
+
+    That left the two halves disagreeing — running statistics migrating
+    to the render domain while the affine parameters calibrated against
+    ImageNet's statistics could not follow — which is worse than either
+    coherent choice. The knob is gone rather than repaired because
+    honouring it would mean thawing γ/β mid-run, and no run since the
+    detector was trained has ever done that; adopting it would be an
+    unmeasured change to the training recipe, not a bug fix. See
+    ``docs/superpowers/specs/2026-08-12-fix-detector.md``.
+
+    Returns the number of BatchNorm2d modules frozen. It is a *count*,
+    not ``None``, so the caller can assert it is non-zero: a backbone
+    that had been swapped for one with GroupNorm or FrozenBatchNorm2d
+    would make this function a silent no-op, and "freezing" nothing is
+    exactly the kind of quiet half-success this repository keeps finding.
+    """
     _require_torch()
+    n = 0
     for m in model.modules():
         if isinstance(m, nn.BatchNorm2d):
             m.eval()
             for p in m.parameters():
                 p.requires_grad = False
+            n += 1
+    return n
 
 
 __all__ = ["build_fasterrcnn", "freeze_batchnorm"]

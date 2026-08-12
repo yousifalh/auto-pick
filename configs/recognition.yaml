@@ -170,7 +170,15 @@ training:
   momentum: 0.9
   weight_decay: 0.0005
   lr_scheduler: cosine
-  frozen_bn_epochs: 8
+  # No frozen_bn_epochs. BatchNorm is frozen — running statistics AND the
+  # affine parameters — for the WHOLE run, which is torchvision's own
+  # detection recipe and the right one at batch_size 2, where batch
+  # statistics over two images are noise. The knob that used to sit here
+  # said 8 and was half-inert: nothing ever restored requires_grad, so
+  # gamma/beta were pinned for all 35 epochs while the running statistics
+  # resumed updating at epoch 8 — the two halves disagreeing. Removed
+  # rather than repaired on 2026-08-12; see recog/model.py::
+  # freeze_batchnorm and docs/superpowers/specs/2026-08-12-fix-detector.md.
   # Randomness, same contract as configs/segmentation.yaml: `seed` fixes
   # model init, the shuffle order and the augmentation pipeline, is
   # logged every run and is written into best.pt/last.pt; `--seed`

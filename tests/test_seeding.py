@@ -10,13 +10,15 @@ logging a resolved seed while shuffling from OS entropy, and every test
 above would still be green.
 """
 import ast
+import random
 from pathlib import Path
 
 import numpy as np
 import pytest
 
 from recog.augmentation import _ALB_AVAILABLE, build_seg_train_transform
-from recog.seeding import (DEFAULT_SEED, SeedingError, assert_loader_seeded,
+from recog.seeding import (DEFAULT_SEED, SeedingError, _rng_fingerprint,
+                           _walk_pipeline, assert_loader_seeded,
                            capture_rng_state, dataloader_kwargs,
                            normalise_deterministic, resolve_deterministic,
                            resolve_seed, restore_rng_state, seed_everything,
@@ -26,6 +28,14 @@ ROOT = Path(__file__).resolve().parents[1]
 
 requires_alb = pytest.mark.skipif(
     not _ALB_AVAILABLE, reason="albumentations is not installed")
+
+
+def _find(pipeline, name):
+    """The first transform of class ``name`` anywhere in ``pipeline``."""
+    for node in _walk_pipeline(pipeline):
+        if type(node).__name__ == name:
+            return node
+    raise AssertionError(f"{name} not found in the pipeline")
 
 
 # ------------------------------------------------------- resolve_seed ----
@@ -245,6 +255,113 @@ def test_seeding_albumentations_makes_the_pipeline_repeat():
 
     assert np.array_equal(run(31), run(31))
     assert not np.array_equal(run(31), run(32))
+
+
+@requires_alb
+def test_every_child_transform_gets_its_own_stream_not_a_shared_one():
+    """Reproducible is only half the contract; independent is the other half.
+
+    albumentations 2.0.8's ``Compose.set_random_seed`` propagates ONE seed
+    to every child, so a single call leaves all 17 transforms in the
+    detector pipeline with identical RNG states. Two transforms that draw
+    the same way then fire in lockstep forever - measured as the dihedral
+    group collapsing from 8 orientations to 4 (audit G, finding 1).
+    """
+    from recog.augmentation import build_train_transform
+
+    tf = build_train_transform({})
+    seed_transform(tf, 4242, "train augmentation")
+
+    nodes = _walk_pipeline(tf)
+    assert len(nodes) > 10, f"expected the whole pipeline, walked {len(nodes)}"
+    states = [_rng_fingerprint(n) for n in nodes]
+    carried = [s for s in states if s is not None]
+    assert len(set(carried)) == len(carried), (
+        f"{len(carried)} transforms share only {len(set(carried))} distinct "
+        "RNG state(s)")
+
+    # And the pair that actually caused it, by behaviour rather than state.
+    h = _find(tf, "HorizontalFlip")
+    v = _find(tf, "VerticalFlip")
+    h_draws = [h.py_random.random() for _ in range(8)]
+    v_draws = [v.py_random.random() for _ in range(8)]
+    assert h_draws != v_draws, (
+        "HorizontalFlip and VerticalFlip draw the same stream, so they fire "
+        "together or not at all and the horizontal-only and vertical-only "
+        "mirrors never occur")
+
+
+@requires_alb
+def test_the_same_seed_still_gives_the_same_child_streams():
+    """Independent, and a pure function of the run seed - not of entropy."""
+    from recog.augmentation import build_train_transform
+
+    def states(seed):
+        tf = build_train_transform({})
+        seed_transform(tf, seed, "train augmentation")
+        return [_rng_fingerprint(n) for n in _walk_pipeline(tf)]
+
+    assert states(4242) == states(4242)
+    assert states(4242) != states(4243)
+
+
+class _CollidingCompose:
+    """A Compose whose children all end up with the same RNG, as 2.0.8 did.
+
+    ``set_random_seed`` here ignores the seed it is given for the children,
+    which is the shape of the regression: the call succeeds, ``.seed`` is
+    right on the root, and every child still draws the same stream.
+    """
+
+    class _Child:
+        def __init__(self):
+            self.py_random = random.Random(0)
+            self.random_generator = np.random.default_rng(0)
+            self.seed = None
+
+        def set_random_seed(self, seed):
+            self.seed = seed
+            self.py_random = random.Random(0)
+            self.random_generator = np.random.default_rng(0)
+
+    def __init__(self):
+        self.seed = None
+        self.py_random = random.Random(1)
+        self.random_generator = np.random.default_rng(1)
+        self.transforms = [self._Child(), self._Child()]
+
+    def set_random_seed(self, seed):
+        self.seed = seed
+        for t in self.transforms:
+            t.set_random_seed(seed)
+
+
+def test_a_pipeline_whose_children_share_a_stream_is_refused():
+    """The loud failure the old code did not have.
+
+    This is the exact defect that shipped: seeding that returns success
+    having done half its job. If a future albumentations changes the
+    per-child seeding contract again, this raises instead of quietly
+    halving the augmentation group.
+    """
+    with pytest.raises(SeedingError, match="distinct RNG state"):
+        seed_transform(_CollidingCompose(), 7, "train augmentation")
+
+
+def test_a_nested_transform_that_cannot_be_seeded_is_refused():
+    class _Parent:
+        seed = None
+        py_random = None
+        random_generator = None
+
+        def __init__(self):
+            self.transforms = [_Unseedable()]
+
+        def set_random_seed(self, seed):
+            self.seed = seed
+
+    with pytest.raises(SeedingError, match="no set_random_seed"):
+        seed_transform(_Parent(), 7, "train augmentation")
 
 
 @requires_alb

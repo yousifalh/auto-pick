@@ -366,19 +366,85 @@ def assert_loader_seeded(loader, what: str,
 
 # ----------------------------------------------------- the augmenter ----
 
+def _walk_pipeline(root):
+    """Depth-first over an albumentations pipeline, root first, once each.
+
+    ``BaseCompose`` (``Compose``, ``OneOf``, ...) holds its children in
+    ``.transforms``; leaf transforms have no such attribute. Instances
+    are de-duplicated by identity, because the same transform object
+    appearing twice in a pipeline is one RNG, not two, and handing it two
+    seeds would make the second silently win.
+    """
+    seen: set = set()
+    stack = [root]
+    order = []
+    while stack:
+        node = stack.pop()
+        if id(node) in seen:
+            continue
+        seen.add(id(node))
+        order.append(node)
+        children = getattr(node, "transforms", None) or []
+        stack.extend(reversed(list(children)))
+    return order
+
+
+def _rng_fingerprint(node):
+    """A hashable snapshot of one transform's RNG state, without consuming it.
+
+    ``random.Random.getstate`` and ``BitGenerator.state`` are pure reads —
+    they do not advance the stream — so this can be used to *prove* two
+    transforms will draw different numbers without changing what either
+    one draws. Returns ``None`` for a node that carries no RNG.
+    """
+    py = getattr(node, "py_random", None)
+    npg = getattr(node, "random_generator", None)
+    if py is None and npg is None:
+        return None
+    return (
+        repr(py.getstate()) if py is not None else None,
+        repr(npg.bit_generator.state) if npg is not None else None,
+    )
+
+
 def seed_transform(transform, seed: int, what: str) -> str:
-    """Seed an augmentation pipeline. Returns how it was seeded.
+    """Seed an augmentation pipeline reproducibly AND independently.
 
     Two pipelines exist in this repository and both are handled:
-    albumentations' ``Compose`` (2.x keeps per-instance ``py_random`` /
-    ``random_generator``, so ``set_random_seed`` reaches every child
-    transform), and ``recog.augmentation``'s numpy-only fallback used
-    when albumentations is absent, which carries a plain ``rng``.
+    albumentations' ``Compose``, and ``recog.augmentation``'s numpy-only
+    fallback used when albumentations is absent, which carries a plain
+    ``rng``. Anything else raises — a photometric pipeline that silently
+    kept its entropy-seeded generator would make the run unreproducible
+    in the one component that touches every single training sample, and
+    the only visible symptom would be a loss curve that does not repeat.
 
-    Anything else raises. A photometric pipeline that silently kept its
-    entropy-seeded generator would make the run unreproducible in the
-    one component that touches every single training sample, and the
-    only visible symptom would be a loss curve that does not repeat.
+    **Why this does more than call ``set_random_seed`` once.** In
+    albumentations 2.0.8, ``BaseCompose.set_random_seed`` propagates the
+    *same* seed to every child, so all 17 transforms in the detector
+    pipeline end up with one shared RNG state. ``HorizontalFlip`` and
+    ``VerticalFlip`` are structurally identical — one ``p`` draw per call
+    — so their streams are then identical forever and they fire in
+    lockstep. Measured (audit G, finding 1): the dihedral block collapsed
+    from **8 distinct orientations to 4**, losing precisely the
+    horizontal-only and vertical-only mirrors, and the ``Affine`` block
+    became perfectly conditioned on the flip gate — firing on 0.495 of
+    flipped samples and **0.000** of unflipped ones, against a
+    documented, and correct, marginal of 0.25. Reproducible, and half the
+    augmentation gone. Every seeded run between 2026-08-12 and this fix
+    trained that way.
+
+    So each node gets its own seed, derived from the run seed through a
+    ``SeedSequence`` — reproducible (a pure function of ``seed``) and
+    independent (``SeedSequence`` exists to produce streams with no
+    detectable correlation). The root keeps ``seed`` itself so the
+    "did it take" check below still means what it says.
+
+    Then it *proves* independence rather than assuming it: the RNG states
+    are read back and required to be distinct. That check is the whole
+    reason this function is not three lines. The defect it guards against
+    is not hypothetical — it is what this function did yesterday — and
+    its signature was a seeding call that returned success having done
+    half its job.
     """
     setter = getattr(transform, "set_random_seed", None)
     if callable(setter):
@@ -388,7 +454,41 @@ def seed_transform(transform, seed: int, what: str) -> str:
             raise SeedingError(
                 f"{what}: {type(transform).__name__}.set_random_seed({seed}) "
                 f"left .seed = {got!r}; the pipeline is not seeded.")
-        return f"{type(transform).__name__}.set_random_seed"
+
+        nodes = _walk_pipeline(transform)
+        children = nodes[1:]
+        if children:
+            # uint32 to stay inside every downstream seed API's range.
+            derived = np.random.SeedSequence(int(seed)).generate_state(
+                len(children), dtype=np.uint32)
+            for node, child_seed in zip(children, derived):
+                child_setter = getattr(node, "set_random_seed", None)
+                if not callable(child_setter):
+                    raise SeedingError(
+                        f"{what}: {type(node).__name__} is nested inside the "
+                        f"pipeline but exposes no set_random_seed(), so its "
+                        "draws would come from wherever albumentations left "
+                        "them. Refusing to call this pipeline seeded.")
+                child_setter(int(child_seed))
+
+        # ---- proof, not hope: the streams must actually be distinct ----
+        fingerprints = [(node, _rng_fingerprint(node)) for node in nodes]
+        carried = [(node, fp) for node, fp in fingerprints if fp is not None]
+        distinct = {fp for _node, fp in carried}
+        if len(distinct) != len(carried):
+            names = [type(node).__name__ for node, _fp in carried]
+            raise SeedingError(
+                f"{what}: seeded {len(carried)} transform(s) but only "
+                f"{len(distinct)} distinct RNG state(s) came back — some of "
+                f"them will draw identical streams and fire in lockstep, "
+                f"which silently collapses the augmentation group (audit G, "
+                f"finding 1). Pipeline: {names}. This is albumentations "
+                f"{_alb_version()}; the per-child seeding contract this "
+                "relies on has changed.")
+
+        return (f"{type(transform).__name__}.set_random_seed "
+                f"(+{len(children)} independent child seed(s) from "
+                f"SeedSequence({int(seed)}))")
 
     rng = getattr(transform, "rng", None)
     if isinstance(rng, np.random.Generator):
@@ -400,6 +500,16 @@ def seed_transform(transform, seed: int, what: str) -> str:
         "exposes neither set_random_seed() (albumentations) nor an .rng "
         "numpy Generator (recog.augmentation's fallback). Refusing to run a "
         "training job whose augmentation is unseeded.")
+
+
+def _alb_version() -> str:
+    """albumentations' version, or a note that it is absent."""
+    try:  # pragma: no cover - trivial
+        import albumentations
+
+        return str(albumentations.__version__)
+    except Exception:  # pragma: no cover - torch/alb-free CI path
+        return "not installed"
 
 
 # ---------------------------------------------- resume: RNG continuity ----

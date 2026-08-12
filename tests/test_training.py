@@ -221,6 +221,105 @@ def test_best_pt_is_the_one_that_is_conditional():
     assert any(isinstance(n, ast.If) for n in best[0][1])
 
 
+# --------------------------------------------------------- frozen BatchNorm ---
+#
+# There was no test of freeze_batchnorm at all, which is how it stayed
+# one-way: `requires_grad` was set to False at epoch 0 and nothing anywhere
+# set it back, so gamma/beta were pinned for all 35 epochs while
+# configs/recognition.yaml said `frozen_bn_epochs: 8`. The knob has been
+# removed rather than repaired — BN is now frozen, both halves, for the
+# whole run — and these pin that decision so it cannot drift back into a
+# half-live config key.
+
+
+def test_freeze_batchnorm_freezes_both_halves_and_says_how_many():
+    torch = pytest.importorskip("torch")
+    from recog.model import freeze_batchnorm
+
+    model = torch.nn.Sequential(
+        torch.nn.Conv2d(3, 4, 3), torch.nn.BatchNorm2d(4),
+        torch.nn.ReLU(), torch.nn.BatchNorm2d(4),
+    )
+    model.train()
+    bns = [m for m in model.modules() if isinstance(m, torch.nn.BatchNorm2d)]
+    assert all(m.training and m.weight.requires_grad for m in bns), "premise"
+
+    assert freeze_batchnorm(model) == 2, (
+        "freeze_batchnorm must report how many modules it froze, so a caller "
+        "can tell 'froze everything' from 'found nothing to freeze'")
+    for m in bns:
+        assert not m.training, "running statistics are still updating"
+        assert not m.weight.requires_grad, "gamma is still receiving gradient"
+        assert not m.bias.requires_grad, "beta is still receiving gradient"
+
+
+def test_freeze_batchnorm_finding_nothing_to_freeze_is_visible():
+    """A GroupNorm backbone would make this a silent no-op; the count says so."""
+    torch = pytest.importorskip("torch")
+    from recog.model import freeze_batchnorm
+
+    assert freeze_batchnorm(torch.nn.Sequential(torch.nn.Conv2d(3, 4, 3))) == 0
+
+
+def test_train_one_epoch_refreezes_batchnorm_unconditionally_every_epoch():
+    """``model.train()`` un-freezes BN, so the call must follow it, always.
+
+    Structural, because the failure is a call that stops happening rather
+    than one that returns the wrong thing — and because the version of this
+    defect that shipped was exactly a freeze that ran under a condition.
+    """
+    src = (ROOT / "recog" / "training.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "train_one_epoch")
+
+    calls = []
+
+    def walk(node, chain):
+        for child in ast.iter_child_nodes(node):
+            if (isinstance(child, ast.Call)
+                    and isinstance(child.func, ast.Name)
+                    and child.func.id == "freeze_batchnorm"):
+                calls.append(chain)
+            walk(child, chain + [child])
+
+    walk(fn, [])
+    assert len(calls) == 1, f"expected one freeze_batchnorm call, got {len(calls)}"
+    guards = [n for n in calls[0] if isinstance(n, (ast.If, ast.While))]
+    assert not guards, (
+        f"the freeze sits inside {[type(g).__name__ for g in guards]}. A "
+        "conditional freeze is what produced the half-frozen state audit G "
+        "found: statistics thawing at epoch 8 while gamma/beta never did.")
+    assert "frozen_bn" not in {a.arg for a in fn.args.args}, (
+        "train_one_epoch still takes a frozen_bn flag")
+
+
+def test_no_recognition_config_still_carries_the_removed_bn_knob():
+    """A documented parameter that does nothing is worse than no parameter."""
+    from common.config import load_yaml
+
+    offenders = []
+    for path in sorted((ROOT / "configs").glob("*.yaml")):
+        cfg = load_yaml(str(path)) or {}
+        if "frozen_bn_epochs" in (cfg.get("training") or {}):
+            offenders.append(path.name)
+    assert not offenders, (
+        f"{offenders} set training.frozen_bn_epochs, which nothing reads. "
+        "BatchNorm is frozen for the whole run — see recog/model.py::"
+        "freeze_batchnorm.")
+    # And nothing still READS the key. Checked against calls rather than raw
+    # text, because the docstrings deliberately name it to explain why it
+    # is gone — the point is that no code looks it up.
+    tree = ast.parse((ROOT / "recog" / "training.py")
+                     .read_text(encoding="utf-8"))
+    lookups = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+               and any(isinstance(a, ast.Constant)
+                       and a.value == "frozen_bn_epochs" for a in n.args)]
+    assert not lookups, (
+        f"recog/training.py still looks up frozen_bn_epochs at line(s) "
+        f"{[n.lineno for n in lookups]}")
+
+
 def test_the_configured_dataset_points_meta_dir_at_a_real_sidecar_directory():
     """A typo here degrades silently to the saturating metric plus a warning
     nobody reads."""
