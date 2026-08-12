@@ -235,6 +235,7 @@ def test_dataset_asset_is_none_when_absent(tmp_path):
             "id": 1, "image_id": 0, "category_id": 2,
             "bbox": [5, 5, 30, 30], "area": 900,
             "segmentation": rle_encode(cart), "iscrowd": 0,
+            "unit_id": "item0",
         }],
     }
     coco_path = tmp_path / "instances_seg.json"
@@ -242,3 +243,106 @@ def test_dataset_asset_is_none_when_absent(tmp_path):
 
     ds = BaySegDataset(str(coco_path), str(tmp_path))
     assert ds.sample_assets == [None]
+
+
+# ------------------------------------------------------------- unit_id --
+#
+# Crops are grouped by unit WITHIN each image. Two things about that are
+# load-bearing and neither was pinned before audit I:
+#   * a missing unit_id used to collapse an image into one crop silently;
+#   * unit_id is scene-local, so the image_id bucket is the only thing
+#     keeping "item0" in scene 1 apart from "item0" in scene 500.
+
+def _unit_doc(annotations, images=None, w=300, h=100):
+    return {
+        "categories": [{"id": 2, "name": "cartridge"},
+                       {"id": 4, "name": "placement_area"}],
+        "images": images or [{"id": 0, "file_name": "x.png",
+                              "width": w, "height": h}],
+        "annotations": annotations,
+    }
+
+
+def _unit_ann(ann_id, image_id, cat_id, box, w=300, h=100, unit_id="item0"):
+    x0, y0, x1, y1 = box
+    m = np.zeros((h, w), np.uint8)
+    m[y0:y1, x0:x1] = 1
+    ann = {"id": ann_id, "image_id": image_id, "category_id": cat_id,
+           "bbox": [x0, y0, x1 - x0, y1 - y0], "area": int(m.sum()),
+           "segmentation": rle_encode(m), "iscrowd": 0}
+    if unit_id is not _MISSING:
+        ann["unit_id"] = unit_id
+    return ann
+
+
+_MISSING = object()
+
+
+@pytest.mark.parametrize("unit_ids", [
+    pytest.param([_MISSING, _MISSING], id="key_absent"),
+    pytest.param([None, None], id="explicit_none"),
+    pytest.param(["", ""], id="blank"),
+])
+def test_a_missing_unit_id_is_refused_rather_than_collapsing_the_image(
+    tmp_path, unit_ids,
+):
+    """Audit I finding 7b: two units 40 mm apart used to come back as ONE
+    crop spanning both - union box (10,20,260,80) instead of two boxes at
+    (10,20,140,80) and (180,20,260,80) - with no exception and no warning,
+    because a dict buckets on None as happily as on any key. Training
+    would then proceed on a crop of the wrong scale over the wrong
+    content and nothing downstream could tell."""
+    from recog.seg_dataset import BaySegDataset
+
+    coco = _unit_doc([
+        _unit_ann(1, 0, 2, (10, 20, 140, 80), unit_id=unit_ids[0]),
+        _unit_ann(2, 0, 2, (180, 20, 260, 80), unit_id=unit_ids[1]),
+    ])
+    coco_path = tmp_path / "instances_seg.json"
+    coco_path.write_text(json.dumps(coco))
+
+    with pytest.raises(ValueError, match="unit_id"):
+        BaySegDataset(str(coco_path), str(tmp_path))
+
+
+def test_distinct_unit_ids_in_one_image_stay_distinct_crops(tmp_path):
+    """The control for the test above: the same two units, correctly
+    identified, are two crops at their own boxes."""
+    from recog.seg_dataset import BaySegDataset
+
+    coco = _unit_doc([
+        _unit_ann(1, 0, 2, (10, 20, 140, 80), unit_id="item0"),
+        _unit_ann(2, 0, 2, (180, 20, 260, 80), unit_id="item1"),
+    ])
+    coco_path = tmp_path / "instances_seg.json"
+    coco_path.write_text(json.dumps(coco))
+
+    ds = BaySegDataset(str(coco_path), str(tmp_path))
+    assert sorted(box for _img, _anns, box in ds.samples) == [
+        (10, 20, 140, 80), (180, 20, 260, 80)]
+
+
+def test_the_same_unit_id_in_two_images_stays_two_crops(tmp_path):
+    """`unit_id` is SCENE-LOCAL, not globally unique: `scene.build`
+    derives it from a per-scene counter, so "item0" names 252 different
+    physical units across recog/dataset3d_seg's 502 images (audit I
+    finding 7a). Only the image_id bucket keeps them apart. A refactor
+    that flattened the grouping to one dict over the whole sidecar would
+    merge all 252 into one crop and raise nothing - this test is what
+    would fail instead."""
+    from recog.seg_dataset import BaySegDataset
+
+    coco = _unit_doc(
+        [_unit_ann(1, 0, 2, (10, 20, 140, 80), unit_id="item0"),
+         _unit_ann(2, 1, 2, (180, 20, 260, 80), unit_id="item0")],
+        images=[{"id": 0, "file_name": "a.png", "width": 300, "height": 100},
+                {"id": 1, "file_name": "b.png", "width": 300, "height": 100}])
+    coco_path = tmp_path / "instances_seg.json"
+    coco_path.write_text(json.dumps(coco))
+
+    ds = BaySegDataset(str(coco_path), str(tmp_path))
+    assert len(ds) == 2
+    assert sorted(box for _img, _anns, box in ds.samples) == [
+        (10, 20, 140, 80), (180, 20, 260, 80)]
+    assert sorted(img["file_name"] for img, _anns, _box in ds.samples) == [
+        "a.png", "b.png"]

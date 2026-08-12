@@ -224,6 +224,41 @@ class BaySegDataset:
         names = {c["id"]: c["name"] for c in doc["categories"]}
         images = {im["id"]: im for im in doc["images"]}
 
+        # Every annotation must name its unit BEFORE any grouping happens.
+        #
+        # Grouping is `by_image[image_id] -> by_unit[unit_id]`, and a dict
+        # is perfectly happy to bucket on None: an annotation set whose
+        # `unit_id` is missing or None therefore collapses every unit in
+        # one image into a SINGLE crop spanning all of them - measured
+        # (audit I §7b) on a three-annotation, two-unit image as
+        # `crops=1, union_box=(10,20,260,80)` where the correct answer is
+        # two crops at (10,20,140,80) and (180,20,260,80). No exception,
+        # no warning: training simply proceeds on a crop whose scale and
+        # content are wrong, and nothing downstream can tell.
+        #
+        # Neither live producer can reach this - `masks_from_index` always
+        # writes the key and `labelme_to_seg._unit_id` never returns None,
+        # and `unit_id` is present on all 43 449 annotations of all 10
+        # datasets on disk. The reachable path is a hand-edited sidecar or
+        # a third-party converter, which is exactly the path real-photograph
+        # ground truth would arrive on. So: refuse it, loudly, rather than
+        # silently produce one wrong crop per image.
+        no_unit = [a.get("id") for a in doc["annotations"]
+                   if a.get("unit_id") is None or a.get("unit_id") == ""]
+        if no_unit:
+            raise ValueError(
+                f"{coco_path}: {len(no_unit)} of {len(doc['annotations'])} "
+                f"annotations carry no `unit_id` (ids {no_unit[:10]}"
+                f"{' ...' if len(no_unit) > 10 else ''}). Crops are grouped "
+                f"by unit within each image, so annotations without one "
+                f"would all share a single None bucket and collapse every "
+                f"unit in their image into ONE crop spanning all of them - "
+                f"silently, with the wrong scale and the wrong content. "
+                f"Every annotation needs a `unit_id` naming the physical "
+                f"unit it belongs to (see recog/labelme_to_seg.py and "
+                f"docs/ANNOTATION_PROTOCOL.md Sec5); it need only be unique "
+                f"within its own image.")
+
         by_image: Dict[int, List[dict]] = {}
         for a in doc["annotations"]:
             rec = dict(a)
@@ -291,6 +326,17 @@ class BaySegDataset:
         self.samples: List[Tuple[dict, List[dict], Tuple[int, int, int, int]]] = []
         self.sample_assets: List[Optional[str]] = []
         for img_id, anns in by_image.items():
+            # IMAGE FIRST, unit second, and that order is load-bearing.
+            # `unit_id` is SCENE-LOCAL, not globally unique: scene.build
+            # derives it from a per-scene counter, so "item0" names 252
+            # different physical units across recog/dataset3d_seg's 502
+            # images (69 distinct ids in total - audit I Sec7a). Bucketing
+            # by image_id first is the only reason that is harmless.
+            # Flattening this into a single `by_unit` over the whole
+            # sidecar would merge every one of those 252 units into one
+            # crop, and nothing would raise.
+            # `tests/test_seg_dataset.py::
+            # test_the_same_unit_id_in_two_images_stays_two_crops` pins it.
             by_unit: Dict[object, List[dict]] = {}
             for a in anns:
                 by_unit.setdefault(a.get("unit_id"), []).append(a)

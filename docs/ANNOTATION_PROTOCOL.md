@@ -269,6 +269,31 @@ uses (`recog/synth3d/annotate.py`, read by
 `recog.seg_dataset.BaySegDataset`) to build one training crop per physical
 cartridge.
 
+**Getting this wrong in the two possible directions is not symmetric.**
+
+- **Forgetting** a group id **fragments**: each ungrouped shape becomes its
+  own unit, so one cartridge comes back as three tight crops instead of one.
+  Degraded, visible in the crop count, and not corrupting.
+- **Sharing** one group id between two different cartridges **merges**:
+  their shapes become one unit and you get a single crop spanning both, at
+  the wrong scale, over the wrong content. Nothing downstream can tell.
+  `recog.check_annotations` warns (`single_unit_id`) whenever every
+  annotation in a photo shares one id — which is also what a legitimate
+  single-cartridge close-up looks like, so the warning is a question, not a
+  verdict: confirm the photo really shows one unit.
+
+An annotation with **no** unit id at all is refused outright — both by the
+validator (`missing_unit_id`, an ERROR) and by `BaySegDataset` itself,
+which raises rather than load a sidecar carrying one. That case is not
+reachable from LabelMe (§8's converter always assigns an id) but is very
+reachable from a hand-edited JSON.
+
+Ids need only be unique **within one photo**. The converter keys them on
+the image file's stem (`photo1#g1`), so they happen to be unique across the
+whole converted set as well — but do not rely on that: the synthetic
+producer's ids are per-scene counters (`item0`) that repeat in every image
+of the dataset, and every consumer must group by image first regardless.
+
 ---
 
 ## 6. The tool: LabelMe
@@ -308,6 +333,37 @@ locally — heavier setup for no benefit at this scale.
 4. Save each image's annotation as `<image-stem>.json` next to the images
    (LabelMe's default — pass `--output DIR` to save elsewhere) — the
    converter in §8 accepts either layout.
+
+#### Recording which product it is (optional, but do it)
+
+`recog.seg_evaluate --per-sku` breaks every segmentation number down by
+product, using an `asset` field the synthetic pipeline reads from the CAD
+catalog. A photograph has no such field, so you have to say. Add the SKUs
+you are shooting to the `labelme` command as **flags**:
+
+```
+labelme recog/realtest_rig/images \
+    --labels battery,cartridge,electronics_module,placement_area,obstruction \
+    --validate-label exact \
+    --flags AnkerPowerCore10000,AnkerPowerCore13000,AnkerPowerCore20100,AnkerPowerCore26800
+```
+
+`--flags` puts a checkbox row at the top of the window. Tick the one that
+names the product in the photo; the converter copies it onto every
+annotation in that image. **Tick exactly one** — two set flags is an error,
+not a coin toss, because nothing here can arbitrate between them.
+
+If a single photo shows **two different products**, image-level flags cannot
+express that. Use per-shape flags instead — `--labelflags` with a JSON map
+of label pattern to flag list, e.g. `'{".*": ["AnkerPowerCore10000",
+"AnkerPowerCore26800"]}'` — and tick the SKU on any one shape of each unit.
+The whole unit inherits it; two shapes of the *same* unit declaring
+different SKUs is an error.
+
+Declaring nothing is fine — the converter prints how many annotations came
+out without a SKU, and `--per-sku` will simply report them all in one
+`None` bucket. It is only per-SKU breakdowns you lose; nothing else in the
+pipeline reads this field.
 
 ### 6.2 Drawing a shape
 
@@ -440,6 +496,17 @@ and why. Fix the annotation in LabelMe, re-run the converter, and
 re-validate. `[WARN]` lines (e.g. a class with zero instances so far) are
 worth knowing but do not need to be fixed before moving to the next photo —
 they matter once the whole 50-100 image set is done, not per image.
+
+Two of those lines are about unit grouping specifically and are worth
+knowing before you see them:
+
+- `[ERROR] missing_unit_id` — an annotation with no unit id. Not reachable
+  from LabelMe; if you see it, the JSON has been hand-edited. `BaySegDataset`
+  refuses the file outright, so this must be fixed.
+- `[WARN] single_unit_id` — every annotation in one photo shares one id, so
+  the photo yields exactly one crop. Right for a close-up of a single
+  cartridge; wrong, and silently so, if the photo shows two units whose
+  Group IDs got merged (§5). Check it by eye once and move on.
 
 ---
 

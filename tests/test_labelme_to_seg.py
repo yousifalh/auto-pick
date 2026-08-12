@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from recog.labelme_to_seg import (LabelmeConversionError, SEG_CLASS_IDS,
-                                  _unit_id, convert_labelme_dir,
+                                  _unit_id, asset_of, convert_labelme_dir,
                                   convert_labelme_file, polygon_to_mask,
                                   resolve_paint_order)
 from recog.synth3d.annotate import rle_decode
@@ -30,13 +30,14 @@ def _rect(x0, y0, x1, y1):
     return [[x0, y0], [x1 - 1, y0], [x1 - 1, y1 - 1], [x0, y1 - 1]]
 
 
-def _shape(label, x0, y0, x1, y1, group_id=None):
+def _shape(label, x0, y0, x1, y1, group_id=None, flags=None):
     return {"label": label, "points": _rect(x0, y0, x1, y1),
-           "group_id": group_id, "shape_type": "polygon", "flags": {}}
+           "group_id": group_id, "shape_type": "polygon",
+           "flags": flags or {}}
 
 
-def _write_labelme(path, shapes, file_name, width, height):
-    doc = {"version": "5.4.1", "flags": {}, "shapes": shapes,
+def _write_labelme(path, shapes, file_name, width, height, flags=None):
+    doc = {"version": "5.4.1", "flags": flags or {}, "shapes": shapes,
           "imagePath": file_name, "imageData": None,
           "imageHeight": height, "imageWidth": width}
     path.write_text(json.dumps(doc), encoding="utf-8")
@@ -166,6 +167,139 @@ def test_unit_id_gives_each_ungrouped_shape_its_own_id():
 
 def test_unit_id_does_not_collide_across_images():
     assert _unit_id("img1", 1, 0) != _unit_id("img2", 1, 0)
+
+
+# ------------------------------------------------------------------- asset_of
+#
+# `recog.seg_evaluate --per-sku` groups on the `asset` field. The converter
+# used to emit none, so every crop from a real photograph would have landed
+# in one None bucket (audit I finding 6). LabelMe's own flags carry it.
+
+def test_asset_of_reads_a_per_shape_flag():
+    shape = {"flags": {"AnkerPowerCore10000": True}}
+    assert asset_of(shape, {}, "w") == "AnkerPowerCore10000"
+
+
+def test_asset_of_falls_back_to_the_image_level_flag():
+    """The ergonomic case: one photo of one product, one checkbox."""
+    assert asset_of({"flags": {}}, {"AnkerPowerCore20100": True}, "w") == \
+        "AnkerPowerCore20100"
+
+
+def test_asset_of_prefers_the_shape_flag_over_the_image_flag():
+    shape = {"flags": {"AnkerPowerCore13000": True}}
+    assert asset_of(shape, {"AnkerPowerCore20100": True}, "w") == \
+        "AnkerPowerCore13000"
+
+
+def test_asset_of_ignores_flags_that_are_false():
+    shape = {"flags": {"AnkerPowerCore13000": False}}
+    assert asset_of(shape, {}, "w") is None
+
+
+def test_asset_of_is_none_when_nothing_is_declared():
+    assert asset_of({"flags": {}}, {}, "w") is None
+    assert asset_of({}, {}, "w") is None
+
+
+def test_asset_of_refuses_to_guess_between_two_set_flags():
+    """No vocabulary exists to arbitrate with - real photographs may show
+    a SKU that is not in the CAD catalog - so this errors rather than
+    picking one."""
+    shape = {"flags": {"a": True, "b": True}}
+    with pytest.raises(LabelmeConversionError, match="exactly one"):
+        asset_of(shape, {}, "w")
+
+
+def test_convert_carries_the_sku_onto_every_annotation_of_the_unit(tmp_path):
+    """The annotator ticks the box on whichever shape is convenient; the
+    whole unit inherits it, because that is the granularity `asset` has in
+    the synthetic sidecar."""
+    _blank_image(tmp_path / "photo.jpg", 30, 30)
+    shapes = [_shape("cartridge", 0, 0, 30, 30, group_id=1,
+                     flags={"AnkerPowerCore26800": True}),
+             _shape("placement_area", 5, 5, 25, 25, group_id=1)]
+    _write_labelme(tmp_path / "photo.json", shapes, "photo.jpg", 30, 30)
+
+    _img, anns, _dropped = convert_labelme_file(tmp_path / "photo.json",
+                                                tmp_path)
+    assert [a["asset"] for a in anns] == ["AnkerPowerCore26800"] * 2
+
+
+def test_convert_gives_two_units_in_one_photo_their_own_skus(tmp_path):
+    """The case a directory-wide --asset flag could not have expressed,
+    which is why the flags carry it instead."""
+    _blank_image(tmp_path / "photo.jpg", 60, 30)
+    shapes = [_shape("cartridge", 0, 0, 25, 30, group_id=1,
+                     flags={"AnkerPowerCore10000": True}),
+             _shape("cartridge", 30, 0, 55, 30, group_id=2,
+                    flags={"AnkerPowerCore26800": True})]
+    _write_labelme(tmp_path / "photo.json", shapes, "photo.jpg", 60, 30)
+
+    _img, anns, _dropped = convert_labelme_file(tmp_path / "photo.json",
+                                                tmp_path)
+    assert {a["unit_id"]: a["asset"] for a in anns} == {
+        "photo#g1": "AnkerPowerCore10000", "photo#g2": "AnkerPowerCore26800"}
+
+
+def test_convert_errors_when_one_unit_is_declared_as_two_skus(tmp_path):
+    _blank_image(tmp_path / "photo.jpg", 30, 30)
+    shapes = [_shape("cartridge", 0, 0, 30, 30, group_id=1,
+                     flags={"AnkerPowerCore10000": True}),
+             _shape("placement_area", 5, 5, 25, 25, group_id=1,
+                    flags={"AnkerPowerCore26800": True})]
+    _write_labelme(tmp_path / "photo.json", shapes, "photo.jpg", 30, 30)
+    with pytest.raises(LabelmeConversionError, match="two different"):
+        convert_labelme_file(tmp_path / "photo.json", tmp_path)
+
+
+def test_convert_keeps_a_sku_declared_only_on_a_shape_paint_order_dropped(
+    tmp_path,
+):
+    """A shape can lose every pixel to paint order and still be the shape
+    whose flag named the unit's SKU. Losing the declaration with the
+    pixels would be exactly the kind of silent gap this change removes."""
+    _blank_image(tmp_path / "photo.jpg", 20, 20)
+    shapes = [_shape("battery", 2, 2, 18, 18, group_id=1),
+             _shape("placement_area", 4, 4, 8, 8, group_id=1,
+                    flags={"AnkerPowerCore13000": True})]
+    _write_labelme(tmp_path / "photo.json", shapes, "photo.jpg", 20, 20)
+
+    _img, anns, dropped = convert_labelme_file(tmp_path / "photo.json",
+                                               tmp_path)
+    assert len(dropped) == 1 and dropped[0]["class"] == "placement_area"
+    assert [a["asset"] for a in anns] == ["AnkerPowerCore13000"]
+
+
+def test_convert_writes_asset_none_when_no_sku_was_declared(tmp_path):
+    """Explicitly None, not absent: `--per-sku` then reports an honest
+    single bucket rather than a field that looks missing by accident."""
+    _blank_image(tmp_path / "photo.jpg", 20, 20)
+    _write_labelme(tmp_path / "photo.json",
+                   [_shape("battery", 2, 2, 10, 10)], "photo.jpg", 20, 20)
+    _img, anns, _dropped = convert_labelme_file(tmp_path / "photo.json",
+                                                tmp_path)
+    assert [a["asset"] for a in anns] == [None]
+
+
+def test_convert_dir_round_trips_the_sku_into_the_sidecar(tmp_path):
+    """End to end: the field BaySegDataset.sample_assets reads."""
+    lm_dir = tmp_path / "labelme"
+    lm_dir.mkdir()
+    _blank_image(tmp_path / "photo.jpg", 30, 30)
+    _write_labelme(lm_dir / "photo.json",
+                   [_shape("cartridge", 0, 0, 30, 30, group_id=1)],
+                   "photo.jpg", 30, 30,
+                   flags={"AnkerPowerCore20100": True})
+    out = tmp_path / "annotations" / "instances_seg.json"
+    convert_labelme_dir(lm_dir, out, tmp_path)
+
+    doc = json.loads(out.read_text())
+    assert [a["asset"] for a in doc["annotations"]] == ["AnkerPowerCore20100"]
+
+    from recog.seg_dataset import BaySegDataset
+    ds = BaySegDataset(str(out), str(tmp_path))
+    assert ds.sample_assets == ["AnkerPowerCore20100"]
 
 
 # ------------------------------------------------------- convert_labelme_file

@@ -409,12 +409,41 @@ def rle_encode(mask: np.ndarray) -> Dict[str, object]:
 
 
 def rle_decode(rle: Dict[str, object]) -> np.ndarray:
-    """Inverse of :func:`rle_encode`."""
-    h, w = rle["size"]
+    """Inverse of :func:`rle_encode`.
+
+    VALIDATES the counts array before decoding, because numpy's own
+    forgiveness is the wrong behaviour here. Slice assignment clips an
+    overrun and leaves an underrun zero-filled, so before this check a
+    hand-edited or third-party sidecar decoded silently and wrongly
+    (audit I §8, measured on a 4x4 mask): ``counts=[0, 999]`` gave 16 set
+    pixels, ``counts=[0, 3]`` gave 3, and ``counts=[0, -2, 5]`` gave 14
+    with every run after the negative one displaced. None of the three
+    raised, and every consumer downstream - the training loader, the
+    evaluator, the validator - would have believed the result.
+
+    ``rle_encode`` cannot produce any of those, and neither live producer
+    can either, so this is the last line of defence on the ONE path that
+    can: an annotation somebody edited by hand. It is a length check, not
+    a codec change - a well-formed RLE decodes byte-for-byte as it always
+    did.
+    """
+    h, w = (int(v) for v in rle["size"])
+    counts = rle["counts"]
+    total = sum(counts)
+    if total != h * w or (counts and min(counts) < 0):
+        raise ValueError(
+            f"malformed RLE: size={[h, w]} needs counts summing to "
+            f"{h * w} with no negative run, got {len(counts)} run(s) "
+            f"summing to {total}"
+            + (f" (minimum {min(counts)})" if counts else "")
+            + ". numpy would decode this silently - an overrun is clipped, "
+            "an underrun is zero-filled and a negative run displaces "
+            "every run after it - so the mask would be wrong without "
+            "anything saying so.")
     flat = np.zeros(h * w, dtype=np.uint8)
     pos = 0
     value = 0
-    for run in rle["counts"]:
+    for run in counts:
         flat[pos:pos + run] = value
         pos += run
         value ^= 1
@@ -570,11 +599,26 @@ def masks_from_index(ids: np.ndarray, id_meta: Dict[int, dict],
             # obstructions, and any cells seated in it), so a consumer can
             # assemble one crop per unit instead of per instance. Set by
             # scene.build on every id_meta entry; a loose cell or a loose
-            # module gets one that belongs to no other annotation. Read
-            # through .get(), not [], so callers that build id_meta by hand
-            # (every test in this file) do not have to supply it - they get
-            # None, which is still a value every annotation "carries", just
-            # not a useful one for grouping.
+            # module gets one that belongs to no other annotation IN THIS
+            # SCENE.
+            #
+            # SCENE-LOCAL, NOT GLOBALLY UNIQUE. `scene.build` derives the
+            # id from a per-scene group index or pass index ("item0",
+            # "solo7"), so the SAME string names a different physical unit
+            # in every other image of the dataset - measured on
+            # recog/dataset3d_seg: 69 distinct ids over 502 images, with
+            # "item0" appearing in 252 of them (audit I §7a). A consumer
+            # must therefore bucket by `image_id` FIRST and group by
+            # `unit_id` only within one image, which is what
+            # `recog.seg_dataset.BaySegDataset` does. Grouping on
+            # `unit_id` alone - for a per-unit split, dedup or metric -
+            # would silently merge hundreds of unrelated units.
+            #
+            # Read through .get(), not [], so callers that build id_meta by
+            # hand (every test in this file) do not have to supply it - they
+            # get None, which is still a value every annotation "carries",
+            # just not a useful one for grouping. `BaySegDataset` refuses a
+            # sidecar carrying that None rather than bucketing on it.
             "unit_id": meta.get("unit_id"),
         })
     return anns, dropped

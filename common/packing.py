@@ -557,7 +557,23 @@ def _drop_unsafe(
     by construction and the tests assert that directly. It exists because
     the failure direction matters asymmetrically — dropping a placement
     costs one cell, keeping a bad one puts a battery on a PCB — so the net
-    is worth its O(n) cost even when it never fires.
+    is worth its cost even when it never fires.
+
+    **That cost is O(p²) in placements, not O(n).** Each kept placement is
+    tested against every earlier kept placement, and `pack_best_effort`
+    runs this THREE times per pack, once per arm. Measured (audit K §1.6),
+    single call / ×3: 25 placements 0.042 / 0.126 ms, 100 → 0.558 / 1.675,
+    200 → 2.266 / 6.799, 400 → 8.586 / 25.757, 800 → 37.968 / 113.904 —
+    a clean 4×-per-doubling. Below ~50 placements it is noise; above ~200
+    it is the entire 8 ms O3 budget on its own.
+
+    Today p ≤ 24 (`plan/planner.py`'s `n_est` at the largest floor the
+    detector interlock admits — see `pack_best_effort`), so this costs
+    ~0.1 ms and no test can contradict a claim about its asymptotics,
+    which is exactly how the docstring managed to say "O(n)" until
+    2026-08-12. The algorithm is unchanged and deliberately so: it is not
+    binding, and the packer's real-world margin is 3.9×. If it ever does
+    bind, sort by x and sweep, or bucket into grid cells.
     """
     kept: List[PackedItem] = []
     dropped: List[int] = []
@@ -605,6 +621,30 @@ def pack_best_effort(
 
     Ties go to the earliest arm in :data:`_STRATEGIES`, so an instance no
     arm improves on comes back with FFDH's exact placements.
+
+    **Its O3 latency margin is held up by a guard in another module, and
+    nothing here would tell you.** Cost grows with the mask's cell count
+    (via `_grid_greedy`, which rebuilds a full summed-area table per item)
+    and with the item count (via the two shelf arms), and
+    `plan/planner.py` ties the two together — `n_est = 2·area/(18.5×65)`.
+    Bisected against the 8 ms per-cartridge budget (audit K §1.5, worst
+    over wall / 15 %-blob / checkerboard masks): 81.7 × 180.0 mm floor →
+    2.04 ms, 140 × 278 → 5.70 ms, **158 × 314 → 8.16 ms, the first
+    breach**, 279 × 555 → 63 ms.
+
+    The packer never sees an input near that, and the reason is
+    `SegmentationPlacementAreaExtractor.reject_if_not_one_cartridge_floor`
+    (`plan/placement_area.py`), which refuses any placeable floor larger
+    than `_MAX_CARTRIDGE_EXTENT_MM = (81.7, 180.0)` mm **before the
+    occupancy grid is built**. That interlock was written to catch a
+    detector box spanning a cartridge and three loose cells — a
+    correctness bug with nothing to do with latency — and it happens to
+    cap this function at 2.04 ms worst case, a 3.9× margin. Raising
+    `max_cartridge_extent_mm` for a larger SKU raises the packing cost
+    with it; the breach point is ~1.94× the interlock's long axis and
+    ~1.93× its short axis. Re-measure this function against the 8 ms
+    budget before widening that bound, and see the note beside
+    `_MAX_CARTRIDGE_EXTENT_MM` itself.
     """
     best: Optional[PackResult] = None
     for strategy in _STRATEGIES:

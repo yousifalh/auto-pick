@@ -14,6 +14,12 @@ See docs/ANNOTATION_PROTOCOL.md for the annotator-facing half of this:
 which five labels to draw, and how to use "Edit > Group ID" to link a
 unit's shapes together.
 
+LabelMe's per-image and per-shape **flags** carry the SKU into the
+sidecar's ``asset`` field, so `recog.seg_evaluate --per-sku` works on
+real photographs instead of bucketing every crop under ``None`` -
+:func:`asset_of` explains the rule and why a CLI ``--asset`` covering a
+whole directory was rejected in its favour.
+
 Reuses `recog.synth3d.annotate.rle_encode` / `write_coco_json` rather
 than re-implementing COCO-RLE. A previous defect in a hand-rolled
 encoder emitted a double leading zero and would have corrupted every
@@ -159,6 +165,46 @@ def resolve_paint_order(
     return kept, dropped
 
 
+def asset_of(shape: dict, image_flags: Dict[str, object],
+             where: str) -> Optional[str]:
+    """The SKU an annotator declared for one shape, or ``None``.
+
+    `recog.seg_evaluate --per-sku` groups crops by the ``asset`` field the
+    synthetic pipeline stamps from the CAD catalog
+    (`recog.synth3d.annotate.masks_from_index`). Nothing in a LabelMe
+    export corresponds to it automatically, so before this the converter
+    emitted no ``asset`` at all and every crop from a real photograph
+    landed in one ``None`` bucket - per-SKU numbers silently unavailable
+    on exactly the data they would matter most for (audit I, finding 6).
+
+    The carrier is LabelMe's own **flags**, not an invented field and not
+    a CLI argument. Per-shape flags (``labelme --labelflags``) win;
+    image-level flags (``labelme --flags``) are the fallback, which is
+    the ergonomic case - one photo of one product, one checkbox. A CLI
+    ``--asset`` covering a whole directory was the obvious alternative
+    and was rejected: it cannot express a photo holding two SKUs, and it
+    would mislabel one silently, which is the failure mode this whole
+    change exists to remove.
+
+    Exactly one flag may be true. Zero is fine and means "not declared".
+    Two is an error rather than a guess, because there is no vocabulary
+    here to arbitrate with - deliberately: real photographs may show a
+    SKU that is not in `recog/synth3d/assets/catalog.json`, and a
+    converter that refused those would be worse than one that cannot
+    guess between them.
+    """
+    for flags in (shape.get("flags") or {}, image_flags or {}):
+        on = sorted(k for k, v in flags.items() if v)
+        if len(on) > 1:
+            raise LabelmeConversionError(
+                f"{where}: {len(on)} flags are set ({on}); flags carry the "
+                f"SKU for --per-sku evaluation, so exactly one (or none) "
+                f"may be true. See docs/ANNOTATION_PROTOCOL.md Sec6.1.")
+        if on:
+            return str(on[0])
+    return None
+
+
 def _unit_id(image_stem: str, group_id: Optional[int], shape_index: int) -> str:
     """One id per physical unit, matching the grouping key
     `recog.seg_dataset.BaySegDataset` reads.
@@ -171,6 +217,14 @@ def _unit_id(image_stem: str, group_id: Optional[int], shape_index: int) -> str:
     3) gets a unit id of its own, keyed by its position in the file, so
     it is never silently merged with an unrelated ungrouped shape in
     the same image the way sharing a bare ``None`` key would.
+
+    Keyed by the IMAGE STEM, so these ids are unique across the whole
+    converted set. Note that the synthetic producer's are NOT:
+    `recog.synth3d.scene.build` uses a per-scene counter ("item0"), which
+    repeats in every image of the dataset. The two producers genuinely
+    disagree on the field's scope, so do not infer either from the other
+    - a consumer must bucket by ``image_id`` first regardless, which is
+    what `recog.seg_dataset.BaySegDataset` does.
     """
     if group_id is None:
         return f"{image_stem}#u{shape_index}"
@@ -197,6 +251,11 @@ def convert_labelme_file(json_path: Path,
     than trusting the JSON blindly - a photo re-saved or re-exported at
     a different resolution after annotation would otherwise silently
     mis-scale every polygon.
+
+    Each annotation carries a ``unit_id`` and an ``asset`` (the SKU, from
+    LabelMe's flags - see :func:`asset_of`; ``None`` when none was
+    declared), the two fields `recog.seg_dataset.BaySegDataset` needs to
+    build one crop per physical unit and to answer ``--per-sku``.
     """
     with open(json_path, "r", encoding="utf-8") as fh:
         doc = json.load(fh)
@@ -232,6 +291,7 @@ def convert_labelme_file(json_path: Path,
     width, height = int(width), int(height)
 
     image_stem = json_path.stem
+    image_flags: Dict[str, object] = doc.get("flags") or {}
     raw_shapes: List[dict] = []
     for i, shape in enumerate(doc.get("shapes", [])):
         raw_label = shape.get("label", "")
@@ -264,9 +324,36 @@ def convert_labelme_file(json_path: Path,
                 f"vertices entirely outside the image bounds."
             )
         raw_shapes.append({"shape_index": i, "label": label, "mask": mask,
-                           "group_id": shape.get("group_id")})
+                           "group_id": shape.get("group_id"),
+                           "asset": asset_of(
+                               shape, image_flags,
+                               f"{json_path}: shape {i} ({label})")})
 
     kept, dropped = resolve_paint_order(raw_shapes, height, width)
+
+    # One SKU per unit. An annotator ticks the box on whichever of a
+    # unit's shapes is convenient, so a unit's asset is whatever its
+    # shapes declare - but they must not disagree, and a disagreement is
+    # an error rather than a first-wins guess: `--per-sku` would
+    # otherwise attribute a crop to a SKU nobody chose.
+    #
+    # Built from RAW shapes, not from `kept`: a shape can lose every one
+    # of its pixels to paint order (see resolve_paint_order) while still
+    # being the shape whose flag named the unit's SKU, and dropping the
+    # declaration with the pixels would be a silent loss.
+    unit_asset: Dict[str, str] = {}
+    for s in raw_shapes:
+        if s["asset"] is None:
+            continue
+        uid = _unit_id(image_stem, s["group_id"], s["shape_index"])
+        prior = unit_asset.get(uid)
+        if prior is not None and prior != s["asset"]:
+            raise LabelmeConversionError(
+                f"{json_path}: unit {uid!r} is declared as two different "
+                f"SKUs ({prior!r} and {s['asset']!r}). One physical unit "
+                f"is one product; either the flags disagree or two units "
+                f"share a Group ID.")
+        unit_asset[uid] = s["asset"]
 
     anns: List[dict] = []
     for s in kept:
@@ -274,6 +361,7 @@ def convert_labelme_file(json_path: Path,
         ys, xs = np.nonzero(mask)
         x0, x1 = int(xs.min()), int(xs.max()) + 1
         y0, y1 = int(ys.min()), int(ys.max()) + 1
+        unit_id = _unit_id(image_stem, s["group_id"], s["shape_index"])
         anns.append({
             "class": s["label"],
             "category_id": SEG_CLASS_IDS[s["label"]],
@@ -281,7 +369,12 @@ def convert_labelme_file(json_path: Path,
             "bbox_xywh": [x0, y0, x1 - x0, y1 - y0],
             "area": int(mask.sum()),
             "iscrowd": 0,
-            "unit_id": _unit_id(image_stem, s["group_id"], s["shape_index"]),
+            "unit_id": unit_id,
+            # None when the annotator declared no SKU. Written explicitly
+            # rather than omitted so `--per-sku` reports an honest "no
+            # SKU" bucket instead of a field that looks absent by
+            # accident; the CLI says how many landed there.
+            "asset": unit_asset.get(unit_id),
         })
 
     image_record = {"file_name": file_name, "width": width, "height": height}
@@ -370,6 +463,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(f"  {d['file_name']}  shape {d['shape_index']} "
                  f"({d['class']}): {d['reason']}")
 
+    # Say out loud how many annotations carry no SKU. Nothing is wrong
+    # with a converted set that declares none - but `--per-sku` will put
+    # every one of them in a single `None` bucket, and that is much
+    # better learned here than from a per-SKU table with one row in it.
+    with open(args.out, "r", encoding="utf-8") as fh:
+        written = json.load(fh)["annotations"]
+    no_asset = sum(1 for a in written if a.get("asset") is None)
+    if no_asset:
+        print(f"note: {no_asset} of {len(written)} annotation(s) declare no "
+             f"SKU, so recog.seg_evaluate --per-sku will group them under a "
+             f"single 'None' asset. Set a LabelMe flag per photo or per "
+             f"shape to carry one - docs/ANNOTATION_PROTOCOL.md Sec6.1.")
+
     print(f"wrote {n_anns} annotation(s) across {n_images} image(s) to "
          f"{args.out}")
     return 0
@@ -378,6 +484,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 __all__ = [
     "LabelmeConversionError",
     "SEG_CLASS_IDS",
+    "asset_of",
     "build_arg_parser",
     "convert_labelme_dir",
     "convert_labelme_file",

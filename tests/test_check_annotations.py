@@ -11,7 +11,8 @@ from recog.check_annotations import (CANONICAL_CATEGORY_IDS, Issue,
                                      default_images_dir, format_report,
                                      main, pairwise_class_overlaps,
                                      same_class_instance_overlaps,
-                                     validate_dir, validate_file)
+                                     unit_id_issues, validate_dir,
+                                     validate_file)
 from recog.synth3d.annotate import rle_encode
 from recog.labelme_to_seg import convert_labelme_dir
 
@@ -22,7 +23,14 @@ def _mask(h, w, y0, y1, x0, x1):
     return m
 
 
-def _ann(ann_id, image_id, cls, mask, unit_id=None):
+_KEEP = object()
+
+
+def _ann(ann_id, image_id, cls, mask, unit_id=_KEEP):
+    """One annotation. ``unit_id`` defaults to one of its OWN, because a
+    missing id is now an error in its own right (it collapses an image
+    into a single crop - audit I finding 7b) and every other test in this
+    file is about something else."""
     ys, xs = np.nonzero(mask)
     x0, y0 = int(xs.min()), int(ys.min())
     x1, y1 = int(xs.max()) + 1, int(ys.max()) + 1
@@ -30,7 +38,8 @@ def _ann(ann_id, image_id, cls, mask, unit_id=None):
            "category_id": CANONICAL_CATEGORY_IDS[cls],
            "segmentation": rle_encode(mask),
            "bbox": [x0, y0, x1 - x0, y1 - y0],
-           "area": int(mask.sum()), "iscrowd": 0, "unit_id": unit_id}
+           "area": int(mask.sum()), "iscrowd": 0,
+           "unit_id": f"unit{ann_id}" if unit_id is _KEEP else unit_id}
 
 
 def _doc(images, annotations):
@@ -212,6 +221,75 @@ def test_validate_file_max_overlap_px_tolerance(tmp_path):
               for it in strict)
     assert not any(it.severity == "ERROR" and it.check == "cross_class_overlap"
                   for it in tolerant)
+
+
+# -------------------------------------------------------------------- unit_id
+#
+# The gap audit I found: check_annotations had no unit_id code path at all,
+# while a missing id silently collapses an image into one crop.
+
+def test_unit_id_issues_flags_a_missing_id_as_an_error():
+    anns = [{"id": 1, "unit_id": "u1"}, {"id": 2}]
+    issues = unit_id_issues(anns, "x.json", "a.jpg")
+    assert [it.check for it in issues] == ["missing_unit_id"]
+    assert issues[0].severity == "ERROR" and "[2]" in issues[0].detail
+
+
+def test_unit_id_issues_treats_none_and_blank_as_missing():
+    for bad in (None, "", "   "):
+        issues = unit_id_issues([{"id": 7, "unit_id": bad}], "x.json", "a.jpg")
+        assert [it.check for it in issues] == ["missing_unit_id"], bad
+
+
+def test_unit_id_issues_warns_when_every_annotation_shares_one_id():
+    """A duplicated Group ID is a valid id, so no checker can prove this
+    wrong - one photo of one cartridge looks identical. Hence WARNING."""
+    anns = [{"id": 1, "unit_id": "g1"}, {"id": 2, "unit_id": "g1"},
+           {"id": 3, "unit_id": "g1"}]
+    issues = unit_id_issues(anns, "x.json", "a.jpg")
+    assert [it.check for it in issues] == ["single_unit_id"]
+    assert issues[0].severity == "WARNING"
+
+
+def test_unit_id_issues_is_silent_for_a_single_annotation():
+    """One annotation trivially shares its id with itself. Warning on that
+    would fire on 63-119 images of every synthetic dataset on disk."""
+    assert unit_id_issues([{"id": 1, "unit_id": "g1"}], "x.json", "a.jpg") == []
+
+
+def test_unit_id_issues_is_silent_for_distinct_ids():
+    anns = [{"id": 1, "unit_id": "g1"}, {"id": 2, "unit_id": "g2"}]
+    assert unit_id_issues(anns, "x.json", "a.jpg") == []
+
+
+def test_validate_file_reports_a_missing_unit_id(tmp_path):
+    img = {"id": 1, "file_name": "a.jpg", "width": 20, "height": 20}
+    doc = _doc([img], [_ann(1, 1, "battery", _mask(20, 20, 2, 6, 2, 6),
+                           unit_id=None)])
+    p = tmp_path / "annotations" / "instances_seg.json"
+    _write_doc(p, doc)
+    issues, _totals = validate_file(p, None, max_overlap_px=0)
+    assert any(it.check == "missing_unit_id" and it.severity == "ERROR"
+              for it in issues)
+
+
+def test_validate_file_reports_a_malformed_counts_array_instead_of_crashing(
+    tmp_path,
+):
+    """rle_decode now raises on a counts array that does not sum to the
+    mask. A validator must turn that into a reported ERROR, not die on the
+    first bad annotation and hide every later one."""
+    img = {"id": 1, "file_name": "a.jpg", "width": 20, "height": 20}
+    bad = _ann(1, 1, "battery", _mask(20, 20, 2, 6, 2, 6))
+    bad["segmentation"]["counts"] = [0, 999]        # sums to 999, not 400
+    good = _ann(2, 1, "cartridge", _mask(20, 20, 10, 16, 10, 16))
+    _write_doc(tmp_path / "annotations" / "x.json", _doc([img], [bad, good]))
+
+    issues, totals = validate_file(
+        tmp_path / "annotations" / "x.json", None, max_overlap_px=0)
+    assert any(it.check == "degenerate_polygon" and "malformed RLE" in it.detail
+              for it in issues)
+    assert totals["cartridge"] == 1, "the later annotation was still checked"
 
 
 # -------------------------------------------------------------- image checks

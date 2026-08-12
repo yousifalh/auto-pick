@@ -724,6 +724,22 @@ class EnvironmentModel:
         The IoU threshold is no longer an argument with a default nobody
         set; it lives in :class:`TrackingConfig` on this model, which
         ``configs/planning.yaml`` configures.
+
+        **Cost is O(D·C) — quadratic in cartridges**, because
+        `_match_or_insert_cartridges` scores every (detection, track)
+        pair with no spatial index and no early exit. Nothing above said
+        so, and cartridge persistence is advertised as a feature two
+        docstrings up. Measured (audit K §3, min of 5, n cartridges *and*
+        n batteries): 8 → 0.018 ms, 32 → 0.172, 128 → 2.814, 256 →
+        10.387 — a clean 4×-per-doubling. This is a WHOLE-FRAME cost
+        charged against the PPR's 50 ms budget, which it crosses at
+        roughly **500–560 cartridges per frame**; the real corpus maximum
+        is **4** (`recog/dataset3d_seg`, 502 frames), so the margin is
+        ~500× and the shape is deliberately left alone. The global
+        best-first ordering below is what makes it quadratic and is also
+        the whole point of it (audit H, finding 4) — do not trade that
+        away for a spatial index unless a scene ever gets big enough to
+        need one.
         """
         self._replace_batteries(snapshot)
         self._match_or_insert_cartridges(snapshot)

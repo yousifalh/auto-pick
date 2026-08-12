@@ -55,6 +55,45 @@ def test_rle_is_column_major():
     assert counts[:2] == [0, 1], counts
 
 
+# ------------------------------------------------- malformed counts arrays --
+#
+# Audit I finding 8: numpy slice assignment clips an overrun and zero-fills
+# an underrun, so every one of these decoded silently and wrongly before
+# rle_decode validated its input. The exact values below are the measured
+# ones from that finding.
+
+@pytest.mark.parametrize("counts, was", [
+    pytest.param([0, 999], "overrun clipped to 16 px", id="overrun"),
+    pytest.param([0, 3], "underrun zero-filled to 3 px", id="underrun"),
+    pytest.param([], "no runs at all", id="empty"),
+    pytest.param([0, 8], "half the mask", id="short"),
+])
+def test_rle_decode_rejects_counts_that_do_not_sum_to_the_mask(counts, was):
+    with pytest.raises(ValueError, match="malformed RLE"):
+        rle_decode({"size": [4, 4], "counts": counts})
+
+
+def test_rle_decode_rejects_a_negative_run():
+    """[0, -2, 5] summed to 3, not 16, and would have been caught by the
+    sum check alone - but a negative run can be hidden inside a counts
+    array that DOES sum correctly, and it displaces every run after it."""
+    with pytest.raises(ValueError, match="malformed RLE"):
+        rle_decode({"size": [4, 4], "counts": [0, -2, 7, 11]})
+
+
+def test_rle_decode_still_accepts_every_well_formed_mask():
+    """The check is a length test, not a codec change: anything
+    rle_encode produces must decode byte-for-byte as it always did."""
+    rng = np.random.default_rng(11)
+    for shape in ((4, 4), (1, 7), (7, 1), (13, 29), (29, 13)):
+        for _ in range(10):
+            m = (rng.random(shape) < 0.4).astype(np.uint8)
+            assert np.array_equal(rle_decode(rle_encode(m)), m)
+    assert np.array_equal(
+        rle_decode(rle_encode(np.ones((3, 3), np.uint8))),
+        np.ones((3, 3), np.uint8))
+
+
 def test_masks_carry_segmentation_alongside_boxes():
     ids = np.zeros((40, 40), dtype=np.int32)
     ids[5:35, 5:35] = 1

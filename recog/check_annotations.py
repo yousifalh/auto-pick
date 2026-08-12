@@ -31,8 +31,23 @@ Checks, per image and for the whole set:
   same way, and is essentially free to compute alongside the cross-class
   check.
 * Degenerate or corrupted annotations: an RLE that decodes to zero
-  pixels, or whose recorded ``area``/``bbox``/RLE ``size`` disagrees with
-  what the segmentation actually decodes to.
+  pixels, whose ``counts`` array is malformed (does not sum to the mask's
+  own ``size``, or carries a negative run), or whose recorded
+  ``area``/``bbox``/RLE ``size`` disagrees with what the segmentation
+  actually decodes to.
+* **A missing ``unit_id``, and units that look merged.**
+  ``recog.seg_dataset.BaySegDataset`` builds one training crop per
+  ``unit_id`` WITHIN each image, so an annotation with no id joins a
+  single ``None`` bucket and collapses every unit in its image into one
+  oversized crop - measured (audit I, finding 7b) as two units becoming
+  one crop with no exception and no warning. The loader refuses that;
+  this check exists so the failure is reported here, per annotation and
+  alongside everything else, rather than as a traceback at the first
+  training step. Two softer signals are reported as warnings because
+  neither is provably wrong: one ``unit_id`` carrying two instances of a
+  class a single physical unit has only one of (``cartridge``,
+  ``placement_area``, ``electronics_module``), and an image whose
+  annotations ALL share one id.
 * An image with zero annotations, or an image FILE with no annotation
   RECORD at all - the two shapes of the gap `recog/realtest`'s
   IMG_4428 already burned this project once (recog/eval_real.py's module
@@ -153,7 +168,20 @@ def _decode_instances(
                 source=source, image=image))
             continue
 
-        mask = rle_decode(seg)
+        # rle_decode validates the counts array and raises on a malformed
+        # one. Caught rather than propagated: a validator whose job is to
+        # report every problem in a file must not die on the first one -
+        # the annotator would fix it, re-run, and meet the next one.
+        try:
+            mask = rle_decode(seg)
+        except (ValueError, TypeError) as exc:
+            issues.append(Issue(
+                "ERROR", "degenerate_polygon",
+                f"annotation id={a.get('id')} class={cls} has a malformed "
+                f"RLE: {exc}",
+                source=source, image=image))
+            continue
+
         px = int(mask.sum())
         if px == 0:
             issues.append(Issue(
@@ -234,6 +262,76 @@ def same_class_instance_overlaps(
         if total:
             out[cls] = total
     return out
+
+
+def _has_unit_id(a: dict) -> bool:
+    uid = a.get("unit_id")
+    return uid is not None and str(uid).strip() != ""
+
+
+def unit_id_issues(
+    anns: Sequence[dict], source: str, image: str,
+) -> List[Issue]:
+    """``unit_id`` checks for one image's annotations.
+
+    `recog.seg_dataset.BaySegDataset` builds one training crop per
+    ``unit_id`` WITHIN each image, and a Python dict buckets on ``None``
+    as cheerfully as on any other key. So:
+
+    * **Missing, None or blank id - ERROR.** Every such annotation lands
+      in one shared bucket and the image collapses to a single crop
+      spanning every unit in it. Measured (audit I, finding 7b) on a
+      three-annotation, two-unit image: ``crops=1`` with a union box of
+      (10,20,260,80) instead of two crops at (10,20,140,80) and
+      (180,20,260,80) - no exception, no warning, and a training crop at
+      the wrong scale over the wrong content. `BaySegDataset` now refuses
+      such a sidecar outright; this reports it HERE, alongside everything
+      else wrong with the file, rather than as a traceback at the first
+      training step.
+
+    * **Every annotation in the image sharing ONE id - WARNING.** The
+      same collapse, arriving through a door no checker can see through:
+      a duplicated or copy-pasted Group ID is a perfectly valid id, and
+      "one photo, one physical unit" is an entirely legitimate thing to
+      have photographed. So this asks rather than asserts. Reported only
+      when the image has at least two annotations (one annotation
+      trivially shares its id with itself, which says nothing). It fires
+      on 0 of the 5 018 synthetic images on disk - every one of those
+      whose annotations all share an id has exactly one annotation - and
+      it WILL fire on a legitimate close-up of a single grouped
+      cartridge, which is precisely why it is a warning.
+
+    Deliberately NOT checked: how many instances of a class one unit
+    carries. docs/ANNOTATION_PROTOCOL.md Sec1.2 asks for tiled
+    ``cartridge`` wall pieces and Sec1.1 for split ``placement_area``
+    floors, so "two of one class in one unit" is the documented norm on
+    the hand-annotated path, not a signal of anything.
+    """
+    issues: List[Issue] = []
+    missing = [a.get("id") for a in anns if not _has_unit_id(a)]
+    if missing:
+        issues.append(Issue(
+            "ERROR", "missing_unit_id",
+            f"{len(missing)} of {len(anns)} annotations (ids "
+            f"{missing[:10]}{' ...' if len(missing) > 10 else ''}) carry no "
+            f"unit_id. Crops are grouped by unit within an image, so these "
+            f"share one bucket and collapse every unit in this image into a "
+            f"single crop - see docs/ANNOTATION_PROTOCOL.md Sec5 (LabelMe's "
+            f"Group ID). recog.seg_dataset.BaySegDataset refuses such a file.",
+            source=source, image=image))
+        return issues
+
+    present = {a.get("unit_id") for a in anns}
+    if len(anns) > 1 and len(present) == 1:
+        issues.append(Issue(
+            "WARNING", "single_unit_id",
+            f"all {len(anns)} annotations share one unit_id "
+            f"({next(iter(present))!r}), so this image yields exactly ONE "
+            f"crop spanning all of them. Correct if the photo really shows "
+            f"one physical cartridge; if it shows two or more, their Group "
+            f"IDs have been merged and one crop will span the lot.",
+            source=source, image=image))
+    return issues
 
 
 # --------------------------------------------------------------- files ----
@@ -324,6 +422,8 @@ def validate_file(
                 f"(no cartridge, no cell, nothing) confirm that by eye, "
                 f"since an empty photo is a legitimate but rare case.",
                 source=source, image=image))
+
+        issues.extend(unit_id_issues(anns, source, image))
 
         instances, decode_issues = _decode_instances(
             anns, img_w, img_h, source, image)
@@ -538,6 +638,7 @@ __all__ = [
     "main",
     "pairwise_class_overlaps",
     "same_class_instance_overlaps",
+    "unit_id_issues",
     "validate_dir",
     "validate_file",
 ]

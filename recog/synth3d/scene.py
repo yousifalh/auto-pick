@@ -152,7 +152,9 @@ def build(params: dict, rng: random.Random, library: A.AssetLibrary,
                   to the same physical unit - a cartridge's shell, module,
                   bay proxy, obstructions, and any cells seated in it all
                   share one; a loose cell or loose module gets one of its
-                  own, distinct from every other annotation's.
+                  own, distinct from every other annotation's IN THIS
+                  SCENE. It is scene-local and repeats across the dataset
+                  - see the comment above the `units` dict below.
         groups    pass_index -> group key, for merging one unit's VOC boxes
                   (shell + module + bay proxy + obstructions, NOT seated
                   cells - see the comment above the pass-index loop) into a
@@ -497,8 +499,23 @@ def build(params: dict, rng: random.Random, library: A.AssetLibrary,
     # a unit can contain, so a unit's id is just its gid; anything with no
     # gid and no seat (a loose cells_only battery, or a loose module if one
     # is ever built) is not part of any unit and gets an id derived from its
-    # own pass_index instead - unique by construction, so it can never
-    # collide with another loose part's id or with a real gid ("item{n}").
+    # own pass_index instead - which cannot collide with another loose
+    # part's id or with a real gid ("item{n}") WITHIN THIS SCENE.
+    #
+    # SCENE-LOCAL, and that is the whole extent of the guarantee. Both
+    # forms are per-scene counters, so scene 1 and scene 500 both contain
+    # an "item0" naming two entirely different physical units. Measured on
+    # recog/dataset3d_seg: 69 distinct `unit_id` values across 502 images,
+    # "item0" in 252 of them (audit I §7a). The sidecar is safe only
+    # because every consumer buckets by `image_id` first and groups by
+    # `unit_id` within that bucket - `recog.seg_dataset.BaySegDataset` is
+    # the only one today, and `tests/test_seg_dataset.py` pins it. A
+    # consumer that grouped on `unit_id` alone (a per-unit train/val
+    # split, a per-unit dedup, a per-unit metric) would silently merge
+    # hundreds of unrelated units and report a number nobody could tell
+    # was wrong. Note that `recog.labelme_to_seg` disagrees on this: it
+    # keys on the image stem ("photo1#g1") and IS globally unique, so do
+    # not infer either producer's scope from the other's.
     units = dict(groups)
     units.update(seated_unit_of)
     for pid, entry in id_meta.items():
