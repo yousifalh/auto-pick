@@ -810,9 +810,9 @@ cell flip to FORBIDDEN.
 
 **Superseded in part, 2026-08-11: FFDH is no longer the only packer the
 planner runs.** `first_fit_decreasing` is unchanged — it is still the
-algorithm §6.3.1 formalises and measures — but both planner call sites
-(`plan.planner.Planner._pack_cartridge`, `plan.bin_packing.pack_cartridge`)
-now call `common.packing.pack_best_effort`, which competes FFDH against
+algorithm §6.3.1 formalises and measures — but the planner's call site
+(`plan.planner.Planner._pack_cartridge`) now calls
+`common.packing.pack_best_effort`, which competes FFDH against
 two obstacle-tolerant arms and returns whichever placed most. The reason
 and the measurement are in the scope note that opens §6.3.1.
 
