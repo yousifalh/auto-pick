@@ -171,6 +171,16 @@ training:
   weight_decay: 0.0005
   lr_scheduler: cosine
   frozen_bn_epochs: 8
+  # Randomness, same contract as configs/segmentation.yaml: `seed` fixes
+  # model init, the shuffle order and the augmentation pipeline, is
+  # logged every run and is written into best.pt/last.pt; `--seed`
+  # overrides it. `deterministic` is off|warn|strict - see
+  # recog/seeding.py and docs/receipts/seed_reproducibility.txt, which
+  # measured the three modes on the SEGMENTER. The detector's own
+  # published mAP figures predate all of this and came from unseeded
+  # runs; seeding applies from now on and does not recover them.
+  seed: 20260812
+  deterministic: warn
   checkpoint_dir: recog/checkpoints
   log_dir: recog/runs
   pretrained: true

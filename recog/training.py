@@ -297,23 +297,47 @@ def evaluate_model(model, loader, device) -> Dict[str, float]:
 
 # ----------------------------------------------- top-level entrypoint --
 
-def train(cfg: Dict[str, Any]) -> None:
-    """Run the full training schedule using ``cfg`` (a recognition YAML)."""
+def train(cfg: Dict[str, Any], seed: Optional[int] = None,
+          deterministic: Optional[str] = None) -> None:
+    """Run the full training schedule using ``cfg`` (a recognition YAML).
+
+    ``seed`` and ``deterministic`` override ``training.seed`` and
+    ``training.deterministic``. Both are resolved and logged before
+    anything stochastic is built; see recog/seeding.py, and note that
+    "seeded" and "bitwise-deterministic" are different claims there.
+    """
     _require_torch()
     import torch
 
     from recog.augmentation import build_train_transform, build_val_transform
     from recog.dataset import BatteryCartridgeDataset, collate_fn
     from recog.model import build_fasterrcnn
+    from recog.seeding import (assert_loader_seeded, dataloader_kwargs,
+                               resolve_deterministic, resolve_seed,
+                               seed_everything, seed_transform)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     log.info("Training on device: %s", device)
+
+    # ---- Seeding ----
+    # Before the transforms, the loaders and the model: build_fasterrcnn
+    # draws its new head's weights from torch's global CPU generator, so
+    # seeding any later would leave initialisation unseeded.
+    run_seed = resolve_seed(cfg, seed)
+    run_deterministic = resolve_deterministic(cfg, deterministic)
+    seed_record = seed_everything(run_seed, deterministic=run_deterministic)
 
     # ---- Data ----
     ds_cfg = cfg.get("dataset", {})
     aug_cfg = cfg.get("augmentation", {})
     train_tf = build_train_transform(aug_cfg)
     val_tf = build_val_transform(aug_cfg)
+    # albumentations 2.x keeps a per-instance RNG the global seed does
+    # not reach; seed_transform raises rather than pass over a pipeline
+    # it cannot seed.
+    log.info("augmentation seeded: train via %s, val via %s",
+             seed_transform(train_tf, run_seed, "train augmentation"),
+             seed_transform(val_tf, run_seed, "val augmentation"))
 
     full_dataset = BatteryCartridgeDataset(
         img_dir=ds_cfg["img_dir"],
@@ -337,13 +361,18 @@ def train(cfg: Dict[str, Any]) -> None:
     )
 
     train_cfg = cfg["training"]
+    # shuffle=True without a generator= builds its sampler's generator
+    # from OS entropy, which is why two runs of this command used to
+    # visit the corpus in different orders.
     train_loader = torch.utils.data.DataLoader(
         train_set,
         batch_size=int(train_cfg.get("batch_size", 4)),
         shuffle=True,
         num_workers=int(train_cfg.get("num_workers", 0)),
         collate_fn=collate_fn,
+        **dataloader_kwargs(run_seed),
     )
+    assert_loader_seeded(train_loader, "train loader", expected_seed=run_seed)
     val_loader = torch.utils.data.DataLoader(
         val_set,
         batch_size=1,
@@ -436,6 +465,10 @@ def train(cfg: Dict[str, Any]) -> None:
                     "hard_metrics": hard_metrics,
                     "selected_on": ("hard_val" if hard_metrics is not None
                                     else "val"),
+                    # A checkpoint that does not record its seed is a
+                    # checkpoint nobody can re-derive.
+                    "seed": run_seed,
+                    "seeding": seed_record,
                 },
                 ckpt_dir / "best.pt",
             )
@@ -460,6 +493,8 @@ def train(cfg: Dict[str, Any]) -> None:
                 "epoch": epoch,
                 "metrics": metrics,
                 "hard_metrics": hard_metrics,
+                "seed": run_seed,
+                "seeding": seed_record,
             },
             ckpt_dir / "last.pt",
         )
@@ -471,9 +506,20 @@ def _cli() -> None:
     parser = argparse.ArgumentParser(
         description="Train the Faster R-CNN battery/cartridge detector.")
     parser.add_argument("--config", default="configs/recognition.yaml")
+    parser.add_argument(
+        "--seed", type=int, default=None,
+        help="Override training.seed. The resolved seed is logged and "
+             "written into every checkpoint this run produces.")
+    parser.add_argument(
+        "--deterministic", choices=["off", "warn", "strict"], default=None,
+        help="Override training.deterministic. off = seeded only (two runs "
+             "at one seed still diverge on CUDA); warn = the default, "
+             "deterministic kernels where torch has them and a warning "
+             "where it does not; strict = raise instead of warning, which "
+             "this model's loss does not survive. See recog/seeding.py.")
     args = parser.parse_args()
     cfg = load_yaml(args.config)
-    train(cfg)
+    train(cfg, seed=args.seed, deterministic=args.deterministic)
 
 
 if __name__ == "__main__":  # pragma: no cover

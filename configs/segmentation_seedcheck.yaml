@@ -1,0 +1,66 @@
+# Seeding PROBE config - not a training config, and not a member of the
+# eight-config generalisation family (those are byte-identical apart from
+# dataset and checkpoint paths; this one deliberately is not).
+#
+# It exists so `scripts/seed_check.py` can demonstrate, in about a
+# minute, that two runs at the same seed agree and two runs at different
+# seeds do not. Everything is inherited from configs/segmentation.yaml
+# except:
+#
+#   * epochs: 1        - the claim under test is "same seed -> same run",
+#                        which one epoch settles; forty would only cost
+#                        GPU-hours to settle it again.
+#   * checkpoint_dir   - a scratch directory. It must NOT be
+#                        recog/checkpoints/seg: the published checkpoints
+#                        were trained unseeded, cannot be recovered, and
+#                        a probe that overwrote them would destroy the
+#                        only copy of the artefact behind every seg_eval
+#                        receipt.
+#
+# The 40-epoch schedule, the metric definitions and the architecture are
+# untouched, because seeding must not change what training does.
+model:
+  num_classes: 6        # background, cartridge, bay, electronics, obstruction, battery
+  pretrained: true
+  crop_size: 256        # at or above native crop resolution; see bay_segmenter
+  half: true            # fp16 - load-bearing for the 50 ms budget
+
+dataset:
+  coco_path: recog/dataset3d_seg/instances_seg.json
+  img_dir: recog/dataset3d_seg/images
+  train_val_split: 0.85
+  split_seed: 0
+  jitter_frac: 0.06
+
+training:
+  epochs: 1
+  batch_size: 8
+  num_workers: 0        # Windows spawn; raise on Linux
+  learning_rate: 0.01
+  momentum: 0.9
+  weight_decay: 0.0001
+  lr_scheduler: cosine
+  dice_weight: 0.5
+  # Overridden per run by `--seed`; scripts/seed_check.py runs this
+  # config at one seed twice and at a second seed once. `deterministic`
+  # matches configs/segmentation.yaml's default so the probe measures the
+  # mode real training runs use; `--deterministic off|strict` overrides
+  # it, which is how the comparison table in the receipt was produced.
+  seed: 20260812
+  deterministic: warn
+  checkpoint_dir: recog/checkpoints/seedcheck
+  select_on: [bay, electronics, obstruction]
+
+augmentation:
+  brightness_limit: 0.55
+  contrast_limit: 0.50
+  gamma_limit: [45, 190]
+  hue_shift_limit: 15
+  sat_shift_limit: 30
+  val_shift_limit: 20
+  motion_blur_limit: [3, 11]
+  gauss_noise_std_range: [0.02, 0.14]
+  p_photometric: 0.85
+  p_flip: 0.5
+  p_rot90: 0.5
+  p_camera: 0.6

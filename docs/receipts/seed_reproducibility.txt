@@ -1,0 +1,64 @@
+Training reproducibility: same seed twice, then a different seed
+==================================================================
+  command       : python scripts/seed_check.py
+  config        : configs/segmentation_seedcheck.yaml  (1 epoch; NOT the 40-epoch schedule)
+  torch         : 2.13.0+cu126  cuda 12.6  cudnn 91002
+  device        : NVIDIA GeForce RTX 3060
+  deterministic : warn  (training.deterministic; see recog/seeding.py)
+
+Before this existed, training was genuinely unseeded and two runs of
+the same command gave loss 1.7839 vs 1.7608 and selected mean IoU
+0.4111 vs 0.3957 (docs/superpowers/audit/2026-08-12-D-reproducibility
+.md). The published checkpoints came from that era and cannot be
+recovered; seeding applies from now on.
+
+  run   seed        loss      selected IoU   wall s   weights sha256
+  A     20260812    1.8164    0.3590           28.0   2b587394efd2eeb6
+  B     20260812    1.8164    0.3590           28.3   2b587394efd2eeb6
+  C     20260813    1.7972    0.3426           28.1   d4a4a86e3305daa6
+  (wall s is the whole process, ~15 s of which is interpreter and
+   torch import; it is a cost signal, not a benchmark.)
+
+  A vs B (same seed 20260812):
+    loss delta           : 0.000000
+    selected IoU delta   : 0.000000
+    metrics identical    : yes
+    weights bit-identical: yes
+
+  A vs C (seed 20260812 vs 20260813):
+    loss delta           : 0.019200
+    selected IoU delta   : 0.016400
+    differs              : yes
+
+WHAT THIS CLAIMS, EXACTLY. Same seed, same machine, same toolchain ->
+the same weights. It is not a claim about a different GPU, driver,
+cuDNN or torch build, and it is not a claim about the published
+checkpoints, which were trained before any of this existed.
+
+The three determinism modes, all measured on the hardware named above
+(six steps, two processes, docs/superpowers/specs/2026-08-12-seeded-
+training.md has the tables):
+  off    seeded only. Model init and every input batch are bitwise
+         identical, but the ARITHMETIC is not: cuDNN chooses
+         convolution algorithms by heuristic and several backward
+         kernels accumulate with atomics. Step 0's loss already
+         differs at ~1e-7 relative, and one epoch amplifies it into
+         the reported metrics: two same-seed pairs measured at 0.0197
+         and 0.0076 apart in mean loss, 0.0101 and 0.0409 in selected
+         IoU - the size of the UNSEEDED spread. Seeding alone is not
+         enough on this hardware, which is why it is not the default.
+  warn   the default, and what the table above was produced under.
+         cudnn.deterministic plus use_deterministic_algorithms(
+         warn_only=True): every op that has a deterministic
+         implementation uses it, and the ones that do not say so on
+         stderr rather than silently.
+  strict warn_only=False. Does not train this model at all:
+         `nll_loss2d_forward_out_cuda_template does not have a
+         deterministic implementation` on the first batch. That op's
+         nondeterminism is in the forward REDUCTION (its gradient does
+         not depend on the summation order), which is why `warn` still
+         reproduces the weights bit for bit.
+
+The train/val SPLIT is seeded separately (dataset.split_seed) and does
+not follow the run seed: it defines what the metric is measured on, so
+changing the seed must not change the yardstick.

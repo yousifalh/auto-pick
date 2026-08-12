@@ -1145,24 +1145,67 @@ glue, and cartridge boxes span whole units. The detector cannot break on
 schema, but its numbers will differ from the FDR's published figures if
 retrained.
 
-**Training is unseeded, so no retrain reproduces any number here (added
-2026-08-12).** There is no `torch.manual_seed`, no
-`use_deterministic_algorithms`, and `DataLoader(shuffle=True)` is
-constructed without a `generator=` in both trainers, so model
-initialisation and epoch order differ per process. Measured: two
-one-epoch runs of the same command on the same data gave loss 1.7839 vs
-1.7608 and selected mean IoU **0.4111 vs 0.3957**. The split *is* seeded
-and stable; everything downstream of it is not. Two consequences for
-anyone picking this up. **Do not read a 0.01 difference against a
-published figure as a regression** — it is inside run-to-run noise, and
-the README's own three same-recipe checkpoints scoring 0.211 / 0.232 /
-0.318 placeable fraction on the real photos are the honest illustration
-of the spread. And **every comparison in this document is
+**Training is seeded from 2026-08-12 — but the published checkpoints
+predate it and cannot be reproduced.** The two statements have to be
+read together, and this section used to carry only the first half of
+the story.
+
+*What was true until 2026-08-12.* Training was genuinely unseeded: no
+`torch.manual_seed`, no `use_deterministic_algorithms`, and
+`DataLoader(shuffle=True)` with no `generator=` in either trainer, so
+model initialisation and epoch order differed per process. Measured:
+two one-epoch runs of the same command on the same data gave loss
+1.7839 vs 1.7608 and selected mean IoU **0.4111 vs 0.3957**. Every
+checkpoint in `recog/checkpoints/` and every figure derived from one
+comes from that era. **They cannot be recovered.** Seeding applies from
+now on and is not retroactive; nothing in this repository can re-derive
+the exact weights behind the published IoUs.
+
+*What is true now.* `recog/seeding.py` is the single entry point, called
+before anything stochastic is built, and it seeds Python's `random`,
+NumPy, torch (CPU and every CUDA device), the DataLoader's `generator`
+and `worker_init_fn`, the albumentations pipeline, and the crop-jitter
+RNG. The seed comes from `training.seed` (default 20260812), is
+**logged** with a three-RNG fingerprint, and is written into every
+checkpoint. `--seed` overrides it. Every step that could silently
+no-op — a generator built and not passed through, a transform that
+cannot be seeded — raises instead.
+
+*Seeding alone was not enough, which is the part worth knowing.* With
+the RNGs seeded and no kernel constraints, two same-seed runs still
+diverge: cuDNN picks convolution algorithms by heuristic and several
+backward kernels accumulate with atomics, so step 0's loss already
+differs at ~1e-7 relative and one epoch amplifies it (two measured
+same-seed pairs sat 0.0197 / 0.0076 apart in mean loss and 0.0101 /
+0.0409 apart in selected IoU — the size of the unseeded spread). So
+`training.deterministic` defaults to **`warn`**
+(`cudnn.deterministic` + `use_deterministic_algorithms(warn_only=True)`),
+under which two runs at one seed produce **bit-identical weights**
+(`docs/receipts/seed_reproducibility.txt`, regenerate with `python
+scripts/seed_check.py`). `strict` — the same with `warn_only=False` —
+does not train this model at all: `nll_loss2d_forward_out_cuda_template
+does not have a deterministic implementation`. It costs about 1.7 s on a
+26 s one-epoch run (~15 % of the compute, roughly +2 min on the 40-epoch
+schedule).
+
+*The residual, precisely.* "Reproducible **on the same machine and
+toolchain**" is the claim; unqualified "reproducible" is not. A
+different GPU, driver, cuDNN or torch build can change the arithmetic,
+and one op (the NLL loss reduction) stays nondeterministic even under
+`warn` — its gradient does not depend on the summation order, which is
+why the weights still repeat, but a *reported loss* can wobble by a
+float32 ULP. `--resume` continues the RNG stream (the states are in
+`train_state.pt`) and refuses a seed different from the one it recorded.
+
+*Unchanged advice.* **Do not read a 0.01 difference against a published
+figure as a regression** — those figures came from the unseeded era, and
+the README's three same-recipe checkpoints scoring 0.211 / 0.232 / 0.318
+placeable fraction on the real photos are the honest illustration of the
+spread. And **every comparison in this document is
 between-models-at-identical-conditions for that reason**; if you add a
 condition, train it on the same schedule and compare it against a model
-you trained too, not against a number on this page. Seeding it is a
-small change (`torch.manual_seed`, a `generator=` on the shuffling
-loader, `seed=` on `A.Compose`) and is not done.
+you trained too, not against a number on this page. What seeding buys is
+that *your* two runs now agree with each other.
 
 **A new render will not look like the committed corpus (added
 2026-08-12).** `recog/synth3d/materials.py` had been discarding both the

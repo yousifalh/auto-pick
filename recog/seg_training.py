@@ -304,8 +304,18 @@ def evaluate_model(model, loader, device, num_classes: int
 
 # ----------------------------------------------- top-level entrypoint --
 
-def train(cfg: Dict[str, Any], resume: bool = False) -> None:
+def train(cfg: Dict[str, Any], resume: bool = False,
+          seed: Optional[int] = None,
+          deterministic: Optional[str] = None) -> None:
     """Run the full training schedule using ``cfg`` (a segmentation YAML).
+
+    ``seed`` and ``deterministic`` override ``training.seed`` and
+    ``training.deterministic``; both are resolved and LOGGED before
+    anything stochastic is constructed, and the resolved seed is written
+    into every checkpoint this run produces. See recog/seeding.py for
+    what is seeded and for the difference between "seeded" and
+    "bitwise-deterministic" — they are not the same claim and this
+    project does not blur them.
 
     `resume=True` picks up from `<checkpoint_dir>/train_state.pt`, written
     unconditionally at the end of every epoch. That file is distinct from
@@ -326,10 +336,24 @@ def train(cfg: Dict[str, Any], resume: bool = False) -> None:
     from recog.augmentation import (build_seg_train_transform,
                                     build_seg_val_transform)
     from recog.bay_segmenter import build_segmenter
+    from recog.seeding import (assert_loader_seeded, capture_rng_state,
+                               dataloader_kwargs, resolve_deterministic,
+                               resolve_seed, restore_rng_state, seed_everything,
+                               seed_transform)
     from recog.seg_dataset import BaySegDataset
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     log.info("Training on device: %s", device)
+
+    # ---- Seeding ----
+    # FIRST, before the transforms, the loaders or the model: weight
+    # initialisation draws from torch's global CPU generator the moment
+    # build_segmenter runs, so seeding after that point would seed
+    # everything except the initialisation - which is the component the
+    # 1-epoch probe showed moving the selection metric by 1.5 points.
+    run_seed = resolve_seed(cfg, seed)
+    run_deterministic = resolve_deterministic(cfg, deterministic)
+    seed_record = seed_everything(run_seed, deterministic=run_deterministic)
 
     # ---- Data ----
     model_cfg = cfg.get("model", {})
@@ -340,6 +364,13 @@ def train(cfg: Dict[str, Any], resume: bool = False) -> None:
 
     train_tf = build_seg_train_transform(aug_cfg)
     val_tf = build_seg_val_transform(aug_cfg)
+    # albumentations 2.x holds a per-instance RNG that the global seed
+    # above does NOT reach, so the pipeline that touches every training
+    # sample has to be seeded explicitly. seed_transform raises rather
+    # than return quietly if it is handed something it cannot seed.
+    log.info("augmentation seeded: train via %s, val via %s",
+             seed_transform(train_tf, run_seed, "train augmentation"),
+             seed_transform(val_tf, run_seed, "val augmentation"))
 
     full_dataset = BaySegDataset(
         coco_path=ds_cfg["coco_path"],
@@ -348,6 +379,11 @@ def train(cfg: Dict[str, Any], resume: bool = False) -> None:
         jitter_frac=float(ds_cfg.get("jitter_frac", 0.06)),
         train=True,
         transform=train_tf,
+        # The crop-jitter RNG follows the RUN seed, so two runs at
+        # different seeds are independent samples in every stochastic
+        # component rather than sharing their box jitter. (The
+        # train/val SPLIT does not - see split_seed below.)
+        seed=run_seed,
     )
     if len(full_dataset) == 0:
         raise RuntimeError(
@@ -357,6 +393,12 @@ def train(cfg: Dict[str, Any], resume: bool = False) -> None:
     # Seeded and logged, not just seeded: the split determines how many of
     # each rare class land in validation at all, so which crops fall where
     # has to be reproducible and visible, not merely deterministic.
+    #
+    # DELIBERATELY NOT the run seed. The split defines what the reported
+    # IoU is measured on; tying it to the run seed would mean every
+    # change of seed also changed the yardstick, and two seeds would no
+    # longer be comparable. It is its own knob and stays at its own
+    # default.
     split_seed = int(ds_cfg.get("split_seed", 0))
     train_set, val_set = _split_dataset(
         full_dataset, float(ds_cfg.get("train_val_split", 0.85)),
@@ -386,13 +428,21 @@ def train(cfg: Dict[str, Any], resume: bool = False) -> None:
             "batch_size %d; dropping it (BatchNorm cannot train on a "
             "singleton batch - see drop_last_batch)",
             len(train_set), batch_size)
+    # shuffle=True builds its own sampler generator from OS entropy
+    # unless it is handed one, which is why the epoch order used to
+    # differ between two runs of the same command.
     train_loader = torch.utils.data.DataLoader(
         train_set,
         batch_size=batch_size,
         shuffle=True,
         num_workers=int(train_cfg.get("num_workers", 0)),
         drop_last=drop_last,
+        **dataloader_kwargs(run_seed),
     )
+    # A generator that is built and then not passed through would leave
+    # the shuffle unseeded with every other signal still saying "seeded".
+    assert_loader_seeded(train_loader, "train loader", expected_seed=run_seed)
+    loader_generator = train_loader.generator
     val_loader = torch.utils.data.DataLoader(
         val_set,
         batch_size=int(train_cfg.get("batch_size", 8)),
@@ -470,10 +520,26 @@ def train(cfg: Dict[str, Any], resume: bool = False) -> None:
                 "likely changed since this run started. Point --config "
                 "at the exact dataset the interrupted run used, or start "
                 "a fresh run (drop --resume).")
+        saved_seed = state.get("seed")
+        if saved_seed is not None and int(saved_seed) != run_seed:
+            raise SystemExit(
+                "error: --resume was given a different seed than the run "
+                "it is continuing.\n"
+                f"  train_state.pt recorded seed: {int(saved_seed)}\n"
+                f"  this run resolved seed:       {run_seed}\n"
+                "Continuing would splice two RNG streams into one run and "
+                "call the result reproducible. Drop --seed (or set "
+                "training.seed to the recorded value) to continue that "
+                "run, or start a fresh one.")
         model.load_state_dict(state["model"])
         optimiser.load_state_dict(state["optimiser"])
         if scheduler is not None and state.get("scheduler") is not None:
             scheduler.load_state_dict(state["scheduler"])
+        # Continue the RNG stream rather than restart it: without this a
+        # resumed run replays epoch 0's shuffle order and augmentation
+        # draws, so the same seed and the same command would produce a
+        # different model depending on whether the run was interrupted.
+        restore_rng_state(state.get("rng_state"), loader_generator)
         start_epoch = int(state["epoch"]) + 1
         best_iou = float(state["best_iou"])
         log.info("resuming from train_state.pt: completed epoch=%d, "
@@ -513,6 +579,11 @@ def train(cfg: Dict[str, Any], resume: bool = False) -> None:
                     "val_instance_counts": val_counts_by_name,
                     "coco_path": ds_cfg["coco_path"],
                     "split_seed": split_seed,
+                    # What it would take to get this file back. A
+                    # checkpoint that does not record its seed is a
+                    # checkpoint nobody can re-derive.
+                    "seed": run_seed,
+                    "seeding": seed_record,
                 },
                 ckpt_dir / "best.pt",
             )
@@ -532,6 +603,8 @@ def train(cfg: Dict[str, Any], resume: bool = False) -> None:
                 "val_instance_counts": val_counts_by_name,
                 "coco_path": ds_cfg["coco_path"],
                 "split_seed": split_seed,
+                "seed": run_seed,
+                "seeding": seed_record,
             },
             ckpt_dir / "last.pt",
         )
@@ -552,6 +625,12 @@ def train(cfg: Dict[str, Any], resume: bool = False) -> None:
                 "val_instance_counts": val_counts_by_name,
                 "coco_path": ds_cfg["coco_path"],
                 "split_seed": split_seed,
+                "seed": run_seed,
+                "seeding": seed_record,
+                # Every RNG's position in its stream, so --resume
+                # continues the run instead of replaying epoch 0's
+                # shuffle and augmentation draws.
+                "rng_state": capture_rng_state(loader_generator),
             },
             state_path,
         )
@@ -567,9 +646,21 @@ def _cli() -> None:
         "--resume", action="store_true",
         help="Continue from <checkpoint_dir>/train_state.pt instead of "
              "starting a fresh 0-epoch schedule.")
+    parser.add_argument(
+        "--seed", type=int, default=None,
+        help="Override training.seed. The resolved seed is logged and "
+             "written into every checkpoint this run produces.")
+    parser.add_argument(
+        "--deterministic", choices=["off", "warn", "strict"], default=None,
+        help="Override training.deterministic. off = seeded only (two runs "
+             "at one seed still diverge on CUDA); warn = the default, "
+             "deterministic kernels where torch has them and a warning "
+             "where it does not; strict = raise instead of warning, which "
+             "this model's loss does not survive. See recog/seeding.py.")
     args = parser.parse_args()
     cfg = load_yaml(args.config)
-    train(cfg, resume=args.resume)
+    train(cfg, resume=args.resume, seed=args.seed,
+          deterministic=args.deterministic)
 
 
 if __name__ == "__main__":  # pragma: no cover

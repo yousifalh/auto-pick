@@ -38,6 +38,26 @@ training:
   weight_decay: 0.0001
   lr_scheduler: cosine
   dice_weight: 0.5
+  # Randomness. `seed` fixes model init, the shuffle order, the crop
+  # jitter and the augmentation pipeline; the resolved value is logged
+  # every run and written into every checkpoint. Override with `--seed`.
+  #
+  # `deterministic` was chosen by measurement, not preference
+  # (docs/receipts/seed_reproducibility.txt):
+  #   off    seeded only - and on CUDA that is NOT enough. Two runs at
+  #          one seed diverge from step 1 (cuDNN algorithm heuristics,
+  #          atomics in the backward kernels); after one epoch two
+  #          same-seed pairs sat 0.0197 / 0.0076 apart in mean loss and
+  #          0.0101 / 0.0409 apart in selected IoU.
+  #   warn   the default. Deterministic kernels wherever torch has them,
+  #          a warning wherever it does not. Measured: two runs at one
+  #          seed produce bit-identical weights.
+  #   strict refuses to train this model at all -
+  #          `nll_loss2d_forward_out_cuda_template does not have a
+  #          deterministic implementation` on the first batch.
+  # None of the three changes the schedule, the metric or the model.
+  seed: 20260812
+  deterministic: warn
   checkpoint_dir: recog/checkpoints/seg_anchored
   # Selection is on bay/electronics/obstruction IoU only. Including
   # background and cartridge lets a model that gets the big easy regions
