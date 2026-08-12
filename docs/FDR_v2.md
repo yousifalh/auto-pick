@@ -1423,10 +1423,10 @@ included so the matrix doubles as a compliance audit trail.
 | O3.b    | FFDH rotation gain quantified                    | `plan/bin_packing.py`   | T + A  | `ffdh_ablation.csv`, Figure 7                      | Pass — 0–57 % gain      |
 | O4      | Recover from a single pick failure               | `execution/execution.py`| D      | `tests/test_execution.py`                          | Pass                    |
 | O4.a    | CRC corruption rejected within 1 retry           | `execution/protocol.py` | T      | `tests/test_protocol.py`                           | Pass                    |
-| O4.b    | Three-attempt retry with exponential backoff     | `execution/execution.py`| D      | `tests/test_execution.py` (`drop_probability=1.0`) | Pass — escalates ESTOP  |
+| O4.b    | Three-attempt retry with a constant 50 ms pause  | `execution/execution.py`| D      | `tests/test_execution.py::test_retry_exhaustion_sends_the_estop` | Pass — escalates ESTOP (row corrected 2026-08-12, see note) |
 | O5      | Deterministic queue, row-major, fixed seed       | `plan/planner.py`       | T      | `tests/test_planner.py::test_row_major_ordering`   | Pass                    |
 | O6      | Branch coverage ≥ 70 %                           | (whole tree)            | I      | `pytest-cov.txt`                                   | Pass — 86 %             |
-| Std-1   | IEC 60204-1 Cat-0 immediate stop                 | `execution/execution.py`| D + I  | §7.5; ESTOP path test                              | Pass                    |
+| Std-1   | IEC 60204-1 Cat-0 immediate stop                 | `execution/execution.py`| D + I  | §7.5; `tests/test_execution.py::test_retry_exhaustion_sends_the_estop` | **Partial** (row corrected 2026-08-12, see note) |
 | Std-2   | EthernetKRL 3.1 binary-protocol fidelity         | `execution/protocol.py` | T      | `tests/test_protocol.py`, mock-KUKA replay         | Pass — byte-for-byte    |
 | Std-3   | CRC-16/MODBUS polynomial 0xA001 implemented      | `execution/protocol.py` | T      | `tests/test_protocol.py::test_crc_known_vector`    | Pass                    |
 | AHEP-M2 | Solving multidisciplinary problems               | (whole project)         | I      | §4, §11.1, §12.3                                   | Evidenced               |
@@ -1447,6 +1447,40 @@ all AHEP outcomes are evidenced. The matrix is generated from the
 same receipts referenced inline throughout §10 and Appendix D so any
 cell can be re-verified by re-running the named script against the
 committed source tree.
+
+> **Editorial correction, 2026-08-12 — the only change made to this
+> superseded revision since it was written.** Rows **O4.b** and
+> **Std-1** are amended above; nothing else in this document has been
+> altered, and `docs/FDR_v2.pdf` is the export as it stood before the
+> amendment.
+>
+> O4.b read *"Three-attempt retry with exponential backoff |
+> `execution/execution.py` | D | `tests/test_execution.py`
+> (`drop_probability=1.0`) | Pass — escalates ESTOP"*. Two things in
+> that row were wrong. The backoff is
+> `time.sleep(heartbeat_interval_ms / 1000)` — a constant 50 ms,
+> identical on every attempt, never exponential. And the cited test is
+> `test_pick_failure_reported`, which asserts
+> `status.code == RobotStatusCode.PICK_FAILED`: it never exhausts the
+> retries, never reaches the escalation path, and never observes an
+> `ESTOP` packet, so it could not have failed if the escalation had
+> been deleted. The escalation is real — it was verified by execution
+> on 2026-08-12 against adversarial servers — but until that date **no
+> test in this repository observed an `ESTOP` packet on the wire**.
+> `tests/test_execution.py::test_retry_exhaustion_sends_the_estop` is
+> that test, and it asserts the exact sequence `HANDSHAKE, MOVE_TO,
+> MOVE_TO, MOVE_TO, ESTOP`. The row now cites it.
+>
+> Std-1 moves from Pass to **Partial** for the same reason it does in
+> `docs/FDR_v3.md`'s Appendix E: §7.5's heartbeat and controller-side
+> watchdog are implemented at neither end, so the Category-0 discipline
+> is host-initiated only and does not cover a host that stops running;
+> and until 2026-08-12 three failure routes (`struct.error`,
+> `ConnectionError`, `ConnectionResetError`) left the client without
+> sending the stop at all. See `docs/FDR_v3.md` §7.2 and §7.5, which
+> are the current statements, and
+> `docs/superpowers/audit/2026-08-12-F-execution-and-config.md`
+> §§1.2, 1.8, 1.9 for the measurements.
 
 ### Appendix G — Glossary of abbreviations
 

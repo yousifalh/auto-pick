@@ -8,9 +8,23 @@ authoritative and which is history.
 
 | Document | Status |
 | --- | --- |
-| [`FDR_v3.md`](FDR_v3.md) | **Current.** The Final Design Report — requirements, literature review, detailed design, test strategy, risk assessment, AHEP-4 mapping. Every unprefixed `§` reference in the repository README points here. [`FDR_v3.pdf`](FDR_v3.pdf) is the same document as submitted. |
+| [`FDR_v3.md`](FDR_v3.md) | **Current, and the only corrected text.** The Final Design Report — requirements, literature review, detailed design, test strategy, risk assessment, AHEP-4 mapping. Every unprefixed `§` reference in the repository README points here. |
+| [`FDR_v3.pdf`](FDR_v3.pdf) | **The submitted artefact, frozen.** Exported at the baseline commit (`69fad79`, 2026-08-05) and not re-exported since. |
 | [`FDR.md`](FDR.md) | Superseded (first revision). Kept for history. |
-| [`FDR_v2.md`](FDR_v2.md) | Superseded (second revision; its title block still carries unfilled `[fill in]` placeholders). Kept for history. [`FDR_v2.pdf`](FDR_v2.pdf) matches it. |
+| [`FDR_v2.md`](FDR_v2.md) | Superseded (second revision; its title block still carries unfilled `[fill in]` placeholders). Kept for history, with one marked editorial correction (Appendix F, rows O4.b and Std-1, 2026-08-12). [`FDR_v2.pdf`](FDR_v2.pdf) is the export as it stood before that correction. |
+
+**The PDF and the Markdown are no longer the same document, and the Markdown
+is the one to read.** This row read "`FDR_v3.pdf` is the same document as
+submitted" until 2026-08-12, which was doing quiet work: the PDF *is* the
+artefact that was submitted, and precisely because it is frozen it carries
+none of the corrections `FDR_v3.md` has accumulated since — the Δcells safety
+figure (2 of 126 → 5 of 126 in the damage direction), the withdrawal of the
+§7.5 heartbeat, the three E-stop bypass routes, the five deleted
+`execution.yaml` motion keys, the scope bounds on §13.1.1's generalisation
+claim, and every commit-SHA citation added after the baseline. It is retained
+deliberately, as the record of what was assessed. **Where the two disagree,
+`FDR_v3.md` is correct and the PDF is not**; do not quote a figure from the
+PDF without checking it against the Markdown first.
 
 If a figure in `FDR.md` or `FDR_v2.md` disagrees with one in `FDR_v3.md`, the
 v3 figure is the one that was regenerated against a receipt. Do not quote the

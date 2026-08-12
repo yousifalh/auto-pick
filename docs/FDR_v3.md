@@ -466,9 +466,11 @@ stateless between frames — each call to `detector(image_rgb)` is
 independent — which keeps reasoning confined to pixel space. Planning is
 the only component that carries state across frames, in the shape of the
 `EnvironmentModel` digital twin. Execution owns the TCP socket, retry
-policy, and heartbeat/E-stop logic, exposing a context-manager interface
+policy, and E-stop logic, exposing a context-manager interface
 so the main loop never handles connection cleanup. A small `common/`
-package holds shared types and the YAML loader.
+package holds shared types and the YAML loader. (This sentence read
+"retry policy, and heartbeat/E-stop logic" until 2026-08-12; there is no
+heartbeat logic to own — see the correction in §7.5.)
 
 The implementation language is Python 3.10 for its first-class PyTorch and
 OpenCV bindings, a choice that constrains the real-time budget to the
@@ -1049,6 +1051,72 @@ and all bursts shorter than 16 bits — more than sufficient for a 112-bit
 payload — and is understood by the safety-assessor tooling used for IEC
 60204 compliance reviews.
 
+**The framing above was independently verified on 2026-08-12 and is
+correct.** The CRC was checked against three implementations sharing no
+code with `protocol.crc16_modbus` and none with each other — a
+table-driven byte-at-a-time form, an MSB-first shift register over the
+non-reflected polynomial 0x8005 with explicit input and output
+reflection, and a naive bit-serial register. All three agree with the
+shipped function on the published CRC-16/MODBUS check value
+(`crc("123456789") == 0x4B37`) and on 20 000 random byte strings of
+length 0–39, with zero mismatches. The byte layout was dumped from a
+packed distinctive payload and matches this paragraph field for field,
+including the little-endian CRC trailer on an otherwise big-endian
+frame. Nothing in the wire format is being corrected below; the
+corrections are to the machinery around it
+(`docs/superpowers/audit/2026-08-12-F-execution-and-config.md` §1.0).
+
+**Recorded 2026-08-12: the frame carries no sequence number, and this
+report did not previously say what follows from that.** The 14-byte body
+is `version, op, x, y, z, aux` and nothing else, so the only rule
+correlating a status frame with the command that provoked it is
+positional — the next 16 bytes to arrive are assumed to answer the last
+command sent. That assumption fails when a reply is merely *late* rather
+than lost, which is the ordinary failure mode of a busy motion
+controller. Measured: at `command_timeout_ms = 300`, against a server
+answering command #1 after 450 ms, the client re-sent `MOVE_TO` and then
+returned the *stale* first reply as the result of the second send, with
+no exception and no warning beyond a routine "attempt 1/3: timed out".
+Two consequences follow, and neither can be tuned away. A re-sent
+`MOVE_TO` is idempotent in position but not in time; a re-sent
+**`PICK_AND_PLACE` is not idempotent at all** — it is a second grasp
+attempt at the same coordinates, possibly with a cell already in the
+gripper — and the retry loop treats every opcode identically. And once
+an extra frame is sitting in the socket buffer, every subsequent reply
+is off by one and stays off. Closing this needs either a sequence or
+echo field, for which there is no spare room in 16 bytes without a
+version bump, or a rule that a timed-out *motion* command is never
+retried but only resynchronised. Both are protocol decisions rather than
+error-handling defects, and neither was taken: the framing verified
+above was left alone deliberately. `execution/execution.py`'s module
+docstring now states both facts at the source
+(`docs/superpowers/specs/2026-08-12-fix-execution-safety.md`,
+"Deliberately not implemented" item 2).
+
+**One artefact in this repository contradicts the specification above,
+and is recorded here rather than reconciled.**
+`execution/krl_prog/laptop-comm.xml` configures the EthernetKRL channel
+with an **XML** payload schema — a single `<Element Tag="Target"
+Type="INT"/>` inside `<Element Tag="Command">`, no binary mode, no
+checksum element — while `execution/protocol.py` implements the 16-byte
+binary framing described here with a CRC trailer. These cannot both be
+the interface, and the binary one is what every line of Python and every
+test in the repository speaks. In the same file set, `routines.src`
+declares `PickAndPlace(pick_pos, place_pos, vacuum_pct)` taking **two**
+Cartesian poses while the `PICK_AND_PLACE` opcode carries one coordinate
+triple; §7.3's two-packet dance is the workaround, and it is the reason
+a place-Z cannot be transmitted at all (see the Appendix D correction).
+Nothing executes the KRL side in this project, so no measurement depends
+on it — it is named because those three files are the artefact a reader
+would use to judge whether the interface is understood, and as written
+they disagree. Note also that `protocol.py`'s docstring asserts
+CRC-16/MODBUS "is the standard integrity check on the KUKA EthernetKRL
+XML transport"; this section's phrasing — *modelled on* EthernetKRL 3.1
+and *augmented with* a CRC-16/MODBUS trailer — is the accurate one, and
+`laptop-comm.xml`'s own absence of a checksum element is enough to show
+it without appealing to anything outside the repository
+(`docs/superpowers/audit/2026-08-12-F-execution-and-config.md` §1.10).
+
 ### 7.2 KukaClient lifecycle
 
 `execution/execution.py` implements a blocking client with a linear
@@ -1064,6 +1132,72 @@ to act regardless — and raises `RuntimeError`. This is the direct
 implementation of the PPR §7.3 R4 risk-response plan; the behaviour
 under real timeout/CRC events was not validated against the
 laboratory robot (§10.3).
+
+**Corrected 2026-08-12. The paragraph above described the retry policy
+as it was designed; three routes out of the client did not go through
+it, and the two timeouts it names did not bound what their names say.**
+All four were closed on 2026-08-12
+(`docs/superpowers/specs/2026-08-12-fix-execution-safety.md`); the
+uncorrected behaviour is recorded here because the safety argument in
+§11.1 rested on the designed version.
+
+* **`struct.error`, `ConnectionError` and `ConnectionResetError`
+  escaped the retry loop uncaught**, so they reached no retry, no
+  E-stop and no `close()`. `issubclass(struct.error, ValueError)` is
+  `False` — verified rather than assumed — so an out-of-range
+  coordinate, the failure reachable from a bad perception result, tore
+  down the call stack **with the socket still healthy and an E-stop
+  perfectly sendable**. Failures are now sorted into transient (retry,
+  then E-stop and raise) and fatal (E-stop immediately, no retry), with
+  the E-stop itself best-effort and logged `CRITICAL` if it cannot be
+  transmitted rather than silently replacing the error that prompted it.
+* **`connect()` sat outside the retry machinery entirely** — no retry,
+  no E-stop, and on a refused handshake it raised with the socket still
+  open, so the canonical `with KukaClient(cfg) as k:` leaked a
+  descriptor every time. The handshake now takes the same path as every
+  other command, and every failure route closes the socket.
+* **A controller reporting that it was already stopped was recorded as
+  a failed placement and the loop continued.** A well-formed status
+  carrying code 6 (`ESTOP`) parsed cleanly and returned as an ordinary
+  result; `main`'s cycle handler bucketed everything that was not
+  SUCCESS or PICK_FAILED into an `else`, incremented `place_failed`,
+  and planned and commanded the next motion. The client now latches,
+  closes and raises, `main` logs `CRITICAL` with the partial statistics
+  and re-raises, and there is no path on which a Category-0 stop
+  produces a normal-looking summary.
+* **Neither timeout bounded what it names.** `_recv_status`
+  unconditionally re-armed the command timeout before reading a byte,
+  so `handshake_timeout_ms` bounded only the TCP connect (measured:
+  0.73 s against a 300 ms setting); and `command_timeout_ms` was a
+  per-`recv` timeout, so a controller trickling one byte every 200 ms
+  had its frame accepted after 3.02 s at a 250 ms setting. Both are now
+  what their names say — the handshake ack is timed, and the command
+  timeout is a whole-frame deadline.
+
+Two limitations of the retry policy remain and are not defects that
+were fixed: the pause between attempts is a constant
+`heartbeat_interval_ms` (50 ms, identical on every attempt) and is not
+exponential backoff — the first revision of this report described it as
+exponential and that word does not appear in this revision; and a stream
+desynchronised by a single stray byte is unrecoverable, because the
+framing is fixed-length with no delimiter and no sequence number (§7.1).
+The client's response to a desync is safe — it retries, escalates and
+stops — but it diagnoses the fault as "timed out".
+
+**The escalation itself is real, and as of 2026-08-12 it is observed by
+a test for the first time.** Against an adversarial server, both
+documented exhaustion routes were measured to send `HANDSHAKE, MOVE_TO,
+MOVE_TO, MOVE_TO, ESTOP` and then raise, and
+`tests/test_execution.py::test_retry_exhaustion_sends_the_estop` now
+asserts that exact sequence on the wire. **No test in this repository
+had ever observed an `ESTOP` packet before it.** The second revision's
+traceability matrix (`docs/FDR_v2.md`, row O4.b) cited
+`tests/test_execution.py` at `drop_probability=1.0` as the evidence for
+"Pass — escalates ESTOP"; that test asserts `PICK_FAILED`, never
+exhausts the retries and never reaches the escalation, so it could not
+have failed if the escalation had been deleted. That row is corrected in
+place, and the standards-compliance note in Appendix E records the
+change.
 
 ### 7.3 PICK_AND_PLACE sequence
 
@@ -1084,12 +1218,48 @@ code 2, triggering the planner's FREE-revert.
 loopback and is started as a daemon thread by the harness. It supports
 two fault-injection parameters: `drop_probability` (Bernoulli rate of
 PICK_FAILED), and `simulated_move_time_ms_per_100mm` (linear travel-time
-model). A minimal internal state machine (idle, moving, vacuum-on,
-holding-cell) catches illegal command sequences at the same layer as on
-the real controller. This simulator is the single most valuable piece of
+model). This simulator is the single most valuable piece of
 infrastructure in the pivot: every test that would have been run against
 the real robot is replayable against the mock with one config-line
 change, and CI runs the full integration suite in under a minute.
+
+**Corrected 2026-08-12. This paragraph claimed "a minimal internal state
+machine (idle, moving, vacuum-on, holding-cell) [that] catches illegal
+command sequences at the same layer as on the real controller". It does
+not, and did not.** The simulator tracks a vacuum flag and a pose; no
+command is ever refused for arriving in the wrong order. Audited against
+raw sockets and hand-built frames, it accepted `MOVE_TO` as the very
+first packet with no handshake, and `PICK_AND_PLACE` with the vacuum
+already on and no preceding `MOVE_TO` — the last of which makes the
+client's "the place target is latched by a preceding `MOVE_TO`"
+convention unverifiable, since violating it is not an error but a wrong
+pick. It is a faithful model of the **wire format** and a partial model
+of the **controller**, and its docstring now says so in those terms.
+
+Four omissions were closed on 2026-08-12
+(`docs/superpowers/specs/2026-08-12-fix-execution-safety.md` §6), and
+the most important of them is worth stating because this report leads
+with the E-stop: **the E-stop did not latch.** `ESTOP` dropped the
+connection and mutated no state, so a fresh connection was accepted at
+once and `MOVE_TO(300, 300, 300)` returned `SUCCESS` — after escalation
+the client believed the robot was stopped while the simulation was fully
+operational. It now latches: every command including `HANDSHAKE`
+answers `ESTOP`, the vacuum drops because a Category-0 stop removes
+power, and no reconnect clears it. Also closed: a **workspace envelope**
+(the KR 6 R700's 706 mm reach, so an unreachable pose is a software-limit
+fault rather than a `SUCCESS` — previously `MOVE_TO(5000, 5000, 5000)`
+and `(0, 0, −500)` both succeeded, and a single valid
+`MOVE_TO(2³¹−1, 2³¹−1, 32767)` put a handler thread into a 63-day
+`time.sleep`); **socket timeouts** (a half frame pinned a handler thread
+indefinitely, and 200 half-open connections held 200 threads); and
+**distinct fault codes** for an unknown opcode and a bad protocol
+version, which had both been reported as `CRC_ERROR`. `tests/test_mock_kuka_server.py`
+is new with this work — the module had no test file at all, which is not
+a coincidence, since it is where every one of these lived. Still not
+modelled, and stated in the docstring rather than left to inference:
+drive-enable and operating-mode gates, analog-output range checks on the
+vacuum level, single-channel exclusivity, and any heartbeat watchdog
+(§7.5).
 
 ### 7.5 Safety and heartbeat
 
@@ -1100,6 +1270,46 @@ The `ESTOP` command is a Category-0 stop per IEC 60204-1 (IEC, 2016): an
 immediate removal of drive power with no controlled ramp-down, the
 correct response to a safety-interlock breach because it removes energy
 in the shortest possible time.
+
+**Corrected 2026-08-12, and this is the most consequential correction in
+§7. The heartbeat described above exists at neither end of the wire, and
+this section read as a description of the implementation.** It is not
+one. `OpCode.HEARTBEAT` (0x05) appears in exactly two places in the
+repository — its own definition in `execution/protocol.py` and the
+dispatch arm that answers it in `execution/mock_kuka_server.py` — and
+**nothing ever sends one**. `execution/execution.py` contains no thread,
+no timer and no idle-time transmission of any kind; the simulator has no
+watchdog, blocks on `recv` indefinitely, and is content to hear nothing
+for an hour. `heartbeat_interval_ms` is read for exactly one purpose:
+the constant pause between retry attempts (§7.2). The first revision of
+this report (`docs/FDR.md` §7.5) went further and said the client sent
+heartbeats "using a dedicated daemon thread"; that sentence was dropped
+in the second revision, but the controller-side three-missed-heartbeats
+watchdog survived into this one and is what is corrected here.
+
+Separating the two claims, because they fail differently. That a KUKA
+safety controller requires a liveness signal is a statement about the
+KR 6 R700 and its EthernetKRL channel, taken from the specification and
+**not validated here** — no hardware was available (§10.3). That *this
+project implements* such a signal, at either end, is false. The
+distinction matters because the heartbeat is the only mechanism in the
+whole design that would stop the arm **if the host process died**, which
+is precisely the failure mode no client-side error handler can cover.
+As built, that liveness guarantee does not exist, and the E-stop
+discipline this report leads with is a *host-initiated* stop that can
+only fire while the host is alive and the socket is open (§7.2). A
+successor project attaching real hardware should treat the heartbeat as
+unimplemented work, not as an implemented feature awaiting validation.
+
+The `ESTOP` command itself is real, is transmitted on every documented
+escalation route, and is now observed on the wire by
+`tests/test_execution.py::test_retry_exhaustion_sends_the_estop`; and
+the simulator latches it as of 2026-08-12 (§7.4). Evidence for this
+correction: `docs/superpowers/audit/2026-08-12-F-execution-and-config.md`
+§1.8; disposition:
+`docs/superpowers/specs/2026-08-12-fix-execution-safety.md`,
+"Deliberately not implemented" item 1 — the heartbeat was **not** built,
+deliberately, and the report was corrected instead of the code.
 
 ---
 
@@ -1601,6 +1811,21 @@ three-attempt retry wrapper with 50-ms heartbeat-interval backoff in
 abnormal dwell and operator intrusion — are handled by the IEC 60204
 Category-0 immediate stop.
 
+**Two qualifications on R4's residual, added 2026-08-12 (§7.2, §7.5).**
+The Category-0 stop that closes those residual risks is
+**host-initiated**: it is sent by `execution.py` when the client detects
+a fault, so it covers a robot that misbehaves and a link that degrades,
+and it does not cover a host that stops running. The heartbeat that
+would have covered that case is described in §7.5 and **is not
+implemented at either end** — so the operator-intrusion and dwell
+residuals are mitigated only while the host process is alive. And until
+2026-08-12 three failure routes left the client without sending the
+stop at all, one of them (`struct.error` on an out-of-envelope
+coordinate) reachable from an ordinary perception or calibration error
+with the socket still healthy; §7.2 records the correction. R4's
+disposition is therefore weaker than this paragraph implied, in a way
+that no hardware access was needed to establish.
+
 ### 11.2 Ethical and legal considerations
 
 Lithium-ion cells are hazardous: under mechanical insult they can enter
@@ -1715,9 +1940,16 @@ therefore void an otherwise 93 %-free grid; the headroom against the
 8 ms budget narrows to 4.6 ms worst-case in consequence. See the scope
 note opening §6.3.1.) (4) A binary EthernetKRL client
 implementation with CRC-16/MODBUS trailer, three-attempt retry with
-heartbeat-interval (50 ms) backoff, and a heartbeat + E-stop discipline aligned with
+heartbeat-interval (50 ms) backoff, and an E-stop discipline aligned with
 IEC 60204 Category-0; the implementation is software-complete but
 was not validated against the laboratory robot (§10.3, §13.2).
+(This read "a heartbeat + E-stop discipline" until 2026-08-12. The CRC
+and the frame layout were independently verified correct that day
+(§7.1); the heartbeat is not implemented at either end and the claim is
+withdrawn (§7.5); and three failure routes that bypassed the E-stop
+entirely were closed on the same day (§7.2). "Software-complete" is
+accurate for the framing and the retry policy and was not accurate for
+the liveness discipline.)
 (5) An empirical falsification of one of the PPR's design hypotheses
 — the custom k-means anchor design under-performs torchvision
 defaults by 0.11 mAP@0.5 on this dataset (§5.7, §10.7) — and a
@@ -3038,16 +3270,60 @@ the source.
   `.heartbeat_interval_ms` *(int, 50)*,
   `.max_retries` *(int, 3)*,
   `.stop_category` *(int, 0)*.
-- `motion.approach_height_mm` *(float, 60)*,
-  `.grasp_height_mm` *(float, 5)*,
-  `.transport_height_mm` *(float, 80)*,
-  `.insert_height_mm` *(float, 2)*,
-  `.default_velocity_mm_s` *(float, 150)*,
-  `.safety_max_velocity_mm_s` *(float, 250)*,
+- `motion.transport_height_mm` *(float, 80)*,
   `.vacuum_level_percent` *(int, 80)*.
 - `simulation.listen_host`, `.listen_port`,
   `.simulated_move_time_ms_per_100mm` *(int, 180)*,
   `.drop_probability` *(float, 0.02)*.
+
+**Five `motion:` keys were removed from `configs/execution.yaml` on
+2026-08-12 and are struck from the list above:
+`approach_height_mm` (60), `grasp_height_mm` (5), `insert_height_mm` (2),
+`default_velocity_mm_s` (150) and `safety_max_velocity_mm_s` (250).**
+All five were parsed, stored, unit-tested and read by no `KukaClient`
+method, which is worse than a missing key because it looks live: editing
+`insert_height_mm` to change an insert depth changed nothing anywhere in
+the system. They were not made live, and the reasons are physical rather
+than editorial.
+
+* **The three heights.** The 16-byte frame carries **one** Z per
+  command, and the pick needs it (§7.3). A place-Z would require a
+  second Z field — a frame-layout change and a protocol version bump,
+  against a framing that had just been verified correct against three
+  independent implementations (§7.1), to carry a number whose only
+  consumer is a simulator. The insert descent and the +60 mm approach
+  are derived **controller-side** in `krl_prog/routines.src`, which is
+  where they belong. `plan/planner.py`'s `pose.place.z_mm` was removed
+  with them; the simulator's third parameter, which had been *named*
+  `place_z` while receiving `pick.z` and "inserting" at 60 mm before
+  returning SUCCESS, is now named `pick_z` and drives the pick descent.
+  The planner's own approach and insert heights are separate keys in
+  `configs/planning.yaml`'s `motion:` block.
+* **The two velocities.** The frame carries no velocity field, so the
+  host can neither command a speed nor cap one.
+  `safety_max_velocity_mm_s: 250` was a safety-named key, cited in this
+  report's safety discussion, enforced by nothing. The only real cap is
+  controller-side — `$VEL.CP = 0.150` in `krl_prog/routines.src`, plus
+  the KRC's T1/T2 limits — and `configs/execution.yaml` now carries a
+  comment saying so and warning against re-adding a host-side speed cap
+  without a velocity field to enforce it with.
+
+The three `kuka:` keys that remain in the list and are also not knobs —
+`command_length_bytes`, `crc_polynomial` and `stop_category` — went the
+other way: they are claims *about* `execution/protocol.py`, and
+`ExecutionConfig.from_dict` now cross-checks all three against the code
+and raises naming the key, so editing `crc_polynomial` can no longer
+leave the CRC unchanged. `camera.workspace_bounds_mm` in
+`configs/planning.yaml`, listed above, was likewise read, stored and
+never compared against a pose; as of 2026-08-12 the planner enforces it
+on both points of every pose and **raises** rather than clamping — a
+clamped pick grasps empty table and a clamped place inserts a cell into
+a wall, which converts a calibration bug into a wrong motion nothing
+downstream can distinguish from a correct one
+(`docs/superpowers/specs/2026-08-12-fix-planner-occupancy.md` §5).
+`tests/test_execution.py::test_inert_motion_keys_are_gone` and
+`::test_shipped_execution_yaml_declares_no_dead_safety_key` keep the
+five removed keys removed.
 
 ### Appendix C — Build and reproducibility receipts
 
@@ -3133,6 +3409,35 @@ IEC 60204-1, the EthernetKRL 3.1 specification, and the CRC-16/MODBUS
 trailer; the implementation is described in §7 but was not
 hardware-validated within the project window. Compliance against
 real-robot behaviour is recorded as priority 3 in §13.2.
+
+**Amended 2026-08-12, on evidence obtained without hardware.** Two of
+those three items were audited against the code rather than against the
+robot, and the results go in opposite directions. The CRC-16/MODBUS
+trailer and the 16-byte frame layout are **verified correct** — three
+independent implementations, 20 000 random vectors, zero mismatches
+(§7.1) — which is the strongest single result in this part of the
+project and is stated first for that reason. The IEC 60204-1 Category-0
+item is **weaker than this paragraph implies**: the heartbeat and
+controller-side watchdog described in §7.5 are implemented at neither
+end, and until 2026-08-12 three failure routes left the client without
+sending the E-stop at all (§7.2). Both are recorded in §7 and neither
+needed a robot to find.
+
+The second revision's matrix carried two sub-rows that this one does
+not, and one of them was wrong. `docs/FDR_v2.md` row **O4.b**
+("Three-attempt retry with exponential backoff … Pass — escalates
+ESTOP") cited `tests/test_execution.py` at `drop_probability = 1.0`;
+that test asserts `PICK_FAILED`, never exhausts the retries and never
+observes an `ESTOP` packet, so it could not have failed if the
+escalation had been deleted — and the backoff is a constant 50 ms, not
+exponential. The row is corrected in place in that document and now
+cites
+`tests/test_execution.py::test_retry_exhaustion_sends_the_estop`, which
+asserts the `HANDSHAKE, MOVE_TO, MOVE_TO, MOVE_TO, ESTOP` sequence on
+the wire and is the first test in this project to observe an `ESTOP`
+packet at all. O4 itself remains **Not tested** in the table above: the
+escalation is now covered, single-pick-failure *recovery* on real
+hardware is not.
 
 *AHEP-4 learning outcomes:*
 
