@@ -300,3 +300,7 @@ A narrative account of the measurement work, written for a general engineering r
 ## Authors
 
 Yousif Al-Haidary, supervised by Dr Svetan Ratchev.
+
+## Trademarks
+
+Anker and PowerCore are trademarks of their respective owner. This project is not affiliated with, endorsed by or sponsored by them. The four PowerCore power banks named in asset filenames, in `recog/synth3d/assets/catalog.json`, in the photographs under `recog/realtest/` and throughout this documentation are retail units used as measurement subjects for academic research; the product names appear only to identify which physical unit a given figure was measured on.

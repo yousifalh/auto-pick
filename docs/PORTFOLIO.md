@@ -24,7 +24,7 @@ I will not claim this shows procedural training transfers. I picked the crown ra
 
 Four more defects surfaced alongside it, none visible from any metric I had.
 
-**The segmenter was not in the pipeline.** `load_detector` took no segmenter argument and the planner builder hardcoded the heuristic extractor, so no configuration could reach the trained model from the end-to-end entry point. Any earlier claim that the pipeline demonstrated it end to end was overstated, and I said so in the README rather than quietly fixing it.
+**The segmenter was not in the pipeline.** `load_detector` took no segmenter argument and the planner builder hardcoded the heuristic extractor, so no configuration could reach the trained model from the end-to-end entry point. Any earlier claim that the pipeline demonstrated it end to end was overstated.
 
 **A gate I had already retired was still running.** The confidence threshold `tau` was gone from the documentation but not from `plan/placement_area.py`, with three inconsistent values live at once — 0.85 in code, 0.7492 in YAML read by nothing, 0.5715 in the README. At the project's own configured scale the erosion widened until every observed IoU sat below the code default, so the gate **rejected 8 of 8 plannable cartridges**, one `except: continue` at a time.
 
