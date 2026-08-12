@@ -1145,6 +1145,37 @@ glue, and cartridge boxes span whole units. The detector cannot break on
 schema, but its numbers will differ from the FDR's published figures if
 retrained.
 
+**Training is unseeded, so no retrain reproduces any number here (added
+2026-08-12).** There is no `torch.manual_seed`, no
+`use_deterministic_algorithms`, and `DataLoader(shuffle=True)` is
+constructed without a `generator=` in both trainers, so model
+initialisation and epoch order differ per process. Measured: two
+one-epoch runs of the same command on the same data gave loss 1.7839 vs
+1.7608 and selected mean IoU **0.4111 vs 0.3957**. The split *is* seeded
+and stable; everything downstream of it is not. Two consequences for
+anyone picking this up. **Do not read a 0.01 difference against a
+published figure as a regression** — it is inside run-to-run noise, and
+the README's own three same-recipe checkpoints scoring 0.211 / 0.232 /
+0.318 placeable fraction on the real photos are the honest illustration
+of the spread. And **every comparison in this document is
+between-models-at-identical-conditions for that reason**; if you add a
+condition, train it on the same schedule and compare it against a model
+you trained too, not against a number on this page. Seeding it is a
+small change (`torch.manual_seed`, a `generator=` on the shuffling
+loader, `seed=` on `A.Compose`) and is not done.
+
+**A new render will not look like the committed corpus (added
+2026-08-12).** `recog/synth3d/materials.py` had been discarding both the
+drawn `roughness` and `wear` on 100 % of surfaces and wiring the raw
+noise ramp straight into Roughness, while `meta["materials"]` recorded
+the values that never arrived. Fixed. Labels are unaffected — they come
+from the object-index pass — so the committed datasets and the
+checkpoints trained on them stand. But a redrawn corpus is a different
+visual distribution: do not mix pre- and post-fix renders in one training
+set, and re-measure `MIN_LUMA_DELTA` and `configs/synth3d.yaml`'s
+`luma_ref` table, both of which were measured on the old path.
+`docs/superpowers/blender-dataset-known-issues.md` item 0.
+
 **Execution ledgers** for all four plans are under `.superpowers/sdd/`, one
 directory per plan. They record every review round, every ruling, and every
 deferred minor with its reasoning. If something below looks arbitrary, the

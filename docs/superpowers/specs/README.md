@@ -43,6 +43,21 @@ Written before the work they describe, and kept as the record of what was decide
 - `2026-08-10-generalisation-groundwork.md`, `2026-08-10-generalisation-design.md` — the procedural-tray generalisation study: train on synthetic trays, test on real measured CAD. §12 states the comparisons in advance, "so none of them get chosen after seeing a result".
 - `2026-08-10-tau-difficulty-design.md` — why the arbitration confidence threshold was not calibratable, including the algebraic argument that its two "independent" estimates are one `argmax` read twice.
 
+### The 2026-08-12 audit round, and what it changed
+
+Six adversarial reviews were run on 2026-08-12, one per area, each with a brief to invalidate rather than confirm. They are in [`../audit/`](../audit/) — A measurement tools, B security, C methodology, D reproducibility, E silent failures, F execution and configuration. **Two areas came back clean and that is a result, not an absence of one**: the CRC and the 16-byte frame layout were verified against three implementations sharing no code (20 000 vectors, zero mismatches), and a leak hunt on the generalisation measurement found no shared asset, no shared render across 4 536 images, and no training exposure. The rest is here.
+
+| Fix spec | What it corrected |
+|---|---|
+| `2026-08-12-fix-delta-cells-scale.md` | `seg_ablation` packed every crop at the generator's *nominal* 0.6250 mm/px, a framing no frame in the corpus has. Scale is an input to the packer, not a reporting unit, so the error did not cancel in the difference: the damage-direction count moved **2 of 126 → 5 of 126**, range [−2,+2] → [−2,+4]. Three of the five had packed nothing at all at the old scale and had never been looked at. Also fixed the split guard that fired falsely on four of ten config/checkpoint pairs. |
+| `2026-08-12-fix-execution-safety.md` | Three failure routes bypassed the E-stop entirely; the handshake had no retry, no E-stop and leaked a socket; neither timeout bounded what its name says; a controller reporting a Category-0 stop was counted as a failed place and the loop continued. `place.z_mm` and five inert `motion:` keys **deleted** rather than faked — the frame carries one Z and no velocity field. The simulator gained an envelope, a latching E-stop, timeouts and distinct fault codes, and its first test file. |
+| `2026-08-12-fix-planner-occupancy.md` | One occupancy cell marked per 13 × 44-cell battery, so the next cycle legally packed ~17 mm inside one already placed. The whole footprint is now reserved in its placed orientation, and `WorkspaceBounds` — parsed and compared against nothing — is enforced, raising rather than clamping. |
+| `2026-08-12-fix-security-and-materials.md` | `weights_only=True` on the detector loader; `pillow>=10.3` and `opencv-python-headless`. And the swallowed `except` that discarded the drawn roughness *and* wear on 100 % of surfaces while the sidecar recorded them — **new renders will differ from the committed corpus**; labels do not. |
+| `2026-08-12-sha-remap.md` | Every commit citation remapped onto the post-rewrite history through `git-filter-repo`'s own commit map. 188 citations, zero ambiguous, zero dangling. |
+| `2026-08-12-figures-audit.md`, `2026-08-12-portfolio-verification.md`, `2026-08-12-public-release-audit.md`, `2026-08-12-ci-and-tone.md` | The pre-publication passes over the figures, the portfolio material, the install path and CI. |
+
+Five tests were found asserting the defect they covered rather than guarding against it, which brings this project's running total to seven: `test_cycle_marks_cells_planned` pinned one cell per battery, two `confirm_placement` tests checked only the anchor cell, and two `ExecutionConfig` tests asserted values of fields no client method read. Two more still stand deliberately — `tests/test_bay.py`'s "zero seated cells is fine" and `tests/test_packing_move.py`'s assertion that a symbol exists.
+
 ## One caveat on all of it
 
 **Every performance figure in this directory is synthetic-to-synthetic** — measured on renders, against ground truth derived from the same renders. Real photographs of this project's cells and cartridges are not obtainable, so sim-to-real transfer is unvalidated and cannot be validated here. The dedicated statement is `docs/FDR_v3.md` §13.2.2, and each document repeats it.

@@ -203,7 +203,7 @@ auto-pick/
 │   ├── mock_kuka_server.py Software-only KUKA simulator
 │   └── krl_prog/           Reference KRL routines for the real controller
 ├── configs/          YAML configs per module + top-level demo.yaml
-├── tests/            Pytest suite (752 tests)
+├── tests/            Pytest suite (814 tests)
 ├── docs/             Final Design Report, specs, receipts
 ├── main.py           End-to-end integration loop
 └── pyproject.toml    Project metadata and coverage config
@@ -245,6 +245,8 @@ python -m recog.verify3d --data recog/dataset3d --n 16     # then LOOK at contac
 ```
 
 `--resume` makes a long run interruptible. `verify3d` runs in system Python because it needs Pillow, which Blender does not ship — that render/inspect split is why generation is two commands.
+
+**A dataset rendered today will not look like the committed one.** A swallowed `except` in `recog/synth3d/materials.py` had been discarding both the drawn `roughness` and the drawn `wear` and wiring the raw noise ramp straight into Principled's Roughness — on 100 % of surfaces, while `meta["materials"]` recorded the values that never arrived. It was fixed on 2026-08-12, so new renders carry the roughness the sidecars always claimed. **Labels are unaffected**: boxes and masks come from the object-index pass, which materials never touch, so every committed annotation stands and no dataset was regenerated. But a redrawn corpus is a different *visual* distribution — do not mix pre- and post-fix renders in one training set — and `MIN_LUMA_DELTA` and `configs/synth3d.yaml`'s `luma_ref` table were both measured on the old path and should be re-measured before a redraw is trusted. `docs/superpowers/blender-dataset-known-issues.md` item 0 is the full note.
 
 ## Two placement-area extractors, and only one is for real cartridges
 
@@ -298,10 +300,14 @@ Run with coverage | `pytest -q --cov`
 ## Requirements
 
 - Python 3.10+
-- NumPy, PyYAML, OpenCV-Python 4.8+
+- NumPy 1.24+, PyYAML 6.0+, **`opencv-python-headless` 4.8+**
 - Albumentations 1.4+ (recognition augmentation — a numpy-only fallback is used if unavailable)
 - PyTorch 2.x + torchvision (required only for training and loading a learned detector; the heuristic detector runs without torch)
-- Pillow (dataset image loading)
+- **Pillow 10.3+** (dataset image loading)
+
+Two of those floors moved on 2026-08-12 after a security audit, and the reasons are worth stating because they are floors and this project ships no lockfile — a constrained or reproducible resolve can legitimately land *at* the floor. `pillow>=10.0` admitted **CVE-2023-4863** (libwebp heap buffer overflow, critical, fixed in 10.0.1) and **CVE-2023-50447** (arbitrary code execution via `PIL.ImageMath.eval`, fixed in 10.2.0); Pillow decodes images throughout `recog/`, so the floor is now 10.3. And `opencv-python` was swapped for `opencv-python-headless`: a grep over the whole highgui surface — `imshow`, `waitKey`, `namedWindow`, `setMouseCallback` and eighteen others — returns zero hits, so the GUI build was pulling a Qt/GTK/X11 stack that is never entered, for install weight and an `ImportError: libGL.so.1` class of container failure. The one videoio call, `cv2.VideoCapture`, is present in the headless build.
+
+Relatedly, `recog/inference.py`'s detector loader now passes `weights_only=True` to `torch.load`. No `.pt` is committed anywhere in this repository, so **anyone following the `--checkpoint recog/checkpoints/best.pt` commands above has obtained that file from somewhere else** — and `torch.load`'s default runs the pickle machinery, which makes loading a checkpoint arbitrary code execution by whoever produced it. `recog/bay_segmenter.py` had carried that rule in a comment since it was written; it had not been applied one module over, on the more prominent path. That is now every `torch.load` in the tree except `seg_training.py`'s `--resume` of its own local optimiser state, which is deliberate and justified in place.
 
 Dev extras (`pip install -e '.[dev]'`) add pytest, pytest-cov.
 

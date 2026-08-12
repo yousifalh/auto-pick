@@ -1028,6 +1028,54 @@ cell assignment walks the packed items in fixed (y, x) order. No thread
 pool, no unseeded random sampling, no floating-point reduction that might
 reorder. Verified by `tests/test_planner.py::test_row_major_ordering`.
 
+**Corrected 2026-08-12: what a PLANNED transition actually marked.** The
+transitions above are as designed, but until this date `_build_pose`
+marked **exactly one** grid cell per planned battery — the anchor —
+where an 18.5 × 65 mm cell at the configured 1.5 mm resolution covers
+**13 × 44 cells**. Because `_pack_cartridge` rebuilds the forbidden mask
+from the grid and re-packs on every frame, 571 of the 572 cells a battery
+occupies read FREE on the next cycle, and the next pack legally seated a
+cell **1.5 mm** from the previous one — roughly 17 mm of physical overlap
+with a battery already in the tray. Nothing raised: the queue looked
+normal, the placed counter incremented, the simulator returned SUCCESS.
+It fired on every multi-cycle run, and `tests/test_planner.py` asserted
+`planned_count() == len(queue)`, which is the defect written down as an
+expectation.
+
+The planner now reserves the whole block the footprint covers, in the
+**orientation it was placed at** (a 90° placement reserves 13 × 44, not
+44 × 13), rounding outward on the far edge to match exactly the
+convention `common.packing`'s candidate test already used — the marking
+and the testing have to agree, and rounding a footprint down is the
+unsafe direction. Reservations record both the cell block and the
+millimetre footprint, so `confirm_placement` resolves the whole block
+rather than the anchor cell; reservations belonging to a queue that the
+next cycle discards are released and counted, without which a cartridge
+would fill with batteries nobody picked and the run would report "queue
+empty, job done" over a nearly empty tray. Two interlocks raise rather
+than absorb: a block covering a FORBIDDEN cell (checked in cells) and a
+footprint overlapping a live reservation (checked in millimetres,
+because outward-rounded cells let legitimate neighbours share a boundary
+cell without sharing physical space). Neither can fire while the packer
+is correct, which is the point. **Cost, stated:** across cycles the pitch
+becomes 19.5 mm rather than 18.5 mm — about one fewer cell per 264 mm row
+in the multi-cycle regime. Within a single pack nothing changes and the
+placements are byte-identical. Detail:
+`docs/superpowers/specs/2026-08-12-fix-planner-occupancy.md`.
+
+**And `camera.workspace_bounds_mm` is now enforced.** The
+`WorkspaceBounds` type was parsed from `configs/planning.yaml`, stored on
+the planner, and **never compared against a pose** — a declared
+robot-workspace safety envelope that enforced nothing, the proof being
+that two planner tests constructed a deliberately tiny ±100 mm envelope
+and still passed. It is checked on both points of every pose, and it
+**raises** rather than clamping: a clamped place target inserts a cell
+into a wall while the twin records the slot filled, and a clamped pick
+grasps bare table or the neighbour, so clamping converts a calibration
+error into a wrong motion that nothing downstream can tell from a
+correct one. An inverted or zero-extent envelope is rejected at
+construction, where the numbers came from.
+
 ---
 
 ## 7. Execution Module

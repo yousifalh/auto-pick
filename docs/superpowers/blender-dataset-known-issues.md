@@ -7,6 +7,55 @@ how good that dataset is.
 
 ## Before you generate 2000 images
 
+### 0. A new render will not look like the committed corpus — FIXED 2026-08-12, read this before regenerating
+
+**Say it plainly: any dataset rendered after 2026-08-12 differs in
+appearance from the committed one, on every surface of every object.**
+`recog/synth3d/materials.py` wired the drawn `roughness` and `wear` into
+a `ShaderNodeMix` by positional socket index inside a
+`try: … except Exception:` whose fallback linked the raw noise ramp —
+a 0→1 swing with ramp positions 0.35/0.75 — **directly** into
+Principled's Roughness. Both drawn values then stopped reaching the
+shader entirely, so surfaces rendered with extreme, all-or-nothing
+specularity instead of a wear-weighted mix. Every preset in
+`configs/synth3d.yaml` has `wear ≥ 0.05 > 0.01`, so this ran for every
+material on every object — 100 % of surfaces, not a rare edge. Meanwhile
+`meta["materials"]` recorded the two values that never arrived, so the
+sidecar described a render that did not happen.
+
+The sockets are now addressed by their stable `identifier`
+(`Factor_Float`, `A_Float`, `B_Float`, `Result_Float`) with **no `try`**,
+plus an assertion that runs on every material built — not in a test —
+checking that the drawn values read back and that the mix, not the ramp,
+drives Roughness. Two clauses in `recog/synth3d/render.py` went the same
+way: the view transform could be silently discarded (leaving the run on
+the build's default transform while the AgX-tuned exposure band was
+applied regardless, and `manifest.json` recording the *requested* AgX),
+and the index-pass EXR colorspace assignment sat under `except Exception:
+pass` one line from `np.rint` — if that read is ever colour-managed,
+every instance id decodes wrong and every mask is silently mislabelled.
+Both now raise. Detail:
+`specs/2026-08-12-fix-security-and-materials.md`.
+
+**What this does and does not invalidate.**
+
+* **Existing datasets are still valid.** Labels are geometric — boxes and
+  masks come from the object-index pass, which materials never touch — so
+  every committed annotation is exactly as correct as it was. No dataset
+  was regenerated and no checkpoint retrained for this fix.
+* **Checkpoints remain valid against the corpus they were trained on.**
+  A corpus redrawn after this change is a different *visual*
+  distribution, so mixing pre- and post-fix renders in one training set
+  would be a silent domain split. Redraw all of it or none of it.
+* **`MIN_LUMA_DELTA` (`materials.py`) and the `luma_ref` table in
+  `configs/synth3d.yaml` were measured from renders made on the broken
+  path.** They are not obviously wrong afterwards — `luma_ref` is
+  dominated by base colour and coat rather than by the roughness mix, and
+  the contrast gate was scoring appearance that was at least
+  self-consistent — but they are no longer measurements of the path that
+  now runs. **Re-measure both before trusting them on a redrawn corpus.**
+  That is the one item on this page that a regeneration makes urgent.
+
 ### 1. Exposure is still tuned for object pixels, not whole frames — PARKED, your call
 
 The shipped default (`exposure: 0.0`) clipped **40–49% of labelled-object

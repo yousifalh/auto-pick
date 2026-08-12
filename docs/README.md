@@ -44,6 +44,7 @@ superseded revisions.
 | [`NEXT_STEPS.md`](NEXT_STEPS.md) | **Internal-facing.** Where the project stood on 2026-08-09 and what the author intended to do next. A working note, not a statement of the project's conclusions — it is superseded by `FDR_v3.md` wherever the two differ. |
 | [`ANNOTATION_PROTOCOL.md`](ANNOTATION_PROTOCOL.md) | Operational procedure for producing repeatable real-photo polygon ground truth. Written for whoever holds the camera and mouse. |
 | [`superpowers/specs/`](superpowers/specs/README.md) | The working record: one document per investigation, written at the time and kept as evidence. This is what the report's numbers were derived from. |
+| [`superpowers/audit/`](superpowers/audit/) | Six adversarial reviews run on 2026-08-12, each briefed to invalidate rather than confirm: A measurement tools, B security, C methodology, D reproducibility, E silent failures, F execution and configuration. Every claim in them is labelled as measured-by-execution or established-by-reading. The `specs/2026-08-12-fix-*.md` documents record what was done about them, and `specs/README.md` indexes both. |
 | `superpowers/plans/` | The implementation plans those investigations were executed from. |
 | [`superpowers/blender-dataset-known-issues.md`](superpowers/blender-dataset-known-issues.md) | Measured known issues in the Blender dataset generator. |
 
