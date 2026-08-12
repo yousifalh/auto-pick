@@ -14,7 +14,7 @@ question answered is narrower: does a segmenter trained on procedurally
 generated cartridge trays transfer to the four real measured Anker CAD
 assemblies it never saw?
 
-Base commit `4fe2c85`, 666 tests passing, tree clean.
+Base commit `0aaeed4`, 666 tests passing, tree clean.
 
 ---
 
@@ -75,7 +75,7 @@ annotations, **13 689 mask pairs checked, 0 overlapping**, manifest confirms
 the same seed and is **502/502 18650**, against the anchored pool's
 182/169/151 (18650/21700/26650) split. Crop count came out at **848 —
 identical to the anchored set's 848**, with the same 721/127 train/val split
-and the same `721 % 8 == 1` singleton final batch that `10867df` already
+and the same `721 % 8 == 1` singleton final batch that `745404c` already
 handles.
 
 Trained from a fresh initialisation (empty `checkpoint_dir`, no `--resume`,

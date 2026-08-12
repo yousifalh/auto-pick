@@ -1,7 +1,7 @@
 # mm_per_px becomes a property of the frame
 
 Date: 2026-08-11
-Baseline: `4efa1c3`, 708 tests passing. After: 737 passing.
+Baseline: `1de9b02`, 708 tests passing. After: 737 passing.
 Acting on: `docs/superpowers/specs/2026-08-11-placement-feasibility.md`
 sections 1.1, 4, 5 and 6.
 
@@ -268,7 +268,7 @@ nothing anyway.
   the brief forbids.
 * **Two pre-existing defects surfaced and fixed, both blockers.**
   `recog.seg_ablation`'s CLI has raised `TypeError` before reaching a
-  single measurement since `138105d` gave
+  single measurement since `75db46a` gave
   `check_split_matches_checkpoint` a third argument without updating this
   caller — `seg_ablation.txt` has been unregenerable that whole time. And
   its heuristic arm constructed `HeuristicPlacementAreaExtractor()` with

@@ -60,12 +60,12 @@ State these verbatim; every task is written to respect them.
 - Run `python -m recog.sync_config` after any YAML change.
 - Long renders run in the **foreground**.
 - Cell dimensions now come from `config.CELL_W_MM`/`CELL_H_MM` (commit
-  `ac54743`). `plan/planner.py` deliberately uses 18.5 mm nominal rather
+  `f4596e8`). `plan/planner.py` deliberately uses 18.5 mm nominal rather
   than the 18.3 mm CAD figure — do **not** unify it.
 - Documentation only was the constraint on the two *planning* documents;
   this plan itself is followed by real code changes, and its own
   verification bar is `python -m pytest -q` staying green after every task,
-  starting from 621 passed at `ac54743`.
+  starting from 621 passed at `f4596e8`.
 
 ## Resolving two places the design spec's prose is genuinely ambiguous
 
@@ -148,7 +148,7 @@ Append to `tests/test_synth3d.py`:
 ```python
 def test_cell_formats_18650_matches_the_authoritative_constant():
     """CELL_W_MM/CELL_H_MM is the one authoritative 18650 figure (commit
-    ac54743) - CELL_FORMATS must derive from it, not restate a third copy."""
+    f4596e8) - CELL_FORMATS must derive from it, not restate a third copy."""
     from recog.synth3d.config import CELL_FORMATS, CELL_H_MM, CELL_W_MM
     assert CELL_FORMATS["18650"] == pytest.approx(
         (CELL_W_MM / 1000.0, CELL_H_MM / 1000.0))
@@ -2402,7 +2402,7 @@ Sec0, Sec12)."
 ## Acceptance
 
 - [ ] `python -m pytest -q` passes with no regressions, starting from 621
-  passed at `ac54743`.
+  passed at `f4596e8`.
 - [ ] Five-class disjointness stays at 0 overlapping pixels — re-verified
   fresh on the anchored, wide and CAD-test renders (Tasks 11, 14–16), not
   assumed to carry over from the CAD-only guarantee.

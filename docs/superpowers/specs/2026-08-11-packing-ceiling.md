@@ -1,7 +1,7 @@
 # The packing ceiling: FFDH's shelf origin never scans in y
 
 Date: 2026-08-11
-Baseline: `12134c2`, 678 tests passing.
+Baseline: `f40cc1b`, 678 tests passing.
 Area: `common/packing.py`, `plan/bin_packing.py`, `plan/planner.py`,
 `scripts/forbidden_bench.py`, `tests/test_packing_ceiling.py`.
 

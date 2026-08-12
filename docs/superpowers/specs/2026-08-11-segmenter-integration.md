@@ -1,9 +1,9 @@
 # Retiring the τ gate in code, and putting the segmenter in the loop
 
 Date: 2026-08-11
-Commits: `5a619fc` (job 1 — the τ gate); job 2 (the segmenter wiring) is
+Commits: `cdd97fc` (job 1 — the τ gate); job 2 (the segmenter wiring) is
 the commit that adds this file.
-Baseline: `1f4a63d`, 666 tests passing.
+Baseline: `4e8828f`, 666 tests passing.
 
 Two defects with one shape: a decision that had been made and written
 down, but never reached the running code.
@@ -23,7 +23,7 @@ confidence gate. The FDR says plainly that the extractor "should keep
 applying `P_safe` unconditionally rather than gating on `iou >= tau`;
 the gate is inert data".
 
-Commit `dee9854` changed docs and comments. `plan/placement_area.py:404`
+Commit `8744947` changed docs and comments. `plan/placement_area.py:404`
 still read `if iou < self.tau: ... raise PlacementDisagreement`.
 
 Three different values were live at once, none of which agreed:

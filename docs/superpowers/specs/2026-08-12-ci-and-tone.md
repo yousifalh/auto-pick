@@ -31,7 +31,7 @@ on `ubuntu-latest`, Python **3.14**:
    3, i.e. the torch-free demo loop.
 
 Step 2 is the point of the workflow as much as step 4 is. `pip install
--e .` failed outright on a clean checkout until `5ad9c85` (setuptools'
+-e .` failed outright on a clean checkout until `3fedcb6` (setuptools'
 flat-layout discovery refused to guess between the top-level packages),
 which is the first thing a reader hits and the last thing the local dev
 environment can notice, because an already-installed editable package

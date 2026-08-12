@@ -6,7 +6,7 @@ and `README.md`, plus one limitation that had been flagged as missing
 for three sessions running and never written. This pass closed all
 seven.
 
-Base commit `9bfc25f`, 708 tests passing. **Documentation only** — no
+Base commit `ce1d9cd`, 708 tests passing. **Documentation only** — no
 source file, config, metric definition, dataset, checkpoint or receipt
 was touched, and no measurement was re-run. Every figure below was read
 out of a receipt or a source spec and verified against it before being
@@ -83,13 +83,13 @@ the same warning.
 ### 4. τ was retired in prose but not in code
 
 `plan/placement_area.py` kept evaluating `if iou < self.tau: raise
-PlacementDisagreement` after commit `dee9854` retired it in the
+PlacementDisagreement` after commit `8744947` retired it in the
 documentation. Three inconsistent values were simultaneously live —
 constructor default 0.85 (what every in-tree caller got),
 `configs/planning.yaml`'s `arbitration.tau: 0.7492` (read by nothing),
 and `README.md`'s 0.5715 (which described the YAML value as live) — and
 at the project's own `mm_per_px: 0.38` the gate admitted **0 of 8**
-plannable cartridges, silently. Deleted in `5a619fc` along with the dead
+plannable cartridges, silently. Deleted in `cdd97fc` along with the dead
 config key; both rows now read 8 of 8.
 
 Every live-τ description was removed or explicitly marked historical:
@@ -115,7 +115,7 @@ retirement itself.
 
 ### 5. The segmenter is now in the end-to-end loop
 
-Before `12134c2` `main.py` ran only the heuristic extractor and the
+Before `f40cc1b` `main.py` ran only the heuristic extractor and the
 segmenter was unreachable under *any* configuration —
 `recog.inference.load_detector` took no `segmenter` argument and
 `_build_planner` hardcoded the heuristic. Any statement that the

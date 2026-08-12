@@ -1,7 +1,7 @@
 # A box that is not one cartridge, and a grid cell that is not free
 
 Date: 2026-08-11
-Baseline: `58dd21d`, 737 tests passing. After: +7 tests, none deleted.
+Baseline: `380e7d5`, 737 tests passing. After: +7 tests, none deleted.
 Acting on: `docs/superpowers/specs/2026-08-11-scale-calibration.md`
 section 4 — the perception-attributable residual the scale fix left
 behind.
@@ -16,7 +16,7 @@ makes the number worse.
 All figures below use the **centre-anchored physical footprint**: an
 18.5 x 65 mm cell at the frame's true GSD, centred on the point
 `Planner._build_pose` commands. That is what the robot executes. It is
-also, since `58dd21d`, identical to the reserved footprint and to the
+also, since `380e7d5`, identical to the reserved footprint and to the
 top-left-anchored one — the three collapsed when the scale stopped being
 a constant, and they are still collapsed here.
 
@@ -81,7 +81,7 @@ short axis and 18 % under it on the long:
 | **`scene_00014/c25`** | **108.8** | 148.1 |
 | worst other instance | 75.4 (`c61`) | 147.4 (`c36`) |
 
-This could not have been written before `58dd21d`. At the old fixed
+This could not have been written before `380e7d5`. At the old fixed
 0.625 mm/px the same `P_safe` measures 68 mm across and passes.
 
 **Why the outer footprint and not the interior (73.2 x 171.5) or the
@@ -231,7 +231,7 @@ threshold > 5 %.
 
 | | instances with an area | with ≥ 1 cell | **cells** | **overlaps (non-floor)** | overlaps (material) | worst material |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `58dd21d` (before) | 30 | 13 | **26** | **5** | 4 | 9.1 % |
+| `380e7d5` (before) | 30 | 13 | **26** | **5** | 4 | 9.1 % |
 | + bad-box extent guard only | 29 | 12 | 25 | 4 | 4 | 9.1 % |
 | + whole-cell occupancy only | 30 | 13 | 26 | 3 | 2 | 7.6 % |
 | **both (ships)** | **29** | **12** | **25** | **2** | **2** | **7.6 %** |
@@ -269,7 +269,7 @@ row is the honest price: 13 cells, and still 2 overlaps.
 
 ## 5. Verification
 
-* `pytest tests/` — **752 passed, 0 failed**. 737 at `58dd21d`. **+7
+* `pytest tests/` — **752 passed, 0 failed**. 737 at `380e7d5`. **+7
   here** (`tests/test_placement_area.py` 19 → 26); the rest of the delta
   is concurrent `recog/seg_evaluate.py` work in the same tree
   (`tests/test_calibration.py` 12 → 20), which is why the total is a
@@ -348,7 +348,7 @@ that could not exist is not a good witness for anything.
    term, and it is a segmenter task.
 2. **The extent bound is a catalog constant on the Planning side of a
    boundary that carries no SKU.** `recog/synth3d/annotate.py` writes
-   `asset` into the COCO sidecar as of `19f64be`, so a per-SKU bound is
+   `asset` into the COCO sidecar as of `bb880cb`, so a per-SKU bound is
    at least *labellable* now; the same argument applies to
    `wall_inset_mm`, and the two should be decided together if either is.
 3. **One rejection in 30 is a thin basis for the 8 % headroom** between

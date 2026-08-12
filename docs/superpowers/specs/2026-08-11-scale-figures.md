@@ -1,13 +1,13 @@
 # The published millimetres were understated. Corrected, not retracted.
 
 Date: 2026-08-11
-Baseline: `58dd21d`, 737 tests passing. Concurrent work landed `0d7d204`
+Baseline: `380e7d5`, 737 tests passing. Concurrent work landed `b93bbd3`
 (+7 tests) while this was in progress, so the branch point is 744.
 After: **752** — 8 added here, none deleted, none edited.
 Acting on: `docs/superpowers/specs/2026-08-11-scale-calibration.md` §5
 and `2026-08-11-placement-feasibility.md` §1.1 and §4.
 
-`58dd21d` made the **planner** take each frame's scale from that
+`380e7d5` made the **planner** take each frame's scale from that
 frame's render metadata. It left the two tools that publish millimetres
 into `docs/receipts/` — `recog.seg_evaluate` and `recog.calibrate_tau` —
 converting at `resolve_mm_per_px`, the generator's nominal framing at
@@ -31,7 +31,7 @@ the part of this correction most easily got wrong.
 ## 1. What changed in the code
 
 Both tools now resolve scale **per frame**, through
-`recog.calibration` — the module `58dd21d` created for exactly this and
+`recog.calibration` — the module `380e7d5` created for exactly this and
 which already owns both `resolve_mm_per_px` (nominal) and
 `frame_mm_per_px_for_image` (per frame). **No arithmetic was added.** A
 second copy of `ortho_scale * 1000 / width` is the defect this project
@@ -71,11 +71,11 @@ and a note naming the nominal framing and the factor it understated by.
 
 `recog.calibrate_tau`'s `main` called
 `check_split_matches_checkpoint(checkpoint, counts)` — two arguments to
-a function that has taken three since `138105d`. **`python -m
+a function that has taken three since `75db46a`. **`python -m
 recog.calibrate_tau` has raised `TypeError` before reaching a single
 measurement ever since, so `docs/receipts/tau_calibration.txt` was as
 unregenerable as `seg_ablation.txt` was, for the same reason and since
-the same commit.** `58dd21d` fixed the `seg_ablation` instance and did
+the same commit.** `380e7d5` fixed the `seg_ablation` instance and did
 not know about this one. It also passed `out_size=None` where
 `seg_training`'s stored counts come off a DataLoader rasterising at
 `crop_size`, so the guard would have compared two different quantities
@@ -138,7 +138,7 @@ threshold, so the fail budget still never binds and τ is still the
 sample minimum rather than a calibrated boundary. The FDR's "the
 largest optimistic error SHRANK, 79.4 % → 42.0 %" becomes 79.4 % →
 61.9 % — the direction survives, the margin is narrower than reported.
-The gate is retired in code (`5a619fc`), so no behaviour depends on any
+The gate is retired in code (`cdd97fc`), so no behaviour depends on any
 of this.
 
 ---
@@ -227,7 +227,7 @@ It does not change that receipt's verdict, which `electronics` decides.
 
 * `pytest tests/` — **752 passed**, exit 0. Eight added, none deleted,
   none edited: `tests/test_calibration.py` goes 12 → 20 test functions.
-  The other seven of the 737 → 752 move are `0d7d204`'s, which landed
+  The other seven of the 737 → 752 move are `b93bbd3`'s, which landed
   concurrently.
 * `python main.py --config configs/demo.yaml` — the torch-free demo
   runs, **10/10 placed**, `frames_with_scale: 0` (the cv2 generator
@@ -236,10 +236,10 @@ It does not change that receipt's verdict, which `electronics` decides.
 * `python -m recog.seg_evaluate` — runs; all eleven receipts
   regenerated from the CLI, never hand-edited.
 * `python -m recog.calibrate_tau` — runs **for the first time since
-  `138105d`** (§1.1); receipt regenerated.
+  `75db46a`** (§1.1); receipt regenerated.
 * `python -m recog.seg_ablation` — not re-run and not changed by this
   work. Its Δcells metric is defined at the nominal scale on both arms;
-  see §1. **Note for whoever picks this up next:** `0d7d204` states
+  see §1. **Note for whoever picks this up next:** `b93bbd3` states
   that its `_rasterise_mask` change moves `docs/receipts/seg_ablation.txt`
   and `docs/receipts/main_seg_run.txt` and that it did not regenerate
   them. Neither is a receipt this work touches or is affected by — no
@@ -274,7 +274,7 @@ a reader who remembers 0.949 mm finds out what happened to it.
   it; the τ paragraphs (0.5715 → 0.5695, 42.0 % → 61.9 %); and the
   latency figures, which the same regeneration re-took (§7).
 * **`docs/FDR_v3.md` §8** — `main_seg_run.txt`'s figures had been stale
-  since `d6c46ac` and `58dd21d` (1 → 3 pick-and-places, 7 poses), and
+  since `562ca75` and `380e7d5` (1 → 3 pick-and-places, 7 poses), and
   the sentence *"at `mm_per_px: 0.625` (this dataset's true framing)"*
   asserted the exact falsehood this work corrects.
 * **`docs/FDR_v3.md` §3** — the operating envelope, a separate finding;

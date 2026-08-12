@@ -27,7 +27,7 @@
   - `scene.use_nodes = True` still succeeds silently in 5.0 and does nothing useful. Do not rely on it as a signal.
 - **Blender's Python has no PyYAML and no Pillow** (verified; numpy is present). Anything running inside Blender reads JSON, not YAML, and cannot composite images.
 - **Blender path on this machine:** `C:\Program Files\Blender Foundation\Blender 5.0\blender.exe`. The `Blender 4.2` folder has no executable.
-- **Green baseline:** `python -m pytest -q --ignore=tests/test_inference.py --ignore=tests/test_main_integration.py --ignore=tests/test_placement_area.py --ignore=tests/test_planner.py` → **84 passed, 1 skipped** at commit `70d815c`. Those four files fail to collect because `cv2` is not installed; that is pre-existing and must not be "fixed" as part of this work.
+- **Green baseline:** `python -m pytest -q --ignore=tests/test_inference.py --ignore=tests/test_main_integration.py --ignore=tests/test_placement_area.py --ignore=tests/test_planner.py` → **84 passed, 1 skipped** at commit `69fad79`. Those four files fail to collect because `cv2` is not installed; that is pre-existing and must not be "fixed" as part of this work.
 - **Absolute test counts written in individual task steps are indicative, not contractual.** The real gate at every checkpoint is: *every previously-passing test still passes, the new tests pass, and the only collection errors are the four pre-existing cv2 ones.* If a step's stated number disagrees with reality, trust that rule and note the discrepancy in your report — do not add or delete tests to hit a number.
 - **This project is not a git repository.** `git commit` steps are therefore written as "run the verification command" checkpoints. If you run `git init` first, treat each checkpoint as a commit point.
 

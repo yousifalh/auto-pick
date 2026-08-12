@@ -728,7 +728,7 @@ and the measurement are in the scope note that opens §6.3.1.
 > corrected here rather than edited in place: "the synthetic dataset's
 > cartridges have effectively zero forbidden-cell coverage (the generator
 > does not render PCB components inside cartridge interiors)" described
-> the pre-tray-interior generator. Since commits `27cbd97`..`9fcf136` the
+> the pre-tray-interior generator. Since commits `a31ac28`..`043e92d` the
 > generator does seat an electronics module and obstructions on a real
 > cavity floor, and the 7 capable real instances above carry 3.1–19.3 %
 > forbidden coverage.
@@ -814,8 +814,8 @@ the original shelf-cursor implementation, and again after the fix
 described below.
 
 *Before the fix* (as first reported; the per-seed rows behind this
-table are preserved at commit `70d815c`, `git show
-70d815c:docs/receipts/forbidden_bench.csv`):
+table are preserved at commit `69fad79`, `git show
+69fad79:docs/receipts/forbidden_bench.csv`):
 
 | Forbidden coverage | Forbidden-mask FFDH | Rejection-sampling FFDH | Δ         |
 |--------------------|--------------------:|------------------------:|----------:|
@@ -1007,7 +1007,7 @@ fuse detections into the twin (ephemeral Battery replacement plus IoU-
 matched Cartridge update), run the extractor on cartridges that lack
 cached placement data, invoke `pack_best_effort` per cartridge (FFDH plus
 two obstacle-tolerant arms, taking whichever places most — §6.3.1; the
-text here read "invoke FFDH" before `d6c46ac`), and walk the packed
+text here read "invoke FFDH" before `562ca75`), and walk the packed
 placements in row-major order to assign each its nearest available battery
 under Euclidean pick-to-place distance. The queue is a plain
 `list[PickPlacePose]`; the executor consumes one entry per cycle and
@@ -1116,7 +1116,7 @@ KUKA controller was not validated within the project window
 (§10.3, §13.2).
 
 **Which extractor that loop runs, corrected 2026-08-11.** Until commit
-`12134c2` `main.py` ran the §6.2 *heuristic* extractor and nothing else:
+`f40cc1b` `main.py` ran the §6.2 *heuristic* extractor and nothing else:
 `recog.inference.load_detector` took no `segmenter` argument, so
 `FasterRCNNDetector`'s `segmenter=None` default could not be overridden
 from any configuration, and `_build_planner` hardcoded the heuristic —
@@ -1140,10 +1140,10 @@ rejected as not describing a single cartridge, and with every frame
 planned at its own ground sample distance read from that frame's
 render sidecar (15 of 15 frames carried one).
 
-**That receipt moved again at `0d7d204`, and the superseded figures
+**That receipt moved again at `b93bbd3`, and the superseded figures
 are worth naming.** It read *8 placement areas → 7 poses → 3
 pick-and-places, 0 bad detector boxes* immediately before. Both halves
-of `0d7d204` show up in it: `_rasterise_mask` now calls a grid cell
+of `b93bbd3` show up in it: `_rasterise_mask` now calls a grid cell
 free only when *every* pixel it covers is free rather than only its
 centre pixel, which costs one placement area (and, one pose per cycle,
 one pick); and `BadDetectorBox`'s new contents condition rejects the
@@ -1154,7 +1154,7 @@ receipt is where that trade is visible.
 
 **Two earlier figures in that same receipt paragraph were corrected on
 2026-08-11 and are also worth naming.** It previously read *1
-pick-and-place* — a figure that predated the packing fix at `d6c46ac`
+pick-and-place* — a figure that predated the packing fix at `562ca75`
 — and *at `mm_per_px: 0.625` (this dataset's true framing)*. The
 second is the substantive correction: 0.625 is the generator's framing
 at `margin = 1.0, zoom = 1.0`, and `recog/synth3d/world.py` randomises
@@ -1516,7 +1516,7 @@ electronics module and any obstruction from the cartridge footprint —
 disagreed by more than an IoU threshold τ, skipping that cartridge for
 the cycle rather than packing against an area it could not corroborate.
 **That gate no longer exists: it was deleted from
-`plan/placement_area.py` in commit `5a619fc`, for the reasons in
+`plan/placement_area.py` in commit `cdd97fc`, for the reasons in
 §13.2.1, so nothing raises `placement_disagreement` bare any more and
 the counter now reads zero by construction rather than by
 configuration.** The exception type is retained because
@@ -1527,7 +1527,7 @@ describe one cartridge — from a cartridge that is genuinely
 full, which is normal operation and is deliberately not counted as a
 fault. Two complementary conditions raise it, one about *where* the
 crop landed and one about *what* it contains: the crop's centre is on
-background while the crop is not empty, or (added in `0d7d204`) the
+background while the crop is not empty, or (added in `b93bbd3`) the
 predicted placeable floor measures larger, at that frame's own scale,
 than the largest cataloged cartridge's outer footprint — a floor
 bigger than a whole cartridge is not one cartridge's floor. The two
@@ -1542,7 +1542,7 @@ it runs. On the end-to-end run that does use it
 `placement_disagreement` and 1 `bad_detector_box` over 26
 cartridges** — the second condition firing on a box that spans a
 cartridge and three loose cells. That receipt read *0 of each* before
-`0d7d204`: the centre check alone passed this box, because its centre
+`b93bbd3`: the centre check alone passed this box, because its centre
 does sit on real foreground.
 
 ### 10.7 Design ablations
@@ -2019,7 +2019,7 @@ had no notion of which *end* of it was up. The practical effect: the
 electronics module and the `placement_area` plane were painted on the
 outer surface of a *closed lid* rather than seated inside the open
 tray's cavity, for every `open_case` scene ever rendered before commit
-`9fcf136`. Proof was exact rather than approximate — the shell measured
+`043e92d`. Proof was exact rather than approximate — the shell measured
 z ∈ [11.1, 22.2] mm against the CAD's [0, 11.1] mm, a mirror about the
 lid's own mid-plane — and it survived one false fix along the way (an
 early "phantom cap" removal that punched through the shell's real
@@ -2160,7 +2160,7 @@ showed the inflation was consistent rather than a fluke, though
 contention was never formally isolated as the sole cause. Rather than
 keep relying on that judgment call, the measurement has since been
 re-run clean (`docs/receipts/seg_eval.txt`, regenerated at commit
-`390836b`): **20.2 ms batched / 76.5 ms looped**. Regenerating that
+`4e3c03e`): **20.2 ms batched / 76.5 ms looped**. Regenerating that
 receipt for the 2026-08-11 scale correction above re-took the timings
 in the same run — the table is wall-clock and cannot be carried
 forward across a regeneration — giving **21.2 ms / 88.0 ms**, the
@@ -2207,10 +2207,10 @@ got *worse* after the tray fix, not better — it was 1 of 126 pre-fix
 (range [−1, +2]) and 2 of 54 on the smaller pre-scale-up split, and
 the whole-cell rasterisation below did not move it.
 
-**The mean and the loss count moved at `0d7d204`; the damage-direction
+**The mean and the loss count moved at `b93bbd3`; the damage-direction
 count did not.** This paragraph read *+0.032 mean, 120 of 126 exact, 4
 losing a cell* until then, and noted that the mean was numerically
-unchanged from the pre-tray-fix figure at that rounding. `0d7d204`
+unchanged from the pre-tray-fix figure at that rounding. `b93bbd3`
 made `_rasterise_mask` call a grid cell free only when every pixel it
 covers is free, where before it checked only the cell's centre pixel.
 `recog.seg_ablation._pack_count` deliberately calls production's own
@@ -2307,7 +2307,7 @@ limitation permanent rather than pending.**
 in the OPPOSITE direction from every previous scale-up — worth
 reporting precisely because it contradicts the earlier trend.**
 *(Written while the gate was still live; it was deleted from the code in
-commit `5a619fc` — see "τ is retired in the code, not only in this
+commit `cdd97fc` — see "τ is retired in the code, not only in this
 document" below. The measurement is retained as the record of why.)* The
 arbitration compared two estimates and rejected a cartridge
 whose estimates disagreed by more than a threshold τ. Calibrating τ
@@ -2440,7 +2440,7 @@ than leaving it uncalibrated.
 
 **τ is retired in the code, not only in this document — and the delay
 had a measured cost.** The paragraphs above were written when the
-conclusion had reached the prose and not the source: commit `dee9854`
+conclusion had reached the prose and not the source: commit `8744947`
 changed the documentation and the comments, while
 `plan/placement_area.py` went on evaluating `if iou < self.tau: raise
 PlacementDisagreement`. Three mutually inconsistent values were live at
@@ -2457,7 +2457,7 @@ that calibration widens the wall erosion from 7 px to 11 px, shrinking
 `P_derived` until the observed IoU range (0.639–0.848) sits entirely
 below 0.85. **In the project's own configured calibration the gate
 rejected every plannable cartridge it was ever offered, silently, one
-`except PlacementDisagreement: continue` at a time.** Commit `5a619fc`
+`except PlacementDisagreement: continue` at a time.** Commit `cdd97fc`
 deleted the branch, the `self.tau` attribute, the constructor argument
 (*deleted* rather than accepted-and-ignored, so a caller still passing
 it gets a `TypeError` instead of silence) and the dead
@@ -2547,7 +2547,7 @@ overlooked.** Re-measured end to end on the same 30-cartridge,
 extractor and packer, every frame at its own ground sample distance,
 scoring the 18.5 × 65.0 mm footprint centred where `Planner._build_pose`
 commands it — **25 commanded placements overlap ground-truth non-floor
-material twice, by 8.3 % and 5.2 %**, against 5 of 26 before `0d7d204`.
+material twice, by 8.3 % and 5.2 %**, against 5 of 26 before `b93bbd3`.
 Both are one cartridge's left tray wall in a single frame
 (`scene_00033/c57`). The remaining planner-side lever is to demand N mm
 of predicted free floor all round the footprint before a pose is
@@ -2635,9 +2635,9 @@ GPU-contention-inflated intermediate reading (40.9 ms, superseded by a
 clean re-measurement in `docs/receipts/seg_eval.txt`) is set aside.
 Δcells (§13.2.1) got *worse* on the metric that matters most —
 now 2 of 126 crops in the damage direction (was 1 of 126 pre-fix, 2 of
-54 on the smaller pre-scale-up split), and `0d7d204` did not move that
+54 on the smaller pre-scale-up split), and `b93bbd3` did not move that
 count — while its mean is now **+0.008** (it read +0.032 until
-`0d7d204` requantised both sides of the difference; §13.2.1 explains
+`b93bbd3` requantised both sides of the difference; §13.2.1 explains
 why that is an instrument change and not a segmenter improvement).
 τ has moved from "uninformative on this split" to **retired as
 a confidence gate**: per-SKU, IoU and optimistic error correlate
@@ -2646,15 +2646,15 @@ the opposite sign a gate needs, traced to the argmax mechanism in
 `plan/arbitration.py` that makes `P_direct` and `P_derived` the same
 read twice rather than independent estimates. `P_safe`'s intersection
 is retained as a geometric constraint; the IoU threshold on top of it
-is not — and as of commit `5a619fc` that is true of the running code
+is not — and as of commit `cdd97fc` that is true of the running code
 and not only of this document. Also now demonstrated, and previously
 overstated: the segmenter runs in `main.py`'s end-to-end loop
-(`12134c2`, `configs/demo_seg.yaml`, `docs/receipts/main_seg_run.txt` —
+(`f40cc1b`, `configs/demo_seg.yaml`, `docs/receipts/main_seg_run.txt` —
 26 detected, 26 segmented, 7 placement areas, 6 poses queued, 2
 pick-and-places and 1 rejected detector box over 15 frames; this read
 "8 areas / 7 poses / 3 pick-and-places / 0 bad boxes" until the
-placement-safety fix at `0d7d204`, and "1 pick-and-place" before the
-packer fix at `d6c46ac` and the per-frame calibration at `58dd21d`),
+placement-safety fix at `b93bbd3`, and "1 pick-and-place" before the
+packer fix at `562ca75` and the per-frame calibration at `380e7d5`),
 where before it was unreachable under any configuration; see §8. Not
 demonstrated: synthetic-to-real
 transfer — the real-photo comparison now sits at three points (0.211,

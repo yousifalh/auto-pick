@@ -988,7 +988,7 @@ Expected: PASS, 3 tests
 
 - [ ] **Step 5: Add the training loop and config**
 
-Append the loop to `recog/seg_training.py`. Follow `recog/training.py`'s existing shape: `_require_torch()`, a train/val split by index with a fixed seed, cosine LR, per-epoch validation, and **always save `last.pt` as well as `best.pt`** — commit `dedf700` fixed exactly that bug in the detector's loop and the same bug is easy to reintroduce here.
+Append the loop to `recog/seg_training.py`. Follow `recog/training.py`'s existing shape: `_require_torch()`, a train/val split by index with a fixed seed, cosine LR, per-epoch validation, and **always save `last.pt` as well as `best.pt`** — commit `0ac6c5b` fixed exactly that bug in the detector's loop and the same bug is easy to reintroduce here.
 
 Selection metric: **mean IoU over `bay`, `electronics` and `obstruction` only**. Including `background` and `cartridge` would let a model that gets the big easy regions right look good while failing the three classes the placement mask is built from.
 
@@ -1068,7 +1068,7 @@ Checkpoint selection is on bay/electronics/obstruction IoU only.
 Including background and cartridge would let a model that gets the big
 easy regions right mask a failure on the three the placement mask needs.
 
-Saves last.pt as well as best.pt - see dedf700 for the same bug in the
+Saves last.pt as well as best.pt - see 0ac6c5b for the same bug in the
 detector's loop."
 ```
 

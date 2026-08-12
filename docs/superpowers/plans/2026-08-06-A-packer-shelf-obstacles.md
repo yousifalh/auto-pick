@@ -313,11 +313,11 @@ Not yet wired into _try_place_item."
 ```
 
 > **Note (post-implementation):** Task 1 went through three review rounds
-> (commits `aae61a8`, `9d8b115`, `ec0ae9b` — see `task-1-report.md`) plus a
+> (commits `1075333`, `cbcd8fa`, `684a26d` — see `task-1-report.md`) plus a
 > fourth pass that fixed a vacuous property test and restored two guards
 > that were dropped along the way. See `task-1-report.md`'s "Round 4" entry
 > for the full account: the fix, the tests, and confirmation that the
-> repaired property test fails against the pre-fix (`9d8b115`)
+> repaired property test fails against the pre-fix (`cbcd8fa`)
 > implementation. The blocks above show the final, as-committed state.
 
 ---

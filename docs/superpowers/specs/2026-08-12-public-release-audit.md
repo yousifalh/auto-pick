@@ -1,6 +1,6 @@
 # Public-release audit
 
-Written 2026-08-12 against `917e0a0`, before the repository is made public on
+Written 2026-08-12 against `2a6e96c`, before the repository is made public on
 GitHub. Scope: find what would embarrass or block a public release. Everything
 below was checked by running it, not assumed. Items marked **[author]** were
 deliberately left alone because they are the author's call, not the audit's.
@@ -25,7 +25,7 @@ public reader nothing and it is exactly the sort of field that gets scraped.
 ### It is in the git history, and deleting it now does not remove it
 
 `REDACTED` appears in the tree of **all 168 commits** — it entered at the
-baseline commit `70d815c` and has been in `docs/FDR.md` ever since. The edits
+baseline commit `69fad79` and has been in `docs/FDR.md` ever since. The edits
 above remove it from the *working tree only*. Anyone can still recover it with
 `git log -S REDACTED` or by checking out any earlier commit.
 

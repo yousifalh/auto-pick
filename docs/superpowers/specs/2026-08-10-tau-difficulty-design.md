@@ -243,7 +243,7 @@ supporting evidence: `docs/receipts/seg_eval.txt:14-19` — `obstruction` IoU
 the *weakest* two of the three occupied-content classes (`electronics`
 0.8613, `bay` 0.8903), i.e. these are the classes most prone to being
 confused with `bay` today, and they are already the ones this axis
-stresses. `docs/receipts/git-log`-adjacent finding, `git show a1b2a38`
+stresses. `docs/receipts/git-log`-adjacent finding, `git show 805adb0`
 (the damage-direction investigation): one of the two negative-`delta_cells`
 crops was explicitly caused by "six small ground-truth obstructions the
 segmenter recall-misses" — direct, already-observed evidence that the
@@ -513,7 +513,7 @@ touches the same generator and the same invariants apply:
   should add a new segmentation class without updating both sides and that
   test.
 - **The 621-test suite green at the commit this work builds on
-  (`0fb9d7e`).** This document changes no code, so nothing here should move
+  (`8b6cfa1`).** This document changes no code, so nothing here should move
   that number; the implementation that follows it must keep it green,
   particularly `tests/test_arbitration.py` and `tests/test_synth3d.py`.
 

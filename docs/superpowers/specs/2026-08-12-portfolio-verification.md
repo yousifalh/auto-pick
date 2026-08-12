@@ -1,6 +1,6 @@
 # Portfolio verification pass — 2026-08-12
 
-Baseline: `917e0a0`, 752 tests passing, tree clean. Scope: `README.md`,
+Baseline: `2a6e96c`, 752 tests passing, tree clean. Scope: `README.md`,
 `docs/PORTFOLIO.md`, `docs/CV_BULLETS.md` only. No code, config, metric
 definition or receipt was changed; the suite is unchanged at **752
 passed** (re-run at the end of this work).
@@ -25,30 +25,30 @@ are judgement calls about tone or emphasis rather than accuracy.
 **The most serious finding in this pass.** True as stated and misleading
 in exactly the way the section is trying not to be.
 
-Checked commit by commit over `09326f3..917e0a0`. For **0 of the 5**
+Checked commit by commit over `6cc8dfe..2a6e96c`. For **0 of the 5**
 defects did a regression test exist in the suite before the fix. In every
 case the tests arrived in the same commit as the repair:
 
 | # | fix | tests at that commit | pre-existing regression test? |
 |---|---|---|---|
-| 1 | `27cbd97`..`9fcf136` | +4, +3 (`needs_flip`, created in the same commit) | no — **and it updated five pre-existing tests that asserted the pre-fix behaviour** |
-| 2 | `5a619fc` | +2, **−1** | no — the deleted test *required the gate to fire* |
-| 3 | `12134c2` | +7 (+290 lines to `test_main_integration.py`) | no — nothing pre-existing exercised the wiring |
-| 4 | `d6c46ac` | +20, new file `test_packing_ceiling.py` | no — FFDH was deliberately left bit-identical, so the old packing tests *could not* go red |
-| 5 | `58dd21d` | +29, new file `test_calibration.py` | no — and a deleted test asserted `"mm_per_px     : 0.625" in text` |
+| 1 | `a31ac28`..`043e92d` | +4, +3 (`needs_flip`, created in the same commit) | no — **and it updated five pre-existing tests that asserted the pre-fix behaviour** |
+| 2 | `cdd97fc` | +2, **−1** | no — the deleted test *required the gate to fire* |
+| 3 | `f40cc1b` | +7 (+290 lines to `test_main_integration.py`) | no — nothing pre-existing exercised the wiring |
+| 4 | `562ca75` | +20, new file `test_packing_ceiling.py` | no — FFDH was deliberately left bit-identical, so the old packing tests *could not* go red |
+| 5 | `380e7d5` | +29, new file `test_calibration.py` | no — and a deleted test asserted `"mm_per_px     : 0.625" in text` |
 
 Two of the five are worse than neutral: the green suite was green
-**because it asserted the defect.** `5a619fc`'s replacement test is
+**because it asserted the defect.** `cdd97fc`'s replacement test is
 docstringed "The inverse of the test this replaces."
 
 Separately, the window is wrong. Both of defect 1's fix commits **precede
-the 621 anchor** (`git merge-base --is-ancestor 9fcf136 09326f3` → true).
+the 621 anchor** (`git merge-base --is-ancestor 043e92d 6cc8dfe` → true).
 The suite was at 533–570 tests for the whole of defect 1. So "621 → 752
 across the work" describes defects 2–5, not five. Defects 2–5 all landed
 on one afternoon, 2026-08-11 16:57–19:16.
 
 The 621 and 752 endpoints themselves are sound: 621 first recorded at
-`09326f3`, 752 at `0d7d204`, confirmed here by `pytest -q` (752 progress
+`6cc8dfe`, 752 at `b93bbd3`, confirmed here by `pytest -q` (752 progress
 characters, no F or E). Monotone non-decreasing throughout, though
 individual test functions were deleted and replaced. Note that
 `docs/receipts/pytest-cov.txt` is stale at 102 tests and corroborates
@@ -261,8 +261,8 @@ opening paragraph, and the long-form section kept.
 Every correction above hardens it and none of them removes the underlying
 problem: the two numbers were produced by different code at different
 commits with different planner settings, on 30 instances, and the
-difference between them is 2. The oracle was measured at `9bfc25f` with
-centre-pixel occupancy; the shipping figure is post-`0d7d204` whole-cell
+difference between them is 2. The oracle was measured at `ce1d9cd` with
+centre-pixel occupancy; the shipping figure is post-`b93bbd3` whole-cell
 occupancy plus the bad-box extent guard. The evidence that this is safe —
 "on predicted masks that change moved no cell counts" — is real but is
 evidence about the *other* arm. Two of the oracle's 27 cells (`c70` at
@@ -280,7 +280,7 @@ question, and it is the only place in the three documents where the
 answer is "not measured" rather than a number.
 
 > **Resolved, 2026-08-12** (added after this pass; the analysis above is
-> unaltered). The re-run was done at `83348fa` and is recorded as the
+> unaltered). The re-run was done at `2a2da37` and is recorded as the
 > addendum to `2026-08-11-placement-feasibility.md`. The prediction in
 > this section is confirmed: the oracle moves to **25 cells in 11
 > cartridges** at inset 0.0 and the gap to shipping is **zero cells**.
@@ -295,7 +295,7 @@ answer is "not measured" rather than a number.
 
 Handed over by the concurrent public-release audit, which had already
 removed the same number from `docs/FDR.md` and `docs/FDR_v3.md` at
-`5ad9c85`. `README.md:5` was the last tracked file carrying it. The
+`3fedcb6`. `README.md:5` was the last tracked file carrying it. The
 parenthesised number is gone; the name, institution and supervisor
 attribution are kept, because the author chose those and they are
 appropriate for a public repository.

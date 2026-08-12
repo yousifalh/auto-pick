@@ -5,7 +5,7 @@ whose finding was that the procedural segmenter's `bay` transfer gap is
 **91.4 % false positives on sealed cartridges** — 136 of 623 sealed CAD
 crops, 675 460 px, against the CAD control's 2 of 623.
 
-Base commit `1f4a63d`, 666 tests passing, tree clean. **Every number here is
+Base commit `4e8828f`, 666 tests passing, tree clean. **Every number here is
 synthetic-to-synthetic**; real photographs are unobtainable for this project
 (`docs/NEXT_STEPS.md`, "The constraint this plan works around"), so nothing
 below is evidence about sim-to-real transfer.

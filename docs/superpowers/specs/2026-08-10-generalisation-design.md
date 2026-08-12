@@ -5,7 +5,7 @@ document. It turns `2026-08-10-generalisation-decisions.md` (the owner's
 settled decisions — not re-opened here) and
 `2026-08-10-generalisation-groundwork.md` (the measured investigation) into
 a buildable design, and settles the two questions the decisions doc left
-open. Line numbers and commit references are current as of `55e71b0`.
+open. Line numbers and commit references are current as of `6eb10c7`.
 
 Throughout: **(measured)** is read directly from the code, `catalog.json`,
 or a receipt. **(judgement)** is this document's own design choice, not a
@@ -679,5 +679,5 @@ entire spec exists to work within.
 No code, dataset, or checkpoint changed while writing this document.
 `python -m pytest -q` run at the end of this task: 621 passed, matching
 `docs/NEXT_STEPS.md`'s baseline and the groundwork document's own
-verification, at current HEAD `55e71b0` (this document's own commit is
+verification, at current HEAD `6eb10c7` (this document's own commit is
 docs-only, one commit ahead).

@@ -18,7 +18,7 @@ not defended") — no such conflict was found.
 Throughout: **(measured)** means read directly from the code, `catalog.json`,
 or a command run during this investigation. **(judgement)** means an
 assessment or recommendation, not a fact. Line numbers are current as of
-commit `0276100`.
+commit `e23c97e`.
 
 ---
 
@@ -435,7 +435,7 @@ support it alongside whichever of A/B/C is picked.
 
 - **`docs/NEXT_STEPS.md` Step 5** still lists "harden `tests/test_synth3d.py`'s
   bpy-boundary check... it is a substring grep for `import bpy`" as an open
-  item. **This is stale.** Commit `ebe871c` ("test: replace the bpy-boundary
+  item. **This is stale.** Commit `b7bb57b` ("test: replace the bpy-boundary
   substring grep with an AST check") already landed and is an ancestor of
   the current HEAD (confirmed via `git merge-base --is-ancestor`); the check
   in `tests/test_synth3d.py` (lines 43-83) is an AST walk that explicitly
@@ -461,6 +461,6 @@ support it alongside whichever of A/B/C is picked.
 
 No code changed. `python -m pytest -q` run in full during this investigation:
 all tests pass, matching `docs/NEXT_STEPS.md`'s "621 tests" baseline at
-`dee9854` (current HEAD `0276100` is a docs-only commit ahead of it, so the
+`8744947` (current HEAD `e23c97e` is a docs-only commit ahead of it, so the
 suite is unaffected). No retrain, no dataset regeneration, no generator
 edit was made.

@@ -1,7 +1,7 @@
 # Why 23 of 30 real cartridges yield no placeable area
 
 Date: 2026-08-11
-Baseline: `9bfc25f`, 708 tests passing (re-run at the end of this work:
+Baseline: `ce1d9cd`, 708 tests passing (re-run at the end of this work:
 708 passed, exit 0 — **no code, config, dataset or model was changed**).
 Area: diagnosis only. `plan/`, `recog/`, `configs/` are untouched; every
 computation below was run from a scratch script outside the repository,
@@ -356,12 +356,12 @@ its errors have the same root, and the root points both ways.
 8 placement areas -> 1 pose -> 1 pick over 15 frames. Two corrections,
 both measured:
 
-* **The receipt is stale.** It was committed at `12134c2`; the packing
-  ceiling fix landed at `d6c46ac`, after it. Re-running the identical
-  command at `9bfc25f` (into a scratch path — the tracked receipt was
+* **The receipt is stale.** It was committed at `f40cc1b`; the packing
+  ceiling fix landed at `562ca75`, after it. Re-running the identical
+  command at `ce1d9cd` (into a scratch path — the tracked receipt was
   left alone) gives `cycles 2, placed 2, queue_poses 8, empty_queue 13`.
-  (Re-run on this working tree; the commits after `9bfc25f` touch only
-  `README.md` and `docs/`, so the code is `9bfc25f`'s.) The figure to
+  (Re-run on this working tree; the commits after `ce1d9cd` touch only
+  `README.md` and `docs/`, so the code is `ce1d9cd`'s.) The figure to
   quote for the shipping code is **2 picks from 15 frames, 8 poses
   queued**, not 1.
 * **Neither number measures what it appears to.** 24 of the 30 instances
@@ -410,7 +410,7 @@ the numbers are here so the trade can be made on evidence.
    no SKU to look up (`plan/placement_area.py` says so, and that is still
    true across the Recognition -> Planning boundary) — though
    `recog/synth3d/annotate.py` now writes `asset` into the COCO sidecar
-   (`19f64be`), so a per-SKU inset is at least *labellable*. The
+   (`bb880cb`), so a per-SKU inset is at least *labellable*. The
    `dataset3d_seg` sidecar used here predates that commit and carries no
    `asset` field; SKU here comes from `meta/<frame>.json` instead.
 3. **18.5 -> 18.3 buys nothing measurable here.** Recommend leaving it;
@@ -431,14 +431,14 @@ the numbers are here so the trade can be made on evidence.
 ## Addendum, 2026-08-12 — the oracle re-measured at HEAD
 
 **Nothing above is altered.** Every number in §1–§8 was correct for the
-code state it was measured on (`9bfc25f`) and is left as written. This
-section records the same measurement re-run at `83348fa`, 752 tests
+code state it was measured on (`ce1d9cd`) and is left as written. This
+section records the same measurement re-run at `2a2da37`, 752 tests
 passing, tree clean — and it exists because §5's oracle row and the
 `README`'s shipping row were being compared across two different code
 states, which `2026-08-12-portfolio-verification.md` §4 identified as the
 weakest surviving claim in the published material.
 
-Between the two states, item (5) above was acted on. `0d7d204` made
+Between the two states, item (5) above was acted on. `b93bbd3` made
 `_rasterise_mask` call a grid cell FREE only when **every** pixel it
 covers is free, instead of when its centre pixel is. That change was
 measured on *predicted* masks (`2026-08-11-placement-safety.md` §2.2: the
@@ -460,7 +460,7 @@ the repository; no code, config, metric definition or receipt was
 touched.
 
 **The harness was validated before it was trusted.** Running it with
-`9bfc25f`'s centre-pixel `_rasterise_mask` restored (the only
+`ce1d9cd`'s centre-pixel `_rasterise_mask` restored (the only
 monkeypatch, in the validation arm only) reproduces this file exactly:
 the same 30 instance IDs at the same frames, the IoU match range
 0.22–0.95 with 27 of 30 above 0.7, **12 instances / 27 cells at inset
@@ -475,9 +475,9 @@ the one crop the extent guard rejects.
 
 | GT masks, GT unit box, true scale | instances (of 30) | cells |
 | --- | ---: | ---: |
-| inset 0.0, centre-pixel occupancy (`9bfc25f`, §5) | 12 | 27 |
+| inset 0.0, centre-pixel occupancy (`ce1d9cd`, §5) | 12 | 27 |
 | **inset 0.0, whole-cell occupancy (HEAD)** | **11** | **25** |
-| inset 4.25, centre-pixel occupancy (`9bfc25f`, §5) | 10 | 24 |
+| inset 4.25, centre-pixel occupancy (`ce1d9cd`, §5) | 10 | 24 |
 | **inset 4.25, whole-cell occupancy (HEAD)** | **10** | **24** |
 | *shipping at HEAD, for comparison* | *12* | *25* |
 

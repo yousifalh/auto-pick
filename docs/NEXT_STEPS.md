@@ -101,7 +101,7 @@ through 666 / 678 / 704 as the three changes recorded in "Landed
 2026-08-11" below and one concurrent agent's work landed). The
 torch-free demo (`python main.py --config configs/demo.yaml`) still
 runs and is **unchanged**, which is what the FDR's reproducibility claim
-rests on. Since `12134c2` there is also a second, torch-requiring path —
+rests on. Since `f40cc1b` there is also a second, torch-requiring path —
 `python main.py --config configs/demo_seg.yaml` — that puts the trained
 segmenter in the same loop; the reproducibility claim does *not* rest on
 it and must not be moved onto it.
@@ -123,7 +123,7 @@ importer inverts this CAD's up-axis, and `lay_flat` had no notion of
 which end of the vertical axis was up), so the electronics module and
 `placement_area` plane were painted on the outside of a closed lid
 instead of seated inside the tray's cavity. Every label geometry moved
-once this was fixed (four commits, `27cbd97`..`9fcf136`); the dataset
+once this was fixed (four commits, `a31ac28`..`043e92d`); the dataset
 was deleted and fully re-rendered at the same 502-scene / 841-crop
 scale (not resumed — resuming would have silently mixed the old and
 new label conventions in one dataset), and the checkpoint was retrained
@@ -138,14 +138,14 @@ Recorded here because each one changes what a figure elsewhere in this
 document means. All three are measured, not asserted; none changed a
 metric definition.
 
-**1. τ is deleted from `plan/placement_area.py` (`5a619fc`).** It had
-been documented as retired since `dee9854` while the branch went on
+**1. τ is deleted from `plan/placement_area.py` (`cdd97fc`).** It had
+been documented as retired since `8744947` while the branch went on
 running, and at `configs/planning.yaml`'s own `mm_per_px: 0.38` it
 rejected **every** plannable cartridge it was offered — 0 before, 8
 after. Detail and the three-way value inconsistency it resolved: item 4
 below.
 
-**2. The segmenter is in the end-to-end loop (`12134c2`).** Before this,
+**2. The segmenter is in the end-to-end loop (`f40cc1b`).** Before this,
 `main.py` ran only the heuristic extractor and the segmenter was
 unreachable under *any* config — `load_detector` took no `segmenter`
 argument and `_build_planner` hardcoded the heuristic. **Any earlier
@@ -155,8 +155,8 @@ overstated; it is true now.** `configs/demo_seg.yaml` plus
 → 7 placement areas → 6 poses queued → 2 pick-and-places, with 1
 detector box rejected as not describing one cartridge. (This line read
 *8 placement areas → 1 pick-and-place* and was doubly stale: the pick
-count predated the packer fix at `d6c46ac`, which FDR §8 had already
-corrected to 3, and the area and box counts predate `0d7d204`'s
+count predated the packer fix at `562ca75`, which FDR §8 had already
+corrected to 3, and the area and box counts predate `b93bbd3`'s
 whole-cell rasterisation and box-contents guard. Regenerated
 2026-08-11 from `python main.py --config configs/demo_seg.yaml
 --receipt docs/receipts/main_seg_run.txt`.) Every way the new path could
@@ -166,7 +166,7 @@ so the receipt is evidence about the **wiring**, not a generalisation
 measurement — that is what "The generalisation measurement" section
 below is for. `configs/demo.yaml` is untouched and still torch-free.
 
-**3. The packing ceiling is lifted (`d6c46ac`).** `first_fit_decreasing`
+**3. The packing ceiling is lifted (`562ca75`).** `first_fit_decreasing`
 never scans its shelf origin in y, and `_next_free_x` collapses a
 shelf's whole row band, so one forbidden region in the first shelf's band
 kills the entire pack: `scene_00005` handed the packer a 93 %-free grid
@@ -483,7 +483,7 @@ not despite being awkward.
 **The annotation tooling built to consume such ground truth is retained, not
 deleted, and is currently dormant.** `docs/ANNOTATION_PROTOCOL.md`,
 `recog/labelme_to_seg.py` and `recog/check_annotations.py` (commit
-`09326f3`) convert LabelMe polygon exports into this project's COCO-RLE
+`6cc8dfe`) convert LabelMe polygon exports into this project's COCO-RLE
 sidecar format and validate them for pixel overlap, degenerate RLEs and
 missing annotations — 51 tests, all passing, no photographs touched. It
 exists for the counterfactual: if real photographs ever become obtainable,
@@ -501,7 +501,7 @@ the small mean: the tray fix corrected the geometry but did not
 improve, and by this one measure slightly worsened, the fraction of
 crops where the prediction packs a cell the ground truth forbids.
 
-**The mean fell from +0.032 to +0.008 at `0d7d204`, and this item did
+**The mean fell from +0.032 to +0.008 at `b93bbd3`, and this item did
 not get better.** That commit made `_rasterise_mask` call a grid cell
 free only if every pixel it covers is free rather than only its centre
 pixel; `recog.seg_ablation._pack_count` calls that same production
@@ -553,13 +553,13 @@ pass at IoU 0.91–0.94, comfortably above both τ = 0.7492 and τ = 0.85 — be
 the gate measures a single prediction's *self-consistency*, not its
 *correctness against truth*. Worth remembering before relying on it for
 anything it was not designed to do. (Historical: that gate no longer
-exists in the code as of `5a619fc` — see item 4 below. The reasoning
+exists in the code as of `cdd97fc` — see item 4 below. The reasoning
 stands as a reason not to rebuild it.)
 
 **`scene_00106`'s packer artefact was a real defect and has since been
 fixed** — FFDH never scanned its shelf origin in y, so a forbidden region
 in the first shelf's row band voided the whole pack. The planner now runs
-`common.packing.pack_best_effort` (`d6c46ac`), which competes FFDH
+`common.packing.pack_best_effort` (`562ca75`), which competes FFDH
 against two obstacle-tolerant arms and takes the maximum. Δcells has
 **not** been re-measured under the new packer, so the +0.008 mean and the
 2/126 negative-direction count above are both figures from the FFDH-only
@@ -570,7 +570,7 @@ still holds after the 2026-08-11 regeneration** — re-running
 `common.packing.first_fit_decreasing` directly and never reaches
 `pack_best_effort`.
 The mean moved (from +0.032) for an unrelated reason, the rasteriser
-change at `0d7d204`; the packer under it is the same FFDH it always
+change at `b93bbd3`; the packer under it is the same FFDH it always
 was.
 
 **Mitigations were tested and rejected on cost-benefit**: a larger wall inset
@@ -672,7 +672,7 @@ would misrepresent an inert gate as a working safety threshold.~~
 
 **Superseded 2026-08-11 — τ is now retired in the CODE, not only in the
 prose, and the delay had a measured cost.** Everything above described a
-gate that was still running. `dee9854` changed the documentation and the
+gate that was still running. `8744947` changed the documentation and the
 comments; `plan/placement_area.py` went on evaluating
 `if iou < self.tau: raise PlacementDisagreement`. Three inconsistent
 values were live at once and none agreed — constructor default **0.85**
@@ -686,7 +686,7 @@ README's **0.5715** (which described the YAML value as live). Measured on
 7 px → 11 px, shrinking `P_derived` until the whole observed IoU range
 (0.639–0.848) sits below 0.85. **In the project's own configured
 calibration the gate rejected every cartridge it was ever offered,
-silently.** `5a619fc` deleted the branch, `self.tau`, the constructor
+silently.** `cdd97fc` deleted the branch, `self.tau`, the constructor
 argument (deleted rather than accepted-and-ignored, so a stale caller
 gets a `TypeError`) and the dead `arbitration.tau` key; both rows now
 read 8 of 8. `P_safe = P_direct ∩ P_derived` is unchanged, applied
@@ -723,7 +723,7 @@ independent of what a larger or harder split would show.
 
 **Do not re-propose a planner-side clearance margin for this.** Measured
 end to end on the 30-cartridge / 60-frame corpus at each frame's true
-scale, after `0d7d204`'s two placement-safety changes: **25 commanded
+scale, after `b93bbd3`'s two placement-safety changes: **25 commanded
 placements overlap ground-truth non-floor material twice, by 8.3 % and
 5.2 %** (5 of 26 before), both on `scene_00033/c57`'s left tray wall in
 one frame. Demanding N mm of predicted free floor all round the
@@ -935,7 +935,7 @@ the scale-up described in this step.
 - ~~Delete the `tau` config key, or repurpose it as a fixed, explicitly
   un-calibrated conservative default (currently the key exists and
   nothing reads it; 0.85 is what `plan/placement_area.py` actually
-  applies).~~ **DONE, `5a619fc`** — deleted, along with the `iou < tau`
+  applies).~~ **DONE, `cdd97fc`** — deleted, along with the `iou < tau`
   branch, `self.tau` and the constructor argument, after the gate was
   measured to reject 8 of 8 plannable cartridges at the project's own
   `mm_per_px`. See item 4 above.
@@ -975,7 +975,7 @@ above.
 **The generator now has real interior geometry (2026-08-09), and the two
 paragraphs that used to stand here are obsolete.** `open_case` cartridges
 were closed shells with a fake PCB and bay plane laid on the *outer top
-face* until the tray-interior fix (four commits, `27cbd97`..`9fcf136`;
+face* until the tray-interior fix (four commits, `a31ac28`..`043e92d`;
 see the note near the top of this document and FDR §13.2.1). The tray is
 now dropped from its lid (`case_lid` is a separate role), the cavity is
 measured from the CAD (`tray_outer_mm`, `tray_floor_mm`, `interior_mm`,
