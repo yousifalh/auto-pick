@@ -1170,3 +1170,324 @@ def test_build_tray_entry_carries_lid_crown_mm_to_the_bpy_side():
     flat = build_tray_entry(sample_tray(Config().tray_anchored,
                                         _random.Random(3)))
     assert flat["lid_crown_mm"] == 0.0
+
+
+# ============================================================ seating ladder ==
+#
+# The ladder is what makes `placement_area` mean "the currently free floor".
+# Every object in a bay is built at a small offset above the cavity floor, and
+# `bay_proxy` is the plane carrying the label; anything at or below it stops
+# occluding it, and the mask goes on reporting that floor as free while the
+# object visibly sits on it - in the render, the index pass and the manifest
+# alike, with nothing downstream able to tell.
+#
+# Until 2026-08-12 these were six literals in three bpy-only builders plus a
+# world.py constant, with the ordering restated in three docstrings and
+# enforced nowhere. `tests/test_synth3d_world.py` checks that world.py still
+# builds ON these rungs; this checks the rungs.
+
+from recog.synth3d.bay import (BAY_PROXY_RUNG, MAX_SEAT_OFFSET_M,
+                               PCB_THICKNESS_M, SEATING_LADDER,
+                               assert_seating_ladder_ordered,
+                               fallback_module_placement, obstruction_z_scale,
+                               occludes_bay_proxy, seat_offset, seat_z)
+
+
+def test_the_seating_ladder_is_exactly_the_six_offsets_it_has_always_been():
+    """Written out, not derived. This is the one test in the suite whose
+    failure means "the ground truth of every rendered dataset just changed" -
+    so it states the numbers rather than recomputing them, and a diff on these
+    lines is the intended way to notice."""
+    assert SEATING_LADDER == (
+        ("pcb",         0.0008),
+        ("bay_proxy",   0.0009),
+        ("tape",        0.0011),
+        ("label",       0.0011),
+        ("adhesive",    0.0012),
+        ("seated_cell", 0.0012),
+        ("foam",        0.0022),
+    )
+    assert PCB_THICKNESS_M == 0.0016
+    assert BAY_PROXY_RUNG == "bay_proxy"
+
+
+def test_the_shipped_ladder_satisfies_its_own_invariant():
+    assert assert_seating_ladder_ordered() is None
+
+
+def _reordered(name: str, z: float):
+    """`SEATING_LADDER` with `name` moved to `z` and the table re-sorted.
+
+    Re-sorting on purpose. Moving a rung usually leaves the table unsorted,
+    and the "not sorted as written" clause would then fire for every case
+    below - which would test the table's readability seven times over and its
+    OCCLUSION rule not at all. Sorting first makes each case reach the clause
+    it is about."""
+    L = sorted(((n, z if n == name else zz) for n, zz in SEATING_LADDER),
+               key=lambda r: r[1])
+    return tuple(L)
+
+
+@pytest.mark.parametrize("name,z", [
+    # each dropped onto the proxy's own plane: coplanar, so no longer
+    # reliably occluding it - the tie-break would be the renderer's to make
+    ("tape", 0.0009), ("label", 0.0009), ("adhesive", 0.0009),
+    ("seated_cell", 0.0009), ("foam", 0.0009),
+    # and the proxy raised onto theirs, which breaks it from the other side
+    ("bay_proxy", 0.0012),
+])
+def test_a_rung_that_stops_clearing_the_proxy_is_caught(name, z):
+    """The invariant every `placement_area` label in every dataset rests on.
+    `>=` where `>` was meant is enough to lose it, so each case here is a TIE,
+    not an inversion."""
+    with pytest.raises(ValueError, match="STRICTLY"):
+        assert_seating_ladder_ordered(_reordered(name, z))
+
+
+def test_the_board_lifted_off_the_cavity_floor_is_caught():
+    """`pcb` is the one rung below the proxy, and it is legal only because it
+    is exactly half the board's thickness - which is what rests the board ON
+    the floor. One ULP is enough: the coupling has no tolerance of its own."""
+    for z in (0.00085, math.nextafter(0.0008, 1.0),
+              math.nextafter(0.0008, 0.0)):
+        L = tuple((n, z if n == "pcb" else zz) for n, zz in SEATING_LADDER)
+        with pytest.raises(ValueError, match="built about its CENTRE"):
+            assert_seating_ladder_ordered(L)
+
+
+def test_swapping_two_rungs_is_caught():
+    """The failure the ordering exists to prevent, stated directly: foam
+    seated below the proxy would stop occluding it."""
+    L = list(SEATING_LADDER)
+    L[1], L[6] = L[6], L[1]
+    with pytest.raises(ValueError, match="out of order"):
+        assert_seating_ladder_ordered(tuple(L))
+
+
+def test_the_ordering_check_pins_the_ORDER_and_not_the_VALUES():
+    """Stated rather than left to be discovered. Nudging `foam` up by one ULP
+    leaves every ordering relation intact, so `assert_seating_ladder_ordered`
+    passes - and should: an ordering check that also pinned values would be
+    two checks wearing one name, and the one that fired would not say which
+    property broke.
+
+    The VALUES are pinned by
+    `test_the_seating_ladder_is_exactly_the_six_offsets_it_has_always_been`
+    above. That is the test that fails when the ground truth of every rendered
+    dataset changes; this one is the test that fails when the mechanism does.
+    Reading the ordering check as protection against a retuned offset is the
+    misreading this docstring exists to prevent."""
+    L = list(SEATING_LADDER)
+    L[6] = (L[6][0], math.nextafter(L[6][1], 1.0))
+    assert tuple(L) != SEATING_LADDER
+    assert assert_seating_ladder_ordered(tuple(L)) is None
+
+
+def test_ties_between_rungs_on_the_same_side_stay_legal():
+    """tape/label and adhesive/seated_cell are genuinely coplanar pairs.
+    Coplanar objects never occlude EACH OTHER and nothing asks them to, so a
+    check that forbade all ties would forbid the shipped table."""
+    assert [z for _, z in SEATING_LADDER].count(0.0011) == 2
+    assert [z for _, z in SEATING_LADDER].count(0.0012) == 2
+    assert_seating_ladder_ordered()
+
+
+def test_a_duplicated_rung_name_is_caught():
+    """`seat_offset` scans the table in order, so a duplicate would silently
+    resolve to whichever copy came first."""
+    L = list(SEATING_LADDER) + [("foam", 0.0025)]
+    with pytest.raises(ValueError, match="twice"):
+        assert_seating_ladder_ordered(tuple(L))
+
+
+def test_a_ladder_with_no_proxy_rung_is_caught():
+    L = [(n, z) for n, z in SEATING_LADDER if n != BAY_PROXY_RUNG]
+    with pytest.raises(ValueError, match="exactly one"):
+        assert_seating_ladder_ordered(tuple(L))
+
+
+def test_a_stand_off_rather_than_a_clearance_is_caught():
+    """A millimetre-scale gap under a cell is a modelling error dressed up as
+    a z-fighting fix, and it is visible from overhead against an 18mm cell."""
+    L = [(n, 0.02) if n == "foam" else (n, z) for n, z in SEATING_LADDER]
+    with pytest.raises(ValueError):
+        assert_seating_ladder_ordered(tuple(L))
+    assert all(0.0 < z < MAX_SEAT_OFFSET_M for _, z in SEATING_LADDER)
+
+
+def test_the_board_rests_on_the_floor_and_its_top_clears_the_proxy():
+    """The coupling that makes `pcb` the one rung BELOW the proxy legal. The
+    board is built about its centre, so its seat must be half its thickness -
+    otherwise it floats above the cavity floor or sinks through it - and its
+    top face must clear the proxy, or along the edge the board and the
+    placement rectangle share, the proxy would occlude the board."""
+    import recog.synth3d.bay as _bay
+    assert seat_offset("pcb") == PCB_THICKNESS_M / 2.0
+    assert seat_offset("pcb") + PCB_THICKNESS_M / 2.0 \
+        > seat_offset(BAY_PROXY_RUNG)
+
+    saved = _bay.PCB_THICKNESS_M
+    try:
+        # A board only as thick as the proxy's own offset rests on the floor
+        # correctly and still fails: its top face no longer clears the plane.
+        _bay.PCB_THICKNESS_M = 2 * seat_offset("pcb")
+        assert_seating_ladder_ordered()          # unchanged: 0.0016
+        _bay.PCB_THICKNESS_M = 0.0009
+        with pytest.raises(ValueError):
+            assert_seating_ladder_ordered()
+    finally:
+        _bay.PCB_THICKNESS_M = saved
+    assert_seating_ladder_ordered()
+
+
+def test_seat_z_is_the_floor_plus_the_rung_to_the_last_bit():
+    """`floor_z + offset`, not a re-derivation. world.py used to add these as
+    literals at the call site; a difference of one ULP is still a different
+    rendered scene, so the arithmetic has to be the same arithmetic."""
+    for floor in (0.0, 0.00195, 0.0045, 0.012, 0.03):
+        for name, z in SEATING_LADDER:
+            assert seat_z(floor, name).hex() == float(floor + z).hex()
+
+
+def test_seat_z_rechecks_the_ladder_on_every_call():
+    """A table nobody validates is a table nobody validates. `seat_z` is the
+    only way world.py reaches these numbers, so checking there means a
+    perturbed ladder stops the FIRST build rather than the first person to
+    look at pixels months later."""
+    import recog.synth3d.bay as _bay
+    saved = _bay.SEATING_LADDER
+    try:
+        L = list(saved)
+        L[1], L[6] = L[6], L[1]
+        _bay.SEATING_LADDER = tuple(L)
+        with pytest.raises(ValueError):
+            _bay.seat_z(0.012, "foam")
+    finally:
+        _bay.SEATING_LADDER = saved
+    assert seat_z(0.012, "foam") == pytest.approx(0.0142)
+
+
+def test_an_unknown_rung_raises_rather_than_defaulting_to_the_floor():
+    """A guarded `.get(...)` on a renamed key is how this project once had a
+    builder quietly stop building geometry. Here it would seat the object on
+    the floor itself, where it would z-fight with the tray and stop occluding
+    the proxy - the exact failure the ladder exists to prevent."""
+    with pytest.raises(ValueError, match="not a rung"):
+        seat_offset("bay-proxy")
+    with pytest.raises(ValueError, match="not a rung"):
+        seat_z(0.012, "pcb_board")
+
+
+@pytest.mark.parametrize("name,expected", [
+    ("pcb", False), ("bay_proxy", False), ("tape", True), ("label", True),
+    ("adhesive", True), ("seated_cell", True), ("foam", True)])
+def test_occludes_bay_proxy_names_the_rungs_that_subtract_from_the_label(
+        name, expected):
+    assert occludes_bay_proxy(name) is expected
+
+
+# ------------------------------------------- the module board's fallback ----
+
+def test_fallback_module_placement_matches_the_rectangle_world_py_drew():
+    """Moved verbatim out of `world.build_pcb`. The values, and the ORDER the
+    four draws are taken in, are what has to be preserved: `build_pcb` shares
+    one rng with the rest of the scene, so a reordering silently resamples the
+    board colour, the component count and everything after them."""
+    bounds = (-0.04, -0.09, 0.04, 0.09)
+    r = _random.Random(7)
+    cx, cy, w, h = fallback_module_placement(bounds, r)
+
+    ref = _random.Random(7)
+    w_ref = (0.04 - -0.04) * ref.uniform(0.55, 0.80)
+    h_ref = (0.09 - -0.09) * ref.uniform(0.20, 0.38)
+    cx_ref = (-0.04 + 0.04) / 2 + ref.uniform(-0.004, 0.004)
+    cy_ref = (-0.09 + 0.09) / 2 + ref.uniform(-0.010, 0.010)
+    assert (cx, cy, w, h) == (cx_ref, cy_ref, w_ref, h_ref)
+    assert r.getstate() == ref.getstate(), "four draws, in that order"
+
+
+def test_the_fallback_board_always_lands_inside_the_bounds_it_was_given():
+    """A board hanging off the cartridge would be sitting on the backdrop, and
+    `build_pcb`'s board is not occlusion-only furniture - scene.py gives it a
+    real class id and an `electronics_module` id_meta entry."""
+    bounds = (-0.04, -0.09, 0.04, 0.09)
+    x0, y0, x1, y1 = bounds
+    for seed in range(500):
+        cx, cy, w, h = fallback_module_placement(bounds, _random.Random(seed))
+        assert x0 <= cx - w / 2 and cx + w / 2 <= x1
+        assert y0 <= cy - h / 2 and cy + h / 2 <= y1
+        assert 0.55 * (x1 - x0) <= w <= 0.80 * (x1 - x0)
+        assert 0.20 * (y1 - y0) <= h <= 0.38 * (y1 - y0)
+
+
+def test_the_fallback_returns_the_same_tuple_shape_as_the_anchored_path():
+    """`build_pcb` consumes the two interchangeably - both are
+    `(cx, cy, w, h)` - so a fallback returning `(w, h, cx, cy)` would build a
+    board the size of its own jitter, at the jitter's position, with no error
+    anywhere. Checked by giving both a frame centred on the origin: a centre
+    then has to be near zero and a size cannot be."""
+    interior, bay_mm = (-30.0, -50.0, 30.0, 50.0), (-30.0, 30.0, 30.0, 50.0)
+    anchored = module_world_placement(interior, bay_mm, 0.0, (0.0, 0.0))
+    fallback = fallback_module_placement((-0.04, -0.09, 0.04, 0.09),
+                                         _random.Random(0))
+    for cx, cy, w, h in (anchored, fallback):
+        assert abs(cx) <= 0.045 and abs(cy) <= 0.045, "first two are a centre"
+        assert w > 0.02 and h > 0.01, "last two are a size"
+
+
+# ------------------------------------------- the obstructions' third axis ---
+
+@pytest.mark.parametrize("kind,lo,hi", [
+    ("adhesive", 0.35, 0.7),        # dimensionless squash of a w/2 sphere
+    ("foam", 0.002, 0.005),         # a thickness in metres, on a unit cube
+])
+def test_obstruction_z_scale_stays_in_the_range_world_py_drew_from(kind, lo,
+                                                                  hi):
+    for seed in range(400):
+        v = obstruction_z_scale(kind, _random.Random(seed))
+        assert lo <= v <= hi
+
+
+@pytest.mark.parametrize("kind", ["tape", "label"])
+def test_a_flat_obstruction_takes_no_draw_at_all(kind):
+    """Part of the contract, not an implementation detail: world.
+    build_obstructions shares one rng with the rest of the scene, so a draw
+    taken for a kind that used to take none silently resamples everything
+    downstream of it."""
+    r = _random.Random(3)
+    before = r.getstate()
+    assert obstruction_z_scale(kind, r) == 1.0
+    assert r.getstate() == before
+
+
+@pytest.mark.parametrize("kind", ["adhesive", "foam"])
+def test_a_solid_obstruction_takes_exactly_one_draw(kind):
+    r = _random.Random(3)
+    obstruction_z_scale(kind, r)
+    ref = _random.Random(3)
+    ref.random()
+    assert r.getstate() == ref.getstate()
+
+
+def test_an_unknown_obstruction_kind_stops_the_build():
+    """`world.build_obstructions`' shape dispatch ends in a bare
+    `else:  # label`, so a fifth kind added to `sample_obstructions` without a
+    matching branch there would render as a printed label - silently and
+    plausibly. This is called first, so it stops instead."""
+    with pytest.raises(ValueError, match="not an obstruction kind"):
+        obstruction_z_scale("gasket", _random.Random(0))
+
+
+def test_every_kind_sample_obstructions_produces_has_a_z_scale():
+    """The two halves of an obstruction's geometry are decided in two
+    functions; a kind known to one and not the other is the desync this
+    pairing exists to rule out."""
+    cfg = Config().obstruction
+    kinds = set()
+    for seed in range(600):
+        for p in sample_obstructions((-0.03, -0.02, 0.03, 0.02), cfg,
+                                     _random.Random(seed)):
+            kinds.add(p.kind)
+    assert kinds == {"adhesive", "foam", "tape", "label"}
+    for k in kinds:
+        assert obstruction_z_scale(k, _random.Random(0)) > 0.0

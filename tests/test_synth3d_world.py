@@ -1434,15 +1434,26 @@ def test_the_camera_shift_reaches_both_the_object_and_the_manifest(W):
 # =========================================================================== #
 #  4. the seating-height ladder
 #
-#  Five constants in three functions decide what occludes what on the bay
-#  floor. `build_bay_proxy` carries the `placement_area` label; anything
-#  placed in the bay must rest STRICTLY above it or the label keeps claiming
-#  the floor is free while an object visibly sits on it - and nothing
-#  downstream can detect that from the mask alone.
+#  The ladder itself now lives in `bay.SEATING_LADDER`, and `tests/test_bay.py`
+#  pins the table and its ordering invariant directly. What is left for THIS
+#  file is the half a bpy-free test cannot reach: that the geometry world.py
+#  actually builds lands on those rungs. `build_bay_proxy` carries the
+#  `placement_area` label; anything placed in the bay must rest STRICTLY above
+#  it or the label keeps claiming the floor is free while an object visibly
+#  sits on it - and nothing downstream can detect that from the mask alone.
+#
+#  The expected offsets below are deliberately written out as literals rather
+#  than read from `bay.SEATING_LADDER`. Reading them from the table would make
+#  every test here agree with the table by construction; as literals, a change
+#  to the table has to be made in two files that do not import each other
+#  before any of this goes quiet.
 # =========================================================================== #
 
-_PROXY_LIFT = 0.0009        # build_bay_proxy's own offset
-_PCB_LIFT = 0.0008          # build_pcb's board
+_PROXY_LIFT = 0.0009        # bay.SEATING_LADDER's "bay_proxy" rung
+_PCB_LIFT = 0.0008          # ... "pcb": build_pcb's board, about its centre
+_SEATED_CELL_LIFT = 0.0012  # ... "seated_cell": the cell's BASE
+_OBSTRUCTION_LIFT = {"adhesive": 0.0012, "foam": 0.0022,
+                     "tape": 0.0011, "label": 0.0011}
 
 
 def test_the_bay_proxy_plane_sits_between_the_board_s_base_and_its_top(W):
@@ -1472,39 +1483,116 @@ def test_the_bay_proxy_plane_sits_between_the_board_s_base_and_its_top(W):
 def test_every_obstruction_kind_rests_strictly_above_the_proxy(W, kind):
     """An obstruction at or below `floor_z + 0.0009` loses the z-fight and
     placement_area keeps reporting that floor as free while glue visibly sits
-    on it. Silently - the mask cannot show it."""
+    on it. Silently - the mask cannot show it.
+
+    Measured off the object world.py built, not off the table it read: the
+    point of the move to `bay.SEATING_LADDER` is that world.py now ASKS for
+    each height, and a builder that asked and then ignored the answer would
+    still satisfy any check made against the table alone."""
     floor = 0.010
     pose = types.SimpleNamespace(kind=kind, x=0.0, y=0.0, w=0.01, h=0.008,
                                  rot_deg=0.0)
     built = W.build_obstructions([pose], floor, rng())
     assert len(built) == 1
-    lo, _ = built[0][0].world_bbox()
-    origin_z = floor + {"adhesive": 0.0012, "foam": 0.0022,
-                        "tape": 0.0011, "label": 0.0011}[kind]
+    origin_z = built[0][0].location[2]
+    assert origin_z - floor == pytest.approx(_OBSTRUCTION_LIFT[kind],
+                                             abs=1e-12)
     assert origin_z > floor + _PROXY_LIFT, (
         f"{kind} is seated at +{origin_z - floor:.4f}m, not strictly above "
         f"the bay proxy's +{_PROXY_LIFT}m")
 
 
 def test_a_seated_cell_clears_the_proxy_too(W):
-    assert W.SEATED_CELL_LIFT > _PROXY_LIFT, (
-        "SEATED_CELL_LIFT is the entire mechanism seat_cells exists for: a "
-        "cell at or below the proxy's own lift would not occlude it, and "
-        "placement_area would claim the floor it sits on is free")
+    """The entire mechanism `seat_cells` exists for: a cell at or below the
+    proxy's own rung would not occlude it, and placement_area would claim the
+    floor it sits on is free. Driven through the builder rather than compared
+    against a constant, because the constant no longer lives here."""
+    lib = _FakeLibrary({"AnkerX": {"cell": [_cell_template()]}})
+    floor = 0.010
+    made = W.seat_cells(lib, "AnkerX", [(0.02, 0.01, 0.0)], floor, rng(),
+                        _MAT_CFG)
+    lo, _ = made[0].world_bbox()
+    assert lo[2] > floor + _PROXY_LIFT
+    assert lo[2] - floor == pytest.approx(_SEATED_CELL_LIFT, abs=1e-12)
 
 
-def test_the_seating_ladder_is_strictly_ordered_and_stays_sub_millimetre(W):
-    """All five offsets, together, as one statement. They are hand-tuned
-    fractions of a millimetre and there is no other place where their mutual
-    order is written down."""
-    ladder = [("pcb", _PCB_LIFT), ("proxy", _PROXY_LIFT),
-              ("tape/label", 0.0011), ("adhesive", 0.0012),
-              ("seated cell", W.SEATED_CELL_LIFT), ("foam", 0.0022)]
+def test_the_seating_ladder_holds_in_the_geometry_world_py_actually_builds(W):
+    """The whole ladder, as one statement, measured off six real objects.
+
+    `bay.assert_seating_ladder_ordered` proves the TABLE is ordered;
+    `tests/test_bay.py` proves it fails when perturbed. Neither says anything
+    about whether world.py still reads it - which is exactly the failure mode
+    this move introduces, and exactly what the old literals were. So this
+    builds one of everything at a common floor and reads the ordering back out
+    of the geometry."""
+    floor = 0.010
+    _STUB_BPY.reset()
+    board, _ = W.build_pcb((0, 0, 0.1, 0.06), floor, rng(),
+                           module_placement=(0.02, 0.03, 0.02, 0.02))
+    proxy, _ = W.build_bay_proxy((0.07, 0.03, 0.02, 0.02), floor, rng())
+    obs = {m["kind"]: o for o, m in W.build_obstructions(
+        [types.SimpleNamespace(kind=k, x=0.0, y=0.0, w=0.01, h=0.008,
+                               rot_deg=0.0)
+         for k in ("tape", "label", "adhesive", "foam")], floor, rng())}
+    lib = _FakeLibrary({"AnkerX": {"cell": [_cell_template()]}})
+    cell = W.seat_cells(lib, "AnkerX", [(0.02, 0.01, 0.0)], floor, rng(),
+                        _MAT_CFG)[0]
+
+    ladder = [
+        ("pcb", board.location[2]),
+        ("bay_proxy", proxy.location[2]),
+        ("tape", obs["tape"].location[2]),
+        ("label", obs["label"].location[2]),
+        ("adhesive", obs["adhesive"].location[2]),
+        ("seated_cell", cell.world_bbox()[0][2]),
+        ("foam", obs["foam"].location[2]),
+    ]
     zs = [z for _, z in ladder]
-    assert zs == sorted(zs), f"the seating ladder is out of order: {ladder}"
-    assert all(0 < z < 0.003 for z in zs), (
+    assert zs == sorted(zs), (
+        f"the built geometry is out of ladder order: "
+        f"{[(n, z - floor) for n, z in ladder]}")
+    assert all(0 < z - floor < 0.003 for z in zs), (
         "these are clearances, not stand-offs; a millimetre-scale gap would "
         "be visible from overhead against an 18mm cell")
+    proxy_z = proxy.location[2]
+    for name, z in ladder[2:]:
+        assert z > proxy_z, (
+            f"{name} was built at {z}, not strictly above the proxy plane at "
+            f"{proxy_z} that carries the placement_area label")
+
+
+def test_an_obstruction_kind_world_py_cannot_shape_stops_the_build(W):
+    """`build_obstructions`' shape dispatch ends in a bare `else:  # label`,
+    so a fifth kind added to `bay.sample_obstructions` without a matching
+    branch here would render as a printed label - silently and plausibly, the
+    same shape as the renamed catalog key that once stopped a builder
+    building. `bay.obstruction_z_scale` is called BEFORE that dispatch and
+    raises, so the build stops instead.
+
+    This is the one behavioural difference the ladder move makes, and it is on
+    input `sample_obstructions` cannot currently produce (pinned by
+    `test_the_obstruction_kinds_match_bay_sample_obstructions`)."""
+    pose = types.SimpleNamespace(kind="gasket", x=0.0, y=0.0, w=0.01, h=0.008,
+                                 rot_deg=0.0)
+    with pytest.raises(ValueError, match="not an obstruction kind"):
+        W.build_obstructions([pose], 0.010, rng())
+
+
+@pytest.mark.parametrize("func", ["build_pcb", "build_bay_proxy",
+                                  "build_obstructions", "seat_cells"])
+def test_every_bay_builder_asks_bay_for_its_height(func):
+    """Source-level, because this is the property the move exists to create:
+    world.py BUILDS, bay.py DECIDES. Each of these four used to carry its own
+    float literal. A builder that quietly goes back to one would still pass
+    every geometric test above - they would simply be testing the literal."""
+    fn = _function(WORLD_PY, func)
+    calls = [n for n in ast.walk(fn)
+             if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+             and n.func.attr == "seat_z"
+             and getattr(n.func.value, "id", None) == "bay"]
+    assert calls, (
+        f"world.{func} no longer calls bay.seat_z; its seating height has "
+        f"drifted back onto the untestable side of the bpy line")
 
 
 def test_the_jig_backdrop_sits_below_the_plate_it_supports(W):
@@ -1883,7 +1971,7 @@ def test_seated_cells_rest_on_the_lift_above_the_floor(W):
     assert len(made) == 2
     for obj in made:
         lo, _ = obj.world_bbox()
-        assert lo[2] == pytest.approx(floor + W.SEATED_CELL_LIFT, abs=1e-9)
+        assert lo[2] == pytest.approx(floor + _SEATED_CELL_LIFT, abs=1e-9)
 
 
 def test_a_seated_cell_lands_on_the_seat_it_was_given(W):
@@ -2679,18 +2767,36 @@ def test_the_only_exception_handler_in_the_module_is_the_bmesh_fallback():
         f"_crown_lid's documented bmesh-signature fallback is expected")
 
 
-def test_world_is_the_only_place_these_seating_constants_are_defined():
-    """A second copy of JIG_LIFT or SEATED_CELL_LIFT anywhere else would drift
-    from this one silently - the two would agree until one was tuned."""
+def test_each_seating_constant_is_defined_in_exactly_one_place():
+    """A second copy of any of these anywhere else would drift from the first
+    silently - the two would agree until one was tuned.
+
+    The split is the point. `JIG_LIFT`/`JIG_BACKDROP_GAP` are world.py's: they
+    are about the jig plate's relationship to the backdrop, which is a
+    rendering artefact (a coplanar plate renders BLACK) with no bay geometry
+    in it at all. `SEATING_LADDER`/`PCB_THICKNESS_M`/`MAX_SEAT_OFFSET_M` are
+    bay.py's: they decide what occludes what on the bay floor, which is the
+    `placement_area` label's whole meaning, and they used to be literals here.
+    `SEATED_CELL_LIFT` is gone entirely - it is the ladder's `seated_cell`
+    rung, and a world.py copy of it is exactly the drift this forbids."""
     hits = []
+    names = ("JIG_LIFT", "JIG_BACKDROP_GAP", "SEATED_CELL_LIFT",
+             "SEATING_LADDER", "PCB_THICKNESS_M", "MAX_SEAT_OFFSET_M",
+             "BAY_PROXY_RUNG")
     for path in (ROOT / "recog").rglob("*.py"):
         src = path.read_text(encoding="utf-8")
-        for name in ("JIG_LIFT", "SEATED_CELL_LIFT", "JIG_BACKDROP_GAP"):
-            for node in ast.walk(ast.parse(src)):
-                if isinstance(node, ast.Assign) and any(
-                        isinstance(t, ast.Name) and t.id == name
-                        for t in node.targets):
-                    hits.append((path.name, name))
-    assert sorted(hits) == [("world.py", "JIG_BACKDROP_GAP"),
-                            ("world.py", "JIG_LIFT"),
-                            ("world.py", "SEATED_CELL_LIFT")]
+        for node in ast.walk(ast.parse(src)):
+            targets = []
+            if isinstance(node, ast.Assign):
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign):
+                targets = [node.target]
+            for t in targets:
+                if isinstance(t, ast.Name) and t.id in names:
+                    hits.append((path.name, t.id))
+    assert sorted(hits) == [("bay.py", "BAY_PROXY_RUNG"),
+                            ("bay.py", "MAX_SEAT_OFFSET_M"),
+                            ("bay.py", "PCB_THICKNESS_M"),
+                            ("bay.py", "SEATING_LADDER"),
+                            ("world.py", "JIG_BACKDROP_GAP"),
+                            ("world.py", "JIG_LIFT")]

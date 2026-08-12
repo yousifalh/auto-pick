@@ -30,7 +30,7 @@ import bpy
 from mathutils import Matrix, Vector
 
 from . import assets as A
-from .bay import bay_edge
+from . import bay
 from .config import CELL_FORMATS, CELL_H_MM, CELL_W_MM
 from .lightrig import off_axis_placement, shadow_direction
 from .materials import apply_to_object, for_role, set_input, rng_range
@@ -762,10 +762,10 @@ def _assert_procedural_tray_geometry(entry: dict, case, lid, cell) -> None:
     assert ix0 <= bx0 <= bx1 <= ix1 and iy0 <= by0 <= by1 <= iy1, (
         f"module_bay_mm {entry['module_bay_mm']} is not contained in "
         f"interior_mm {entry['interior_mm']}")
-    # bay_edge() raises ValueError unless module_bay_mm is a full-span
+    # bay.bay_edge() raises ValueError unless module_bay_mm is a full-span
     # strip flush against EXACTLY one edge of interior_mm - reaching the
     # next line already proves "shares exactly one interior edge".
-    bay_edge(tuple(entry["interior_mm"]), tuple(entry["module_bay_mm"]))
+    bay.bay_edge(tuple(entry["interior_mm"]), tuple(entry["module_bay_mm"]))
 
     # ---- 2/3/4/5. bpy-measured checks on the built geometry ------------ #
     tol = _PROC_TRAY_TOL_MM
@@ -1083,6 +1083,65 @@ def build_procedural_tray(entry: dict) -> Dict[str, list]:
     return {"case": [case], "case_lid": [lid], "cell": [cell]}
 
 
+# --------------------------------------------------------------------------- #
+#  the seating ladder, checked at build time
+#
+#  `bay.SEATING_LADDER` decides every height in the bay and
+#  `bay.assert_seating_ladder_ordered` re-checks the table on every
+#  `bay.seat_z` call, so a perturbed offset raises there. That does not help
+#  if THIS module stops asking and goes back to a literal - which is precisely
+#  what it used to do, with the ordering restated in three docstrings and
+#  enforced nowhere. So the two helpers below re-derive the proxy plane from
+#  the ladder and check the number that actually reached the geometry, in the
+#  same spirit as `_assert_procedural_tray_geometry` and
+#  `_assert_seat_cell_footprint`: assert the built thing, not the input.
+# --------------------------------------------------------------------------- #
+
+def _assert_clears_bay_proxy(what: str, floor_z: float, z: float) -> None:
+    """Assert `what` is seated strictly above the plane carrying the
+    `placement_area` label, and so occludes it.
+
+    Anything at or below the proxy loses the z-fight, or loses outright, and
+    `annotate.boxes_from_mask` goes on reporting that floor as free while the
+    object visibly sits on it. There is no downstream check for this: the
+    render, the index pass and the manifest all agree with each other and all
+    three are wrong. Runs on every obstruction and every seated cell built.
+    """
+    proxy_z = bay.seat_z(floor_z, bay.BAY_PROXY_RUNG)
+    assert z > proxy_z, (
+        f"{what} is seated at z={z:.6f} on a cavity floor of {floor_z:.6f}, "
+        f"which is not strictly above the bay proxy plane at {proxy_z:.6f}. "
+        f"It would not occlude the proxy, so placement_area would keep "
+        f"claiming that floor is free while this object sits on it - "
+        f"silently, in the render and the manifest alike. Heights come from "
+        f"bay.seat_z; a literal here is how this drifts.")
+
+
+def _assert_board_straddles_bay_proxy(floor_z: float, z: float,
+                                      thickness: float) -> None:
+    """Assert the module board rests ON the cavity floor and its top face
+    clears the bay proxy.
+
+    The board is the one thing in the bay seated BELOW the proxy, and that is
+    deliberate: it is built about its own centre and has to rest on the floor
+    like the cells do, so it occludes through its thickness rather than
+    through its seat. Both halves of that have to hold - a board floating
+    above the floor is visible from overhead, and a board thinner than the
+    proxy's own offset would be occluded BY the placement area it borders.
+    """
+    proxy_z = bay.seat_z(floor_z, bay.BAY_PROXY_RUNG)
+    assert math.isclose(z - thickness / 2.0, floor_z, abs_tol=1e-12), (
+        f"the module board's underside is at {z - thickness / 2.0:.6f}, not "
+        f"on the cavity floor at {floor_z:.6f}: a {thickness:.4f}m board "
+        f"built about its centre rests on the floor only when it is seated "
+        f"at floor + {thickness / 2.0:.4f}")
+    assert z + thickness / 2.0 > proxy_z, (
+        f"the module board's top face at {z + thickness / 2.0:.6f} does not "
+        f"clear the bay proxy at {proxy_z:.6f}, so along the edge the board "
+        f"and the placement rectangle share, the proxy occludes the board "
+        f"rather than the other way round")
+
+
 def build_pcb(bounds_xy, floor_z: float, rng: random.Random,
              module_placement=None, rot_deg: float = 0.0):
     """
@@ -1101,13 +1160,19 @@ def build_pcb(bounds_xy, floor_z: float, rng: random.Random,
     `matrix_world` rather than `rotation_euler` for the same reason
     `assets.place_item` does - see its own comment.
 
-    Omit `module_placement` and the board is centred, which is what this
-    function did before and what every real photograph contradicts.
-    Centring is box-safe - boxes_from_mask takes min/max of visible
-    pixels, so a hole in the middle of a case does not move its box - but
-    it is not what the detector should be learning to see. `rot_deg`
-    still applies in this path, so the centred fallback also turns with
-    the case rather than staying axis-aligned against a rotated one.
+    Omit `module_placement` and the board is centred instead, from
+    `bay.fallback_module_placement` - which draws that rectangle on the
+    bpy-free side, beside the anchored path's `bay.module_world_placement`,
+    rather than here. `rot_deg` still applies in this path, so the centred
+    fallback also turns with the case rather than staying axis-aligned
+    against a rotated one.
+
+    The board's own Z is `bay.seat_z(floor_z, "pcb")` and its thickness
+    `bay.PCB_THICKNESS_M`; the two are coupled (a board built about its
+    centre rests on the floor only at half its thickness) and
+    `_assert_board_straddles_bay_proxy` checks that coupling on every
+    build. See `bay`'s SEATING LADDER section for why the board is the one
+    thing in the bay seated BELOW the plane carrying `placement_area`.
 
     `floor_z` is the CAVITY FLOOR (catalog.json's tray_floor_mm, converted
     to metres by scene.py), not the assembly's top. Until task 3 this took
@@ -1118,20 +1183,17 @@ def build_pcb(bounds_xy, floor_z: float, rng: random.Random,
 
     Returns (board_object, drawn_meta). The caller assigns pass_index.
     """
-    x0, y0, x1, y1 = bounds_xy
     if module_placement is not None:
         cx, cy, w, h = module_placement
     else:
-        w = (x1 - x0) * rng.uniform(0.55, 0.80)
-        h = (y1 - y0) * rng.uniform(0.20, 0.38)
-        cx = (x0 + x1) / 2 + rng.uniform(-0.004, 0.004)
-        cy = (y0 + y1) / 2 + rng.uniform(-0.010, 0.010)
+        cx, cy, w, h = bay.fallback_module_placement(bounds_xy, rng)
 
-    bpy.ops.mesh.primitive_cube_add(
-        size=1, location=(cx, cy, floor_z + 0.0008))
+    board_z = bay.seat_z(floor_z, "pcb")
+    _assert_board_straddles_bay_proxy(floor_z, board_z, bay.PCB_THICKNESS_M)
+    bpy.ops.mesh.primitive_cube_add(size=1, location=(cx, cy, board_z))
     board = bpy.context.active_object
     board.name = "PCB"
-    board.scale = (w, h, 0.0016)
+    board.scale = (w, h, bay.PCB_THICKNESS_M)
     bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
     board.pass_index = 0          # scene.py overrides this
 
@@ -1156,6 +1218,12 @@ def build_pcb(bounds_xy, floor_z: float, rng: random.Random,
     set_input(cb, "Base Color", (0.05, 0.05, 0.055, 1.0))
     set_input(cb, "Roughness", 0.55)
 
+    # Everything mounted on the board sits on its TOP face. The board rests
+    # on the cavity floor (see _assert_board_straddles_bay_proxy), so that is
+    # the floor plus one board thickness - NOT another rung of the seating
+    # ladder: these are relative to the board, and move with it.
+    board_top_z = floor_z + bay.PCB_THICKNESS_M
+
     for k in range(drawn["n_components"]):
         cw = w * rng.uniform(0.06, 0.20)
         ch = h * rng.uniform(0.15, 0.45)
@@ -1164,7 +1232,7 @@ def build_pcb(bounds_xy, floor_z: float, rng: random.Random,
             size=1,
             location=(cx + rng.uniform(-w / 2 + cw, w / 2 - cw),
                       cy + rng.uniform(-h / 2 + ch, h / 2 - ch),
-                      floor_z + 0.0016 + cz / 2))
+                      board_top_z + cz / 2))
         c = bpy.context.active_object
         c.name = f"PCBComp{k}"
         c.scale = (cw, ch, cz)
@@ -1202,7 +1270,7 @@ def build_pcb(bounds_xy, floor_z: float, rng: random.Random,
             size=1,
             location=(cx - span / 2 + port_w * 1.3 * (k + 0.5),
                       cy + h / 2 - port_h,
-                      floor_z + 0.0016 + port_z / 2))
+                      board_top_z + port_z / 2))
         p = bpy.context.active_object
         p.name = f"PCBPort{k}"
         p.scale = (port_w, port_h, port_z)
@@ -1222,7 +1290,7 @@ def build_pcb(bounds_xy, floor_z: float, rng: random.Random,
     bpy.ops.mesh.primitive_cylinder_add(
         radius=rng.uniform(0.004, 0.007), depth=0.006,
         location=(cx + rng.uniform(-w / 4, w / 4),
-                  cy + rng.uniform(-h / 4, h / 4), floor_z + 0.0016 + 0.003))
+                  cy + rng.uniform(-h / 4, h / 4), board_top_z + 0.003))
     ind = bpy.context.active_object
     ind.name = "PCBInductor"
     ind.pass_index = 0
@@ -1277,13 +1345,15 @@ def build_bay_proxy(placement, floor_z: float, rng: random.Random,
     case and keeps sharing its edge with the module rectangle rather than
     drifting apart under rotation.
 
-    Sits 0.9mm above the cavity floor (`floor_z + 0.0009`), only 0.1mm
-    above the PCB's own 0.8mm offset (`build_pcb`'s `floor_z + 0.0008`), so
-    it never z-fights with the tray or the board. This is the number every
-    OTHER object placed in the bay - a seated cell, an obstruction,
-    anything added later - must clear: it has to rest strictly ABOVE
-    `floor_z + 0.0009` to occlude this proxy at all. Something placed at or
-    below it loses the z-fight (or loses outright), and
+    Sits at `bay.seat_z(floor_z, "bay_proxy")` - the `bay_proxy` rung of
+    `bay.SEATING_LADDER`, 0.9mm above the cavity floor, only 0.1mm above
+    the board's own seat - so it never z-fights with the tray or the board.
+    This is the rung every OTHER object placed in the bay - a seated cell,
+    an obstruction, anything added later - must clear: it has to rest
+    strictly ABOVE this plane to occlude it at all, which is what
+    `bay.assert_seating_ladder_ordered` and `_assert_clears_bay_proxy`
+    between them require. Something placed at or below it loses the
+    z-fight (or loses outright), and
     `annotate.boxes_from_mask`/`masks_from_index` would keep reporting
     that floor as free placement area while the object sits visibly on top
     of it - silently, since nothing downstream can detect the failure from
@@ -1301,7 +1371,7 @@ def build_bay_proxy(placement, floor_z: float, rng: random.Random,
     """
     cx, cy, w, h = placement
     bpy.ops.mesh.primitive_plane_add(
-        size=1, location=(cx, cy, floor_z + 0.0009))
+        size=1, location=(cx, cy, bay.seat_z(floor_z, bay.BAY_PROXY_RUNG)))
     proxy = bpy.context.active_object
     proxy.name = "BayProxy"
     proxy.scale = (w, h, 1.0)
@@ -1340,10 +1410,13 @@ def build_obstructions(poses, floor_z: float, rng: random.Random):
 
     `floor_z` is the tray's cavity floor (catalog.json's tray_floor_mm,
     converted to metres by scene.py), the same surface `build_bay_proxy`
-    seats its plane on - these offsets (+0.0011/+0.0012/+0.0022) are
-    relative to it and must stay strictly above the proxy's own
-    `floor_z + 0.0009`, or an obstruction would lose the z-fight and
-    `placement_area` would keep reporting that floor as free.
+    seats its plane on. Each kind's seat and its Z scale both come from
+    `bay` - `seat_z` off the seating ladder and `obstruction_z_scale`
+    beside `sample_obstructions`, which already decided w and h - so this
+    function chooses a primitive and a surface and nothing else. Every
+    seat is checked against the proxy's own rung as it is built: an
+    obstruction at or below it would lose the z-fight and `placement_area`
+    would keep reporting that floor as free.
 
     Each gets its own pass_index from scene.py, so each is an instance.
     They sit ON the bay proxy and therefore occlude it, which is what makes
@@ -1351,29 +1424,37 @@ def build_obstructions(poses, floor_z: float, rng: random.Random):
     """
     made = []
     for i, p in enumerate(poses):
+        # Drawn BEFORE the shape dispatch below, and per kind: adhesive and
+        # foam consume exactly one draw each, tape and label none. That is
+        # `obstruction_z_scale`'s contract, and it is what keeps this scene's
+        # shared rng stream identical to the literals this replaced.
+        z_scale = bay.obstruction_z_scale(p.kind, rng)
+        seat = bay.seat_z(floor_z, p.kind)
+        _assert_clears_bay_proxy(f"obstruction {i} ({p.kind})", floor_z, seat)
+
         if p.kind == "adhesive":
             bpy.ops.mesh.primitive_uv_sphere_add(
-                radius=p.w / 2, location=(p.x, p.y, floor_z + 0.0012))
+                radius=p.w / 2, location=(p.x, p.y, seat))
             o = bpy.context.active_object
-            o.scale = (1.0, p.h / max(p.w, 1e-9), rng.uniform(0.35, 0.7))
+            o.scale = (1.0, p.h / max(p.w, 1e-9), z_scale)
             base, rough, alpha = (0.92, 0.92, 0.90), 0.30, 0.85
         elif p.kind == "foam":
             bpy.ops.mesh.primitive_cube_add(
-                size=1, location=(p.x, p.y, floor_z + 0.0022))
+                size=1, location=(p.x, p.y, seat))
             o = bpy.context.active_object
-            o.scale = (p.w, p.h, rng.uniform(0.002, 0.005))
+            o.scale = (p.w, p.h, z_scale)
             base, rough, alpha = (0.88, 0.88, 0.86), 0.95, 1.0
         elif p.kind == "tape":
             bpy.ops.mesh.primitive_plane_add(
-                size=1, location=(p.x, p.y, floor_z + 0.0011))
+                size=1, location=(p.x, p.y, seat))
             o = bpy.context.active_object
-            o.scale = (p.w, p.h, 1.0)
+            o.scale = (p.w, p.h, z_scale)
             base, rough, alpha = (0.95, 0.95, 0.93), 0.45, 1.0
         else:  # label
             bpy.ops.mesh.primitive_plane_add(
-                size=1, location=(p.x, p.y, floor_z + 0.0011))
+                size=1, location=(p.x, p.y, seat))
             o = bpy.context.active_object
-            o.scale = (p.w, p.h, 1.0)
+            o.scale = (p.w, p.h, z_scale)
             base, rough, alpha = (0.90, 0.89, 0.84), 0.70, 1.0
 
         o.name = f"Obs{i}_{p.kind}"
@@ -1406,17 +1487,16 @@ def build_obstructions(poses, floor_z: float, rng: random.Random):
 #  a seated cell matches the loose cells the detector already sees.
 # --------------------------------------------------------------------------- #
 
-# Clearance above the tray's cavity floor (floor_z), matching
-# build_bay_proxy's own floor_z + 0.0009 offset plus a further 0.3mm - the
-# SAME margin build_obstructions gives an adhesive blob. A seated cell's
-# bottom has to sit strictly ABOVE the proxy's floor_z, not merely at or
-# below it: the proxy is what carries the placement_area label, and
-# annotate.boxes_from_mask reports only what stayed VISIBLE in the id pass.
-# A cell at or below the proxy's floor_z would lose the z-fight (or lose
-# outright) and placement_area would still claim that floor is free while a
-# cell visibly occupies it - the exact failure this task exists to prevent,
-# silently, because nothing downstream can detect it from the mask alone.
-SEATED_CELL_LIFT = 0.0012          # metres above the cavity floor
+# SEATED_CELL_LIFT is retired as a world.py constant: it is the
+# `seated_cell` rung of `bay.SEATING_LADDER`, reached through
+# `bay.seat_z(floor_z, "seated_cell")` like every other height in the bay.
+# It sat here, as a literal, while bay.py decided the cell's footprint - the
+# XY/Z split this module used to be on the wrong side of. Its value and its
+# reason are unchanged: a seated cell's bottom has to sit strictly ABOVE the
+# proxy that carries the placement_area label, because
+# annotate.boxes_from_mask reports only what stayed VISIBLE in the id pass,
+# and a cell at or below the proxy would leave placement_area claiming that
+# floor is free while a cell visibly occupies it.
 
 # SEAT_CELL_FOOTPRINT_M is retired: it named one hardcoded format. Every
 # call site now looks up CELL_FORMATS[cell_format] directly, keyed by
@@ -1481,10 +1561,12 @@ def seat_cells(library, asset: str, seats, floor_z: float, rng: random.Random,
     correctly orients every loose cell in the dataset, and a seated cell has
     to end up in the exact same resting orientation.
 
-    Rests each cell's bottom at `floor_z + SEATED_CELL_LIFT`, strictly above
-    the bay proxy's own `floor_z + 0.0009` (`build_bay_proxy`) - see
-    SEATED_CELL_LIFT's comment for why that separation is the entire
-    mechanism this function exists for. Occlusion does the rest:
+    Rests each cell's bottom at `bay.seat_z(floor_z, "seated_cell")`,
+    strictly above the bay proxy's own rung (`build_bay_proxy`) - see
+    `bay`'s SEATING LADDER section for why that separation is the entire
+    mechanism this function exists for, and `_assert_clears_bay_proxy`
+    below for it being required of the seat actually used, not just of the
+    table it came from. Occlusion does the rest:
     annotate.boxes_from_mask reports only what stayed visible in the id
     pass, so placement_area shrinks to the free floor around the seated
     cells with no mask arithmetic anywhere, the same trick
@@ -1498,6 +1580,9 @@ def seat_cells(library, asset: str, seats, floor_z: float, rng: random.Random,
     if not templates:
         return []
     template = templates[0]
+
+    seat = bay.seat_z(floor_z, "seated_cell")
+    _assert_clears_bay_proxy("a seated cell", floor_z, seat)
 
     made = []
     for i, (x, y, rot_deg) in enumerate(seats):
@@ -1523,7 +1608,7 @@ def seat_cells(library, asset: str, seats, floor_z: float, rng: random.Random,
         _assert_seat_cell_footprint(asset, cell_format, lo, hi_obj)
         centre = Vector(((lo.x + hi_obj.x) / 2, (lo.y + hi_obj.y) / 2, 0.0))
         dup.location += Vector((x - centre.x, y - centre.y,
-                               floor_z + SEATED_CELL_LIFT - lo.z))
+                               seat - lo.z))
         bpy.context.view_layer.update()
 
         # Spin about the cell's OWN centre (x, y) - a Z-axis rotation, so

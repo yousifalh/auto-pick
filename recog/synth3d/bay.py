@@ -6,6 +6,14 @@ Blender. world.py and scene.py depend on Blender and cannot be tested; they
 call into here for the numbers and only apply the result. Keeping the arithmetic
 on this side of the line is what makes the bay geometry checkable at all.
 
+That line held for XY and not for Z until 2026-08-12: this module decided every
+footprint while world.py decided every height, including the seating offsets
+that ARE the `placement_area` occlusion mechanism. See the SEATING LADDER
+section below - the ladder, `fallback_module_placement` and
+`obstruction_z_scale` are the Z half, moved here so the same tests can reach
+them. What stayed in world.py is construction: which primitive, which
+material, which parent.
+
 Units follow the caller. `module_bay_from_bounds` is used on millimetre CAD
 bounds at conversion time and on metre scene bounds at render time; it is scale
 free.
@@ -384,6 +392,241 @@ def placement_world_placement(interior_mm: Rect, bay_mm: Rect,
     return wcx, wcy, w, h
 
 
+def fallback_module_placement(bounds_xy: Rect, rng: random.Random
+                              ) -> Tuple[float, float, float, float]:
+    """The module board's centre and size when there is no measured bay.
+
+    Returns `(cx, cy, w, h)` in the SAME frame and the SAME shape as
+    `module_world_placement`, so `world.build_pcb` consumes the two
+    interchangeably: the anchored path gets the strip the CAD actually
+    reserves, this one gets a plausible board drawn inside `bounds_xy` (the
+    cartridge's own world-space footprint).
+
+    This is what `build_pcb` did before `module_bay_mm` existed, and what it
+    still does for any asset whose catalog entry has no bay measurement. Every
+    real photograph contradicts it - the module is against one short wall, not
+    in the middle - so it is a fallback, not an alternative. It stays because
+    a centred board is box-safe (`annotate.boxes_from_mask` takes min/max of
+    visible pixels, so a hole in the middle of a case does not move its box),
+    which makes it survivable in a way a wrongly-POSITIONED board would not be.
+
+    The four draws are taken in this exact order - width fraction, height
+    fraction, X jitter, Y jitter - because `build_pcb` shares one `rng` with
+    every other draw in the scene: reordering them, or taking one draw where
+    there used to be four, silently resamples the board colour, its component
+    count and everything downstream in that scene's stream. Only the
+    un-anchored path draws at all; the anchored path must consume nothing.
+    """
+    x0, y0, x1, y1 = bounds_xy
+    w = (x1 - x0) * rng.uniform(0.55, 0.80)
+    h = (y1 - y0) * rng.uniform(0.20, 0.38)
+    cx = (x0 + x1) / 2 + rng.uniform(-0.004, 0.004)
+    cy = (y0 + y1) / 2 + rng.uniform(-0.010, 0.010)
+    return cx, cy, w, h
+
+
+# =========================================================================== #
+#  THE SEATING LADDER - what occludes what on the bay floor
+#
+#  `world.build_bay_proxy` builds a flat plane carrying the `placement_area`
+#  label, and `annotate.boxes_from_mask` reports only the pixels of it that
+#  stayed VISIBLE in the index pass. That is the whole mechanism: anything
+#  resting in the bay hides its own patch of proxy and so subtracts itself
+#  from `placement_area`, with no mask arithmetic anywhere - which is why the
+#  label means "the currently FREE floor" rather than "the nominal bay".
+#
+#  That mechanism is nothing but an ORDERING. Every object in the bay is built
+#  at a small offset above the cavity floor (`floor_z` - catalog.json's
+#  tray_floor_mm, converted to metres by scene.py), and an object seated at or
+#  below the proxy's own offset loses the z-fight, or loses outright, and
+#  stops occluding it. The mask then keeps reporting that floor as free while
+#  the object visibly sits on it. Nothing downstream can detect that: the
+#  render, the index pass and the manifest all agree with each other, and all
+#  three are wrong. Every `placement_area` label in every dataset rests on
+#  these six numbers being in this order.
+#
+#  Which is why they live here. They used to be six literals spread across
+#  three bpy-only builders plus a module constant in world.py, with the
+#  ordering restated in three docstrings and enforced nowhere - decided on the
+#  side of the bpy line no test can reach, while bay.py decided every
+#  footprint. This is one table, checked by `assert_seating_ladder_ordered`
+#  on every `seat_z` call, so a perturbed offset stops the build instead of
+#  quietly re-labelling every dataset generated afterwards.
+#
+#  These are CLEARANCES, not stand-offs: fractions of a millimetre, invisible
+#  from overhead against an 18mm cell (see world.JIG_LIFT's note for what a
+#  clearance of ZERO costs). They are hand-tuned. Do not round them off.
+# =========================================================================== #
+
+# Ordered from the cavity floor up. Each value is the offset in metres above
+# `floor_z` at which world.py builds that object's ORIGIN - not its base:
+# `pcb` is a slab built about its own centre, and the obstruction primitives
+# are spheres, cubes and planes that straddle their origins too. `seated_cell`
+# is the exception the comment beside it names, and it is the one rung whose
+# offset IS a base, because `world.seat_cells` measures the clone it just laid
+# flat and translates its lowest point onto the seat.
+SEATING_LADDER: Tuple[Tuple[str, float], ...] = (
+    ("pcb",         0.0008),   # world.build_pcb's board  (its CENTRE)
+    ("bay_proxy",   0.0009),   # world.build_bay_proxy - the labelled plane
+    ("tape",        0.0011),   # world.build_obstructions
+    ("label",       0.0011),   # world.build_obstructions
+    ("adhesive",    0.0012),   # world.build_obstructions
+    ("seated_cell", 0.0012),   # world.seat_cells         (the cell's BASE)
+    ("foam",        0.0022),   # world.build_obstructions
+)
+
+# The rung carrying the `placement_area` label. Every rung ABOVE it must clear
+# it strictly; the one rung below it is `pcb`, deliberately - see below.
+BAY_PROXY_RUNG = "bay_proxy"
+
+# world.build_pcb's board thickness, in metres. Load-bearing for the ladder,
+# not a free parameter: the board is built about its centre, so seating it at
+# `pcb` = PCB_THICKNESS_M / 2 is exactly what rests it ON the cavity floor
+# rather than floating it or sinking it, and its TOP face at PCB_THICKNESS_M
+# is what has to clear the proxy so that along the edge the board and the
+# placement rectangle share, the board occludes the proxy and not the reverse.
+# That pair of relations is why `pcb` is the one rung BELOW the proxy and not
+# a violation of the ordering; `assert_seating_ladder_ordered` checks both
+# rather than leaving them to the prose.
+PCB_THICKNESS_M = 0.0016
+
+# Largest offset that still counts as a clearance rather than a stand-off. A
+# millimetre-scale gap between a cell and the floor it is meant to be resting
+# on would be visible from overhead against an 18mm cell, and would be a
+# modelling error dressed up as a z-fighting fix.
+MAX_SEAT_OFFSET_M = 0.003
+
+
+def assert_seating_ladder_ordered(ladder: Optional[
+        Tuple[Tuple[str, float], ...]] = None) -> None:
+    """Raise ValueError unless the seating ladder still holds.
+
+    `ValueError`, not `assert`: `python -O` strips assertions, and an
+    ordering that silently stops being checked is the failure this exists to
+    rule out. `world.py`'s build-time `_assert_*` helpers keep the module's
+    own `assert` idiom and check the numbers actually reaching the geometry;
+    this checks the table they come from. Both, deliberately - a correct
+    table does not help if world.py stops asking for it, and a build-time
+    check on world.py's side does not help if the table itself is perturbed.
+
+    The invariants, in the order they are checked:
+
+      1. no rung is named twice, and `bay_proxy` appears exactly once - the
+         ladder is keyed by name and a duplicate would make `seat_offset`
+         return whichever copy came first;
+      2. the table is non-decreasing AS WRITTEN, so reading it top to bottom
+         is reading the physical stack bottom to top. Ties are legal and two
+         are real (tape/label, adhesive/seated_cell): coplanar objects at the
+         same offset never occlude EACH OTHER, and nothing requires them to;
+      3. every offset is positive and under MAX_SEAT_OFFSET_M;
+      4. every rung above `bay_proxy` clears it STRICTLY. This is the one the
+         `placement_area` label rests on;
+      5. every rung below `bay_proxy` is strictly below it;
+      6. `pcb`, the only such rung, is at PCB_THICKNESS_M / 2 - resting the
+         board on the cavity floor - and its top face clears the proxy.
+    """
+    ladder = SEATING_LADDER if ladder is None else ladder
+    names = [n for n, _ in ladder]
+    zs = [z for _, z in ladder]
+
+    if len(set(names)) != len(names):
+        raise ValueError(
+            f"the seating ladder names a rung twice ({names}); seat_offset "
+            f"would return whichever copy came first")
+    if names.count(BAY_PROXY_RUNG) != 1:
+        raise ValueError(
+            f"the seating ladder must contain exactly one {BAY_PROXY_RUNG!r} "
+            f"rung - it is the plane every other rung is ordered against - "
+            f"but it has {names.count(BAY_PROXY_RUNG)}")
+    if zs != sorted(zs):
+        raise ValueError(
+            f"the seating ladder is out of order as written: {list(ladder)}. "
+            f"It is read top to bottom as the physical stack bottom to top, "
+            f"so a table that does not sort is a table nobody can read")
+    bad = [(n, z) for n, z in ladder
+           if not (0.0 < z < MAX_SEAT_OFFSET_M)]
+    if bad:
+        raise ValueError(
+            f"seating offsets must be clearances in (0, {MAX_SEAT_OFFSET_M}) "
+            f"metres, not stand-offs: {bad}")
+
+    i = names.index(BAY_PROXY_RUNG)
+    proxy_z = zs[i]
+    not_clearing = [(n, z) for n, z in ladder[i + 1:] if not z > proxy_z]
+    if not_clearing:
+        raise ValueError(
+            f"{not_clearing} do not rest STRICTLY above the bay proxy at "
+            f"+{proxy_z}m, so they would not occlude it - `placement_area` "
+            f"would keep reporting that floor as free while they visibly sit "
+            f"on it, in the render, the index pass and the manifest alike")
+    not_below = [(n, z) for n, z in ladder[:i] if not z < proxy_z]
+    if not_below:
+        raise ValueError(
+            f"{not_below} are listed below the bay proxy but are not below "
+            f"it at +{proxy_z}m")
+
+    pcb_z = dict(ladder).get("pcb")
+    if pcb_z is not None:
+        if pcb_z != PCB_THICKNESS_M / 2.0:
+            raise ValueError(
+                f"the pcb rung is +{pcb_z}m but the board is "
+                f"{PCB_THICKNESS_M}m thick and built about its CENTRE, so "
+                f"anything other than +{PCB_THICKNESS_M / 2.0}m floats it "
+                f"above the cavity floor or sinks it through")
+        if not pcb_z + PCB_THICKNESS_M / 2.0 > proxy_z:
+            raise ValueError(
+                f"the board's top face at "
+                f"+{pcb_z + PCB_THICKNESS_M / 2.0}m does not clear the bay "
+                f"proxy at +{proxy_z}m, so along the edge the board and the "
+                f"placement rectangle share, the proxy would occlude the "
+                f"board rather than the other way round")
+
+
+def seat_offset(name: str) -> float:
+    """`name`'s rung of the seating ladder, in metres above the cavity floor.
+
+    Raises ValueError on an unknown rung rather than returning a default. A
+    guarded `.get(...)` on a renamed key is how this project once had a
+    builder quietly stop building geometry; here it would seat an object on
+    the floor itself, where it would z-fight with the tray and stop occluding
+    the proxy - the exact silent failure the ladder exists to prevent.
+    """
+    for rung, z in SEATING_LADDER:
+        if rung == name:
+            return z
+    raise ValueError(
+        f"{name!r} is not a rung of the seating ladder; known rungs are "
+        f"{[n for n, _ in SEATING_LADDER]}")
+
+
+def seat_z(floor_z: float, name: str) -> float:
+    """The world Z at which world.py builds `name`, given the cavity floor.
+
+    This is the call world.py makes instead of knowing a number: `floor_z`
+    is catalog.json's tray_floor_mm in metres (scene.py converts it), and the
+    return value is where the primitive's origin goes.
+
+    Checks the whole ladder on every call. It is seven comparisons against a
+    seven-row table, taken a handful of times per bay, and it means a
+    perturbed offset stops the FIRST build rather than the first person to
+    look at pixels months later - which is how four of this project's five
+    historical silent defects were actually found.
+    """
+    assert_seating_ladder_ordered()
+    return floor_z + seat_offset(name)
+
+
+def occludes_bay_proxy(name: str) -> bool:
+    """Whether `name` is seated strictly above the plane carrying the
+    `placement_area` label, and therefore subtracts itself from that label.
+
+    True for every rung except `bay_proxy` itself and `pcb` - the board is
+    seated below the proxy because it rests ON the floor, and occludes
+    through its thickness instead (see PCB_THICKNESS_M).
+    """
+    return seat_offset(name) > seat_offset(BAY_PROXY_RUNG)
+
+
 # =========================================================================== #
 #  OBSTRUCTIONS
 #
@@ -498,6 +741,49 @@ def obstruction_world_poses(poses: List[ObstructionPose], rot_deg: float,
         out.append(ObstructionPose(kind=p.kind, x=wx, y=wy, w=p.w, h=p.h,
                                    rot_deg=(p.rot_deg + rot_deg) % 360.0))
     return out
+
+
+def obstruction_z_scale(kind: str, rng: random.Random) -> float:
+    """The Z scale `world.build_obstructions` gives `kind`'s primitive - the
+    third dimension of a piece of foreign matter, the one `ObstructionPose`
+    does not carry.
+
+    `sample_obstructions` decides w and h; this decides the remaining axis,
+    so both halves of an obstruction's geometry are drawn on the bpy-free
+    side. The QUANTITY is the same in every case - the z component of the
+    object's `scale` - but what it multiplies differs with the primitive,
+    which is why this returns a scale rather than a height:
+
+      * `adhesive` is a UV sphere of radius w/2, so this is a dimensionless
+        SQUASH factor: a blob is a flattened dome, not a ball, and 0.35-0.7
+        keeps its height between about a third and two thirds of its width;
+      * `foam` is a unit cube, so this is a THICKNESS in metres - a 2-5mm
+        pad, matching the ones in IMG_4426;
+      * `tape` and `label` are flat planes with no third dimension at all,
+        so their scale is exactly 1.0 and NO random draw is taken. The draw
+        count per obstruction is part of this function's contract:
+        `build_obstructions` shares one `rng` with the rest of the scene, so
+        a draw taken for a kind that used to take none silently resamples
+        everything downstream of it in that stream.
+
+    Raises ValueError on an unknown kind rather than falling through to the
+    plane case. `build_obstructions`' shape dispatch ends in a bare
+    `else:  # label`, so a fifth kind added to `sample_obstructions` without
+    a matching branch there would render as a printed label - silently and
+    plausibly, the same shape as the renamed catalog key that once made a
+    guarded `.get` stop building geometry. `build_obstructions` calls this
+    BEFORE that dispatch, so the build stops instead.
+    """
+    if kind == "adhesive":
+        return rng.uniform(0.35, 0.7)
+    if kind == "foam":
+        return rng.uniform(0.002, 0.005)
+    if kind in ("tape", "label"):
+        return 1.0
+    raise ValueError(
+        f"{kind!r} is not an obstruction kind sample_obstructions produces "
+        f"(adhesive, foam, tape, label), so world.build_obstructions has no "
+        f"shape for it and would silently build it as a printed label")
 
 
 # =========================================================================== #
