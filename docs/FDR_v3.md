@@ -1005,7 +1005,9 @@ which would otherwise add jitter to the deterministic queue invariant.
 `Planner.cycle(snapshot, image)` orchestrates four deterministic stages:
 fuse detections into the twin (ephemeral Battery replacement plus IoU-
 matched Cartridge update), run the extractor on cartridges that lack
-cached placement data, invoke FFDH per cartridge, and walk the packed
+cached placement data, invoke `pack_best_effort` per cartridge (FFDH plus
+two obstacle-tolerant arms, taking whichever places most — §6.3.1; the
+text here read "invoke FFDH" before `d6c46ac`), and walk the packed
 placements in row-major order to assign each its nearest available battery
 under Euclidean pick-to-place distance. The queue is a plain
 `list[PickPlacePose]`; the executor consumes one entry per cycle and
