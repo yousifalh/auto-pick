@@ -471,10 +471,28 @@ def setup_camera(cfg, layout_cfg, res, rng: random.Random, top_z: float = 0.0,
         cam.location.z = top_z + half / math.tan(fov / 2)
 
     cam.data.clip_start, cam.data.clip_end = 0.001, 100.0
+    # `ortho_scale` is recorded ONLY on the ortho branch, and the condition is
+    # `cfg.ortho` rather than `getattr(cam.data, "ortho_scale", None)`, which
+    # is what this line used to be. `bpy.types.Camera.ortho_scale` is an
+    # unconditional property of the camera datablock - Blender only HIDES it
+    # in the UI when `type != 'ORTHO'` - so the getattr never returned None
+    # and a perspective render recorded Blender's untouched 6.0 default as
+    # though it were a measurement.
+    #
+    # That is not a cosmetic manifest wart. `recog.calibration.frame_mm_per_px`
+    # derives every frame's true ground sample distance as
+    # `ortho_scale * 1000 / width` and feeds it to `plan.planner`, and it
+    # raises when the key is absent precisely because a perspective camera has
+    # NO single scalar mm_per_px - the scale varies with depth - so
+    # substituting one would be a fabricated calibration rather than a
+    # fallback. The old line handed it 6.0 to fabricate from. Latent, not
+    # historic: `config.CameraConfig.ortho` defaults True and every shipped
+    # config sets `ortho: true`, so no rendered dataset carries the wrong
+    # number - but it was one config flag away from doing so silently.
     return cam, {"margin": margin, "shift_x": shift_x, "shift_y": shift_y,
                  "zoom": zoom,
                  "ortho": cfg.ortho, "height": cfg.height,
-                 "ortho_scale": getattr(cam.data, "ortho_scale", None)}
+                 "ortho_scale": cam.data.ortho_scale if cfg.ortho else None}
 
 
 # --------------------------------------------------------------------------- #

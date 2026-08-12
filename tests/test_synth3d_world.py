@@ -1386,6 +1386,41 @@ def test_a_perspective_camera_is_lifted_to_frame_the_same_extent(W):
     assert meta["ortho"] is False
 
 
+def test_a_perspective_render_records_no_ortho_scale_to_calibrate_from(W):
+    """A perspective camera has NO single scalar mm_per_px - the scale varies
+    with depth - so the manifest must carry no `ortho_scale` at all rather
+    than a number the planner would size real placements against.
+
+    This was a live defect. The line read
+    `getattr(cam.data, "ortho_scale", None)`, and
+    `bpy.types.Camera.ortho_scale` is an unconditional property of the camera
+    datablock (Blender only hides it in the UI when the type is not ORTHO), so
+    the guard never fired and a perspective render recorded Blender's
+    untouched 6.0 default as though it were a measurement."""
+    persp = types.SimpleNamespace(**{**_CAM.__dict__, "ortho": False})
+    _, meta = W.setup_camera(persp, _LAYOUT, (1280, 720), rng())
+    assert _STUB_BPY.context.scene.camera.data.ortho_scale == 6.0, (
+        "the stub must keep Blender's unconditional ortho_scale default, or "
+        "this test cannot reproduce the defect at all")
+    assert meta["ortho_scale"] is None
+
+
+def test_calibration_refuses_the_sidecar_a_perspective_render_writes(W):
+    """The consumer half, stated against the real module: with the fix,
+    `frame_mm_per_px` raises on a perspective frame's metadata instead of
+    fabricating a ground sample distance from a default nobody set."""
+    from recog.calibration import frame_mm_per_px
+    persp = types.SimpleNamespace(**{**_CAM.__dict__, "ortho": False})
+    _, persp_meta = W.setup_camera(persp, _LAYOUT, (1280, 720), rng())
+    with pytest.raises(ValueError, match="ortho_scale"):
+        frame_mm_per_px({"camera": persp_meta, "width": 1280})
+
+    _STUB_BPY.reset()
+    _, ortho_meta = W.setup_camera(_CAM, _LAYOUT, (1280, 720), rng())
+    assert frame_mm_per_px({"camera": ortho_meta, "width": 1280}) == \
+        pytest.approx(0.80 * 1000 / 1280)
+
+
 def test_the_camera_shift_reaches_both_the_object_and_the_manifest(W):
     shifted = types.SimpleNamespace(**{**_CAM.__dict__,
                                        "shift_range": [0.05, 0.05]})
