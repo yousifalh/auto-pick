@@ -35,13 +35,6 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      # opencv-python (not -headless) is a hard dependency, and its manylinux
-      # wheel links libGL, which a headless runner does not ship.
-      - name: System libraries for opencv-python
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libgl1
-
       # Verbatim the README's "Running it" step 1, on a clean checkout: this
       # step failing is the failure this workflow exists to catch.
       - name: Install (README step 1)
@@ -51,7 +44,7 @@ jobs:
       - name: Install dev extras
         run: pip install -e ".[dev]"
 
-      # 719 of the 752 tests. The other 33 are skipped here by design, not
+      # A subset of the full suite. The remainder are skipped here by design, not
       # excluded by a filter: 31 need torch (`.[train]`, a ~GB download whose
       # useful tests want a GPU), 1 needs a Blender-generated COCO dataset,
       # 1 needs the `.[cad]` STEP converter. Each guards itself with an
