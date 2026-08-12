@@ -3,7 +3,6 @@
 **Final Design Report — MEng Individual Project (draft v3)**
 
 Author: Yousif Al-Haidary
-Student ID: REDACTED
 Department of Mechanical, Materials and Manufacturing Engineering
 University of Nottingham — Spring 2026
 

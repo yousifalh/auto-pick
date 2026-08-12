@@ -2,7 +2,7 @@
 
 **Final Design Report — MEng Individual Project**
 
-Yousif Al-Haidary — Student ID REDACTED
+Yousif Al-Haidary
 Supervisor: Dr Svetan Ratchev
 Department of Mechanical, Materials and Manufacturing Engineering
 University of Nottingham

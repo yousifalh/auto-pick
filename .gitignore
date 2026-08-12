@@ -43,6 +43,8 @@ recog/sweeps/
 
 # Subagent-driven-development scratch
 .superpowers/
+# Claude Code local state and agent worktrees (holds whole-repo copies)
+.claude/
 
 # OS
 Thumbs.db

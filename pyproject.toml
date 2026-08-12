@@ -13,8 +13,29 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-train = ["torch>=2.0", "torchvision>=0.15", "tensorboard"]
+# scipy is imported lazily by recog/seg_evaluate.py for the boundary-F1
+# distance transform; it only ever runs alongside torch, so it lives here.
+train = ["torch>=2.0", "torchvision>=0.15", "tensorboard", "scipy>=1.10"]
 test = ["pytest", "pytest-cov"]
+# `dev` is the extra the README's install line asks for; keep it as the
+# umbrella alias so `pip install -e '.[dev]'` resolves.
+dev = ["pytest", "pytest-cov"]
+# STEP -> .glb conversion only (recog/convert_cad.py, recog/synth3d/catalog.py).
+# Not needed to run the demo or the test suite.
+cad = ["trimesh>=4.0", "cascadio>=0.1"]
+
+# Flat layout with several top-level directories: setuptools' automatic
+# discovery refuses to guess between them (it also sees the non-package
+# `cad/` and `configs/` data dirs), which made `pip install -e .` fail
+# outright. List the real packages explicitly.
+[tool.setuptools]
+packages = [
+    "common",
+    "execution",
+    "plan",
+    "recog",
+    "recog.synth3d",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
