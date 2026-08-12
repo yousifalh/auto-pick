@@ -1,21 +1,151 @@
 # Autonomous Recognition, Pick and Place
 
+**A vision-guided robotic cell that picks loose 18650 / 21700 lithium-ion cells from a camera view and places them into protective cartridges — perception, digital twin, 2-D bin packing and KUKA command streaming, running end to end in software.**
+
 MEng Individual Project — Yousif Al-Haidary (REDACTED), University of Nottingham, supervised by Dr Svetan Ratchev.
-
-A software-only realisation of a vision-guided robotic cell that picks loose cylindrical 18650 / 21700 lithium-ion cells from a camera view and places them into protective cartridges on a KUKA KR 6 R700 industrial robot. The full pipeline — perception, digital twin, 2-D bin-packing, and KUKA Ethernet KRL command streaming — runs end-to-end without any physical hardware via a mock robot simulator that speaks the real binary protocol.
-
-## Architecture
-
-A strict sequential flow between three loosely-coupled modules, with frozen dataclass contracts at every boundary:
 
 ```
 Camera ─▶ Recognition ─▶ Planning ─▶ Execution ─▶ KUKA controller
-         (Faster R-CNN   (digital   (EKRL 3.1,
-          + optional      twin +     CRC-16)
+         (Faster R-CNN   (digital   (EthernetKRL 3.1,
+          + per-cartridge  twin +    CRC-16/MODBUS)
           bay segmenter)  packing)
 ```
 
-Each arrow is a well-defined type: `Snapshot` from recognition, `PickPlacePose` from planning, `RobotStatus` back from execution. See the Final Design Report in `docs/FDR_v3.md` for the full rationale and trade-off analysis — that is the current revision, and every `§` reference in this README is to it. `docs/FDR.md` and `docs/FDR_v2.md` are the superseded earlier drafts, kept for history.
+Training data is path-traced in Blender from real measured CAD. The robot is a mock that speaks the real KUKA binary protocol, so `python main.py --config configs/demo.yaml` runs the whole loop with no GPU, no camera and no controller.
+
+---
+
+## The headline result, and what it is not
+
+On a 30-cartridge corpus drawn from 60 held-out synthetic frames, the shipping pipeline — trained detector, trained segmenter, per-frame calibration, packer — puts at least one cell into **12 of 30 cartridges and places 25 cells**. Feeding the same code **ground-truth masks and ground-truth boxes** at each frame's true scale with no wall inset — an oracle with perception removed from the question entirely — reaches **12 of 30 and 27 cells**. The system is within two cells of what perfect perception achieves on this corpus.
+
+`docs/superpowers/specs/2026-08-11-placement-safety.md` §4 (shipping), `2026-08-11-placement-feasibility.md` §5 (oracle), FDR §3. The oracle row was measured on the same 30 instances at commit `9bfc25f`, before the whole-cell occupancy change; on predicted masks that change moved no cell counts.
+
+Four limits, stated here rather than buried:
+
+* **Sim-to-real transfer is unvalidated and cannot be validated in this project.** Real photographs of these cells and cartridges are not obtainable (owner-confirmed, 2026-08-09). Every segmentation, placement-area and packing figure in this repository is **synthetic-to-synthetic** — measured on renders, against ground truth derived from the same renders. This is not "not yet measured"; the data that would settle it will not be collected. The dedicated limitation statement is FDR §13.2.2.
+* **There is no physical robot.** The KR 6 R700 was withdrawn. Execution is `execution/mock_kuka_server.py`, which implements the real 16-byte framing and CRC-16/MODBUS, so the protocol code is exercised but is unvalidated against hardware (FDR §10.3).
+* **12 of 30 is a ceiling, not a shortfall.** One SKU — a third of the corpus by instance count — cannot accept a cell at *any* perception accuracy, and a second clears by 1.75 mm. See "A cartridge that cannot be certified" below.
+* **Nothing here is deployed.**
+
+---
+
+## Running it
+
+```bash
+pip install -e .                                            # 1. install
+python -m recog.synth_dataset --out recog/dataset --n 50    # 2. make a few frames
+python main.py --config configs/demo.yaml                   # 3. run the loop
+```
+
+That path is torch-free by design and is what the reproducibility claim rests on. The loop logs per-cycle perception / planning latencies, cartridge / mask / queue counts, and a placed / pick-failed / place-failed summary at exit.
+
+### The same loop with the trained segmenter in it
+
+`configs/demo.yaml` runs the **heuristic** placement-area extractor and no segmenter — that is what keeps it torch-free, and it is the only thing it claims. `configs/demo_seg.yaml` is the other half: it puts the trained bay segmenter into recognition as a second stage and plans from its label maps.
+
+```bash
+python main.py --config configs/demo_seg.yaml --receipt docs/receipts/main_seg_run.txt
+```
+
+The `mode.segmentation` block selects that path, and it selects it in both places at once — the detector gets the segmenter, the planner gets `SegmentationPlacementAreaExtractor`. They cannot be configured apart, because either half alone is silent: a segmenter with no consumer runs for nothing, and the segmentation extractor with no segmenter raises on every cartridge into a blanket `except Exception`. For the same reason a missing checkpoint raises instead of falling back, and a run that completes having produced **zero** placement areas is treated as a failed run, not a quiet one.
+
+The frames matter as much as the checkpoint. `demo_seg.yaml` reads Blender renders (`recog/dataset3d_seg`), because the segmenter predicts no `bay` at all on `synth_dataset.py`'s flat green rectangles — pointed at those, it would complete cleanly and demonstrate nothing. Last generated run (`docs/receipts/main_seg_run.txt`): 15 frames, 26 cartridges detected, 26 segmented, **7 placement areas**, 2 pick-and-places executed, **1 detector box rejected** as not describing a single cartridge, and 15 of 15 frames carrying their own scale. Note the pick count: the loop executes at most one pose per cycle and a pose also needs a loose battery in the same frame — see `docs/superpowers/specs/2026-08-11-segmenter-integration.md` for the measurement. Those frames are the segmenter's own training corpus, so this receipt is evidence that the **wiring** works, not a generalisation measurement. Held-out numbers live in `docs/receipts/seg_eval_*_on_cad_test.txt` and FDR §13.1.1.
+
+---
+
+## How it works
+
+A strict sequential flow between three loosely-coupled modules, with frozen dataclass contracts at every boundary. Each arrow is a well-defined type: `Snapshot` from recognition, `PickPlacePose` from planning, `RobotStatus` back from execution.
+
+* **Recognition** turns pixels into a `Snapshot`. A Faster R-CNN (ResNet-34 FPN) finds cartridges and loose cells; a per-ROI DeepLabv3 + MobileNetV3-Large segmenter then labels each cartridge crop into six classes (`bay`, `battery`, `electronics`, `obstruction`, `cartridge`, background). Segmentation runs **once per frame, batched**, because the 8 ms per-cartridge planning budget cannot absorb a forward pass — 21.2 ms for 8 crops batched against 88.0 ms for the same 8 in a loop (`docs/receipts/seg_eval.txt`).
+* **Planning** maintains a digital twin (`plan/scene.py`), converts each cartridge's label map into a placeable region, rasterises it to an occupancy grid, and packs 18.5 × 65.0 mm cell footprints into it. Planning does mask arithmetic only, measured at 2.0–2.2 ms per cartridge.
+* **Execution** streams poses over TCP as 16-byte EthernetKRL packets with CRC-16/MODBUS, with retries, heartbeat and E-stop.
+
+Scale is a property of the **frame**, not of a config file: `Snapshot.mm_per_px` is filled by the image source and resolved once per cycle, so the extractor and the planner agree by construction rather than by convention. An uncalibrated frame with no configured fallback raises `UnknownScale` rather than reverting to a constant.
+
+The full rationale and trade-off analysis is `docs/FDR_v3.md` — that is the current revision, and **every `§` reference in this README is to it** unless it is prefixed by another document's name (`PPR`, or a spec filename). `docs/FDR.md` and `docs/FDR_v2.md` are superseded earlier drafts, kept for history.
+
+---
+
+## What this project is actually about
+
+Many people have built a CAD-to-robot perception stack. The part of this repository worth a reader's time is the measurement discipline around it — what was checked, what was reported as null, and what was stopped.
+
+### Five defects, and none of them was the model
+
+Each of these degraded output silently. The test suite grew from **621 to 752 tests** across the work and never failed on any of them.
+
+| # | Defect | Effect | Fixed at |
+|---|---|---|---|
+| 1 | Blender's glTF importer maps `(x,y,z) → (x,−z,y)`; this CAD's up-axis is Y with the cavity opening toward −Y. `lay_flat` chose *which* axis was vertical but had no notion of which **end** was up. | Every `open_case` cartridge rendered **upside down and closed** — the electronics module and the bay plane painted on the outside of a lid. Proof was exact: the shell measured z ∈ [11.1, 22.2] mm against the CAD's [0, 11.1] mm, a mirror about the lid's own mid-plane. Dataset deleted and re-rendered, checkpoint retrained from scratch. | `27cbd97`..`9fcf136` |
+| 2 | A confidence gate (`tau`) documented as retired, still live in `plan/placement_area.py`, with three mutually inconsistent values in three files. | At `configs/planning.yaml`'s own `mm_per_px` of 0.38 the wider erosion pushed every observed IoU (0.639–0.848) below the 0.85 code default: the gate **rejected 8 of 8 plannable cartridges**, one `except PlacementDisagreement: continue` at a time. | `5a619fc` |
+| 3 | `load_detector` took no `segmenter` argument and `_build_planner` hardcoded the heuristic extractor. | The trained segmenter was **unreachable from `main.py` under any configuration**. Any earlier claim that the pipeline demonstrated it end to end was overstated. | `12134c2` |
+| 4 | FFDH opens its first shelf at `y = 0` and every later shelf at the top of the previous one — it **never scans the shelf origin in y** — and `_next_free_x` collapses a whole row band. | One blocked row killed an entire pack. On `scene_00005` the packer was handed a **93 %-free** grid containing a clear 48 × 112 mm rectangle and placed **zero** cells, when **79 of the 80** admissible shelf origins would have accepted one. | `d6c46ac` |
+| 5 | `mm_per_px` was a config constant while the renderer randomised margin and zoom per frame. | True ground sample distance runs 0.490–1.045 mm/px; the pipeline used 0.625 for all of it. On 24 of 30 instances the planner **under-read the scene by 27 % at the median**; on the other 6 it over-read and reserved a footprint *smaller than the cell it was about to place*. | `58dd21d` |
+
+Defect 1 is the one to take seriously as a lesson: `recog/synth3d/world.py` imports `bpy` and is not unit-testable, so the only thing that ever caught it was rendering frames and comparing them against the source CAD. Defect 5 is the one to take seriously as a bug class: a single wrong scalar was wrong three times in the same direction, because the erosion radius, the occupancy grid stride and the pixels-to-millimetres conversion are all derived from it.
+
+### Negative results, reported as negative
+
+Three comparisons were run with the criterion fixed before the result existed, and three came out null. They are in the repository at the same prominence as the positive ones.
+
+* **The confidence gate cannot work, structurally.** A gate needs agreement and error to move in *opposite* directions. Measured per SKU, the two placement estimates' IoU correlates with optimistic error **positively in all four SKUs** (Pearson 0.76 / 0.34 / 0.65 / 0.53, Spearman agreeing in sign), and area normalisation does not rescue it. The mechanism explains the sign: `P_direct` and `P_derived` are the same `argmax` label map read twice, one with an erosion band, so they are not independent estimates at all. `P_safe = P_direct ∩ P_derived` is **retained** as a hard geometric constraint — that is a different claim, and the two are kept separate deliberately (FDR §13.2.1, `docs/receipts/tau_independence_correlation.txt`).
+* **Widening the training distribution did nothing.** Two procedural tray distributions that differ across *every* sampled parameter — `anchored` and `wide` — score **0.6801 and 0.6794** selected-mean IoU on the same 836 held-out CAD test crops. A difference of **0.0007**, with no per-SKU per-class difference the instance counts support. The comparison was one of four stated in advance in the design spec, before any run existed.
+* **A suspected cell-format mismatch recovered 7.6 % of its gap.** The prediction, recorded verbatim before the render started, was that restricting procedural trays to 18650 would move `battery` materially from 0.5593 toward the CAD control's 0.78, with ≥ 0.15 named as the resolvable effect. It moved **+0.017 of the 0.224 available**, the same order as the project's own dataset-to-dataset spread. Reported as the null it is (`docs/superpowers/specs/2026-08-11-transfer-gap-diagnosis.md`).
+
+### One gap diagnosed to mechanism, and closed
+
+The procedural segmenter's `bay` IoU on held-out CAD trailed the CAD-trained control by 0.25. Decomposing the pooled metric showed it was **not a gap in segmenting bays**: on the 213 crops that contain a bay, procedural training was already within **0.021** of the control. **91.4 % of the gap** was `bay` painted onto *closed* cartridges — 136 of 623 sealed crops, against the control's 2.
+
+The cause was measured, not guessed. Procedural lids were planar cuboids; all four real Anker lids are barrel-crowned with an **11.10 mm** long-edge fillet — equal to the entire lid height — and **89 % of each lid's upward-facing polygons sit below a 0.95 z-normal**, against 0 % for the procedural lid. Rendered, that is 10× less internal luminance structure. The model had learned *"featureless flat top ⇒ closed"*, which was true in 614 of 614 sealed training examples.
+
+The evidence that this was the mechanism, rather than a plausible story, is a **monotone dose-response**: hallucination rate by quintile of the sealed shell's own luminance gradient ran 6.4 / 14.5 / 22.4 / 26.6 / **39.2 %** — a 6× spread — and stayed monotone within every one of the seven lighting rigs and within every brightness tercile.
+
+Rolling a sampled fillet onto the procedural lid's top edges, as the single change:
+
+| procedural model, `bay` | pooled (all 836 crops) | present-only (the 213 crops with a real bay) | sealed crops given a hallucinated bay |
+| --- | ---: | ---: | ---: |
+| flat lid (as first published) | 0.6555 | **0.8801** | **136 / 623 = 21.8 %** |
+| crowned lid | **0.8755** | **0.8856** | **16 / 623 = 2.6 %** |
+| CAD-trained control | 0.9009 | 0.9013 | 2 / 623 = 0.3 % |
+
+The gradient dependence collapsed to 0.0 / 1.6 / 3.2 / 4.0 / 4.0 % — flat, which is the signature of a covered distribution rather than of a threshold move. Present-only `bay` **rose** (0.8801 → 0.8856), so the pre-registered falsifier — "the model just became reluctant to predict `bay`" — did not fire. `obstruction`, which lives inside open bays where the crown cannot reach, did not move (0.6306 → 0.6360). The crowned model is very slightly **worse** on its own validation split (0.7273 vs 0.7322), which is the shape a real out-of-distribution result has.
+
+**The narrow claim only.** The `[0, 12]` mm crown range was chosen *after* measuring the real Anker lids, so this is **not** evidence that "procedural training transfers" and must not be quoted that way. What it shows is that a measured coverage gap was the *mechanism* behind a measured synthetic gap. It is domain randomisation informed by a measurement — and it is still synthetic-to-synthetic. Full record: `docs/superpowers/specs/2026-08-11-transfer-gap-diagnosis.md` and `2026-08-11-sealed-unit-experiment.md`.
+
+### The ceiling analysis that ended the work
+
+Once the shipping pipeline reached 25 cells against the oracle's 27, further perception work was measured to be worth at most two cells on this corpus, so it stopped. Two planner-side levers aimed at the last two unsafe placements were swept rather than argued about, and both were rejected on evidence:
+
+| clearance margin | instances with ≥ 1 cell | cells | overlaps > 5 % | worst |
+| ---: | ---: | ---: | ---: | ---: |
+| **0.0 mm (ships)** | **12** | **25** | **2** | **8.3 %** |
+| 1.0 mm | 11 | 23 | 2 | 8.3 % |
+| 1.5 mm | 10 | 21 | **3** | 7.8 % |
+| 3.0 mm | 5 | 13 | 2 | 8.5 % |
+
+3.0 mm is strictly dominated — twelve fewer cells for the same two overlaps — and 1.5 mm gives up four cells while *creating* a third overlap. The other proposed guard, rejecting a placement not fully inside the predicted free floor, rejects nothing: four of the five original offenders sit **100.0 %** inside it. Details in `docs/superpowers/specs/2026-08-11-placement-safety.md` §2.3–§2.4 and FDR §13.2.1.
+
+### A cartridge that cannot be certified
+
+`AnkerPowerCore10000`'s placement region is 54.9 × **65.0 mm** and the planner's nominal cell is 18.5 × **65.0 mm**. Not approximately — exactly. The placement rectangle is axis-aligned (sound: the camera mount is fixed) but the cartridge is not; `layout.plan` seats every unit at `quarter × 90° + jitter` with **±2°** of jitter, and a real jig has clearance of the same order. An axis-aligned strip of width `w` fits a bay of height `H` rotated by θ only where `L(θ) = (H − w·sinθ)/cosθ ≥ 65.0`, so the packer alone consumes **18.5·tanθ ≈ 0.32 mm per degree** against 0.00 mm of margin.
+
+Fed **ground-truth** label maps at each frame's true scale — perfect segmentation, perfect boxes, perfect calibration — this SKU places zero cells in **10 of 10** instances. Tolerance is not the lever either: 18.5 → 18.3 mm recovers 0 instances at any calibration, and the wall inset recovers 0 all the way down to 0.0 mm.
+
+The general statement is FDR §3's, and it is the transferable part: **a bay packed to exact tolerance cannot be certified by a vision system, because certification needs margin to absorb a non-zero measurement error and an exact fit offers none.** The available responses are specification changes, not accuracy work.
+
+### The structural insight, learned twice
+
+**You cannot detect your own prediction error using that same prediction.**
+
+It retired the confidence gate: two masks derived from one `argmax` label map cannot disagree informatively, so their IoU carries no information about whether the label map is right. Later, independently, it rejected a clearance margin proposed to fix placement overlaps: every guard the planner has — `P_safe`, a clearance inset, an overlap test against the predicted classes — is computed from the same prediction that is wrong. Where the segmenter labels wall as floor, every downstream check computed from that label map agrees with it. The two mitigations that *would* work are the two using information the prediction does not contain: reduce the segmenter's own boundary displacement, or verify contact at placement time by force rather than by camera.
+
+### Where to look
+
+`docs/superpowers/specs/` holds the diagnosis → experiment → result trail for the work above, one document per investigation, each naming its own baseline commit and test count. `docs/superpowers/specs/README.md` indexes them. `docs/receipts/` holds tool-generated, never-hand-edited output for every quoted figure.
+
+---
 
 ## Repository layout
 
@@ -32,6 +162,7 @@ auto-pick/
 │   ├── inference.py        FasterRCNNDetector + HeuristicDetector
 │   ├── evaluate.py         Pure-numpy VOC 11-point mAP + pose errors
 │   ├── eval_real.py        Held-out real-photo evaluation (mAP + overlays)
+│   ├── calibration.py      Per-frame ground sample distance from the sidecar
 │   ├── bay_segmenter.py    DeepLabv3+MobileNetV3 per-cartridge segmenter
 │   ├── seg_dataset.py      Per-ROI crop dataset for the bay segmenter
 │   ├── seg_training.py     Bay segmenter training loop (CE + Dice)
@@ -56,50 +187,19 @@ auto-pick/
 │   ├── mock_kuka_server.py Software-only KUKA simulator
 │   └── krl_prog/           Reference KRL routines for the real controller
 ├── configs/          YAML configs per module + top-level demo.yaml
-├── tests/            Pytest suite (708 tests)
-├── docs/             Final Design Report (FDR.md) and supporting material
+├── tests/            Pytest suite (752 tests)
+├── docs/             Final Design Report, specs, receipts
 ├── main.py           End-to-end integration loop
 └── pyproject.toml    Project metadata and coverage config
 ```
-
-## Running the software-only demo
-
-The default configuration runs with synthetic images and the mock robot, so no GPU / camera / KUKA is needed:
-
-```bash
-# 1. Install runtime dependencies
-pip install -e .
-
-# 2. Generate a small synthetic dataset (if you haven't already)
-python -m recog.synth_dataset --out recog/dataset --n 50
-
-# 3. Run the full perception → plan → execute loop
-python main.py --config configs/demo.yaml
-```
-
-The loop logs per-cycle perception / planning latencies, the cartridge / mask / queue counts, and a summary of placed / pick-failed / place-failed counts at exit.
-
-### ...and the same loop with the trained segmenter in it
-
-`configs/demo.yaml` runs the **heuristic** placement-area extractor and no segmenter — that is what keeps it torch-free, and it is the only thing it claims. `configs/demo_seg.yaml` is the other half: it puts the trained bay segmenter into recognition as a second stage and plans from its label maps.
-
-```bash
-python main.py --config configs/demo_seg.yaml --receipt docs/receipts/main_seg_run.txt
-```
-
-The `mode.segmentation` block is what selects that path, and it selects it in both places at once — the detector gets the segmenter, the planner gets `SegmentationPlacementAreaExtractor`. They cannot be configured apart, because either half alone is silent: a segmenter with no consumer runs for nothing, and the segmentation extractor with no segmenter raises on every cartridge into a blanket `except Exception`. For the same reason a missing checkpoint raises instead of falling back, and a run that completes having produced **zero** placement areas is treated as a failed run, not a quiet one.
-
-The frames matter as much as the checkpoint. `demo_seg.yaml` reads Blender renders (`recog/dataset3d_seg`), because the segmenter predicts no `bay` at all on `synth_dataset.py`'s flat green rectangles — pointed at those, it would complete cleanly and demonstrate nothing. Last generated run (`docs/receipts/main_seg_run.txt`): 15 frames, 26 cartridges detected, 26 segmented, **7 placement areas**, 2 pick-and-places executed, and **1 detector box rejected** as not describing a single cartridge. Note the pick count: the loop executes at most one pose per cycle and a pose also needs a loose battery in the same frame — see `docs/superpowers/specs/2026-08-11-segmenter-integration.md` for the measurement. (This read *8 placement areas, 1 pick-and-place* until `0d7d204`, which stopped calling a grid cell free when only its centre pixel was — costing one area — and added the box-contents guard that rejects the one crop spanning a cartridge and three loose cells. Regenerated from the command above, not edited.)
-
-**Until commit `12134c2` the segmenter was not in this loop at all**, and could not be put in it from any config: `load_detector` took no `segmenter` argument and `_build_planner` hardcoded the heuristic extractor. Any earlier claim that the pipeline demonstrated the segmenter end to end was overstated. It is true now — of `demo_seg.yaml`. `demo.yaml` still runs the heuristic and is still torch-free, and that is the path the reproducibility claim rests on; the two must not be conflated. The receipt above is evidence that the **wiring** works: those frames are the segmenter's own training corpus, so it is not a generalisation measurement. Held-out numbers live in `docs/receipts/seg_eval_*_on_cad_test.txt` and FDR §13.1.1.
 
 ## How the packer picks
 
 `plan/bin_packing.py` and `common/packing.py` hold the 2-D strip packer. `first_fit_decreasing` is the forbidden-mask-aware shelf FFDH that is the project's principal algorithmic contribution (FDR §6.3.1), and it is unchanged and frozen — `recog/synth3d` lays out synthetic scenes with it, so touching it would silently redraw a training corpus.
 
-It is no longer what the planner runs on its own. FFDH opens its first shelf at `y = 0` and every later shelf at the top of the previous one — **it never scans the shelf origin in y** — and `_next_free_x` collapses a candidate shelf's whole row band, so one mostly-blocked row poisons every column in it. A forbidden region in the first shelf's band therefore kills the whole pack: on a real frame (`scene_00005`) the packer was handed a 93 %-free grid containing a clear 112 × 48 mm rectangle and placed **zero** 18.5 × 65 mm cells, when 79 of the 80 admissible shelf origins on that grid would have accepted one.
+It is no longer what the planner runs on its own, for the reason in defect 4 above. Both planner call sites now use `common.packing.pack_best_effort`, which competes unmodified FFDH against a shelf-origin-scanning arm and a shelf-free grid-greedy arm and returns whichever placed most. Ties go to FFDH, so `best ≥ FFDH` holds **by construction** — no instance can regress, which matters because the failure mode this project kept hitting is a change that lifts an average and quietly regresses a case nobody re-measured.
 
-Both planner call sites now use `common.packing.pack_best_effort`, which competes unmodified FFDH against a shelf-origin-scanning arm and a shelf-free grid-greedy arm and returns whichever placed most. Ties go to FFDH, so `best ≥ FFDH` holds **by construction** — no instance can regress. On 30 real packing instances the 7 that can hold a cell at all go from **8 to 17 cells**; on the published benchmark the shipping packer places 14.55 at 2.5 % forbidden coverage against FFDH's 14.28, with the real movement at 10–15 % coverage (2.60 → 5.53, 0.57 → 2.85). Cost: 3.4 ms mean / 4.6 ms worst on bench masks against 0.9 ms for FFDH alone, still inside the 8 ms O3 budget. Diagnosis and per-arm results: `docs/superpowers/specs/2026-08-11-packing-ceiling.md`; receipt `docs/receipts/forbidden_bench.txt`.
+Both new arms earn their place and neither would do on its own: each scores 16 to the combination's 17 on the real instances. On 30 real packing instances the 7 that can hold a cell at all go from **8 to 17 cells**; on the published benchmark the shipping packer places 14.55 at 2.5 % forbidden coverage against FFDH's 14.28, with the real movement at 10–15 % coverage (2.60 → 5.53, 0.57 → 2.85). Cost: 3.4 ms mean / 4.6 ms worst on bench masks against 0.9 ms for FFDH alone, still inside the 8 ms O3 budget. Diagnosis and per-arm results: `docs/superpowers/specs/2026-08-11-packing-ceiling.md`; receipt `docs/receipts/forbidden_bench.txt`.
 
 ## Two synthetic generators, two purposes
 
@@ -137,25 +237,19 @@ python -m recog.verify3d --data recog/dataset3d --n 16     # then LOOK at contac
 * **`HeuristicPlacementAreaExtractor`** — Otsu threshold on the green channel, largest contour, inset, subtract a dark PCB blob. It is the **demo-only path**: it assumes a light tray with a dark interior module (PPR §5.3.2), which matches `recog/synth_dataset.py`'s flat green rectangles but not the real, black cartridges — measured at zero placeable area on 7 of 20 held-out real photographs (`recog/realtest/`). `main.py`'s software-only demo uses it deliberately, because it has no model to load and keeps the demo torch-free; it warns at construction time so its scope limit can't be missed.
 * **`SegmentationPlacementAreaExtractor`** — the path for real imagery. It consumes a trained segmenter's per-pixel label map (`Snapshot.cartridge_masks`, populated by `recog.inference.attach_cartridge_masks`) and intersects two placement estimates via `plan/arbitration.py` — the network's own `bay` channel, and one derived from the eroded, centre-connected interior. `P_safe = P_direct ∩ P_derived` is applied **unconditionally**: it is a geometric constraint (nothing outside the visible cavity is ever placeable) and it has no threshold.
 
-  **There is no `tau`.** The IoU between the two estimates is still computed and reported on `PlacementArea.consistency_iou`, but nothing gates on it, and the constructor no longer accepts the argument, so code that still passes it fails loudly instead of being silently ignored. The gate was retired on measurement, not taste: the two estimates are the same `argmax` read twice (one with an erosion band), and their IoU correlates with placement error in the *wrong* direction — positive in all four cataloged SKUs, raw and area-normalised (FDR §13.2.1, `docs/receipts/tau_independence_correlation.txt`). It also had a real cost. On 15 `recog/dataset3d_seg` frames through the trained detector and segmenter — 26 cartridge crops, 8 with a predicted bay — the gate admitted **3 of those 8** at its code default 0.85, and **0 of 8** at `configs/planning.yaml`'s own `mm_per_px` of 0.38, where the wider erosion pushes every IoU below the threshold. Without it, all 8 are plannable at either scale (`docs/superpowers/specs/2026-08-11-segmenter-integration.md`). The three mutually inconsistent values this paragraph used to quote — code 0.85, YAML 0.7492, README 0.5715 — are all gone; `recog/calibrate_tau.py` and its receipt are kept as the record of the measurement that retired it.
+  **There is no `tau`.** The IoU between the two estimates is still computed and reported on `PlacementArea.consistency_iou`, but nothing gates on it, and the constructor no longer accepts the argument, so code that still passes it fails loudly instead of being silently ignored. The gate was retired on measurement, not taste — see defect 2 and the first negative result above (FDR §13.2.1, `docs/receipts/tau_independence_correlation.txt`). The three mutually inconsistent values this paragraph used to quote — code 0.85, YAML 0.7492, README 0.5715 — are all gone; `recog/calibrate_tau.py` and its receipt are kept as the record of the measurement that retired it.
 
-The split exists because of a hard latency budget, not preference: FDR O3 caps planning's queue rebuild at 8 ms per cartridge, and a single segmenter forward pass alone costs roughly that much on its own. Segmentation therefore runs once per frame, batched, in Recognition (`recog/bay_segmenter.py`) — measured on an RTX 3060 at 21.2 ms for 8 cartridges batched, against 88.0 ms for the same 8 run in a loop (`docs/receipts/seg_eval.txt`), inside vs. well outside the separate 50 ms end-to-end budget respectively (up from an earlier 16.7 ms / 60.0 ms measurement on the same hardware, a real but modest increase — the table is wall-clock and is re-taken every time that receipt is regenerated, so it moves a little each time: 20.2 / 76.5 ms at commit `390836b`, 21.2 / 88.0 ms now. An intermediate reading of 40.9 ms / 157.0 ms taken while this machine carried substantial unrelated GPU load was superseded by the clean re-measurements quoted here; see FDR §13.2.1 for the measurement conditions). Planning only ever does mask arithmetic on the already-computed masks (`plan/arbitration.py`, measured ~2 ms per cartridge). `tests/test_planner.py::test_segmentation_extract_arithmetic_stays_under_the_o3_budget` pins that arithmetic-only cost (`extract()` alone — arbitration + rasterisation, not the packing pass that follows it) against the 8 ms budget.
+  Two guards remain, both on the *contents* of a crop rather than on the model's confidence in it. `BadDetectorBox` fires when the crop centre lands on background, and again when the placeable region's rotated short axis exceeds **81.7 mm** — the largest cataloged cartridge's outer footprint, so the bound only ever fires on the physically impossible and needs no tuned tolerance. And an occupancy cell is FREE only if *all* of it is free, not merely its centre pixel; the honest version is also the faster one (2.97 ms against 4.25 ms on the budget test's crop), because it is computed over a summed-area table.
+
+The split between the modules exists because of a hard latency budget, not preference: FDR O3 caps planning's queue rebuild at 8 ms per cartridge, and a single segmenter forward pass alone costs roughly that much on its own. Segmentation therefore runs once per frame, batched, in Recognition (`recog/bay_segmenter.py`) — measured on an RTX 3060 at 21.2 ms for 8 cartridges batched, against 88.0 ms for the same 8 run in a loop (`docs/receipts/seg_eval.txt`), inside vs. well outside the separate 50 ms end-to-end budget respectively (up from an earlier 16.7 ms / 60.0 ms measurement on the same hardware, a real but modest increase — the table is wall-clock and is re-taken every time that receipt is regenerated, so it moves a little each time: 20.2 / 76.5 ms at commit `390836b`, 21.2 / 88.0 ms now. An intermediate reading of 40.9 ms / 157.0 ms taken while this machine carried substantial unrelated GPU load was superseded by the clean re-measurements quoted here; see FDR §13.2.1 for the measurement conditions). Planning only ever does mask arithmetic on the already-computed masks (`plan/arbitration.py`, measured ~2 ms per cartridge). `tests/test_planner.py::test_segmentation_extract_arithmetic_stays_under_the_o3_budget` pins that arithmetic-only cost (`extract()` alone — arbitration + rasterisation, not the packing pass that follows it) against the 8 ms budget.
 
 ## What the bay segmenter is measured on — and what cannot be measured here
 
 **Real photographs of this project's cells and cartridges are not obtainable** (owner-confirmed, 2026-08-09). The direct consequence, stated before any number below: **sim-to-real transfer is unvalidated and cannot be validated under this constraint** — not "not yet measured". **Every segmentation, placement-area and packing figure in this repository is synthetic-to-synthetic**: measured on renders, against ground truth derived from the same renders. The dedicated limitation statement is FDR §13.2.2.
 
-What *is* answerable without a photograph: does a segmenter trained on **procedurally generated** cartridge trays — shapes it has never seen a real example of — transfer to the four **real measured Anker CAD assemblies** it never trained on? Six models, all scored on the same 836 held-out CAD test crops from a disjoint 500-scene render (`docs/receipts/seg_eval_*_on_cad_test.txt`, FDR §13.1.1). Two things must be read together, because the published pooled `bay` figure conflates them:
+What *is* answerable without a photograph: does a segmenter trained on **procedurally generated** cartridge trays — shapes it has never seen a real example of — transfer to the four **real measured Anker CAD assemblies** it never trained on? Six models, all scored on the same 836 held-out CAD test crops from a disjoint 500-scene render (`docs/receipts/seg_eval_*_on_cad_test.txt`, FDR §13.1.1). The decomposition, the mechanism and the fix are in "One gap diagnosed to mechanism, and closed" above.
 
-| procedural model, `bay` | pooled (all 836 crops) | present-only (the 213 crops with a real bay) | sealed crops given a hallucinated bay |
-| --- | ---: | ---: | ---: |
-| flat lid (as first published) | 0.6555 | **0.8801** | **136 / 623 = 21.8 %** |
-| crowned lid | 0.8755 | **0.8856** | **16 / 623 = 2.6 %** |
-| CAD-trained control | 0.9009 | **0.9013** | 2 / 623 = 0.3 % |
-
-On crops that contain a bay, procedural training was already within 0.021 of the CAD-trained ceiling; **91.4 % of the apparent gap was `bay` painted onto *closed* cartridges.** The cause was measured: procedural lids were planar cuboids while all four Anker lids are barrel-crowned, giving 10× less internal shading structure, so the model had learned "featureless flat top ⇒ closed". Adding a sampled lid crown as the single change closed 92 % of those false positives.
-
-**The narrow claim only.** The `[0, 12]` mm crown range was chosen *after* measuring the real Anker lids, so this is **not** evidence that "procedural training transfers" and must not be quoted that way. What it shows is that the missing shading-structure coverage was the *mechanism* behind the transfer gap, and closing it recovers most of the gap — domain randomisation informed by a measured gap. One row of the per-class table is not evidence at all: `obstruction` parity between procedural and CAD models is a **shared-code artefact**, since `world.build_obstructions` has one call site executed identically by both pipelines, so parity would hold under any hypothesis. Full record: `docs/superpowers/specs/2026-08-11-transfer-gap-diagnosis.md` and `2026-08-11-sealed-unit-experiment.md`.
+One row of the per-class table is not evidence at all: `obstruction` parity between procedural and CAD models is a **shared-code artefact**, since `world.build_obstructions` has one call site executed identically by both pipelines, so parity would hold under any hypothesis. `cartridge` (0.9120 against the control composite's 0.9382) and `electronics` (0.7819 against 0.8530) are the largest honest remaining shortfalls, with no hallucination component left to explain them.
 
 ## The real-photo held-out set
 
@@ -198,6 +292,8 @@ Dev extras (`pip install -e '.[dev]'`) add pytest, pytest-cov.
 ## Design Report
 
 The full Final Design Report — requirements, literature review, detailed design, test strategy, risk assessment, and AHEP-4 learning-outcome mapping — is in `docs/FDR_v3.md` (`docs/FDR.md` and `docs/FDR_v2.md` are the superseded earlier revisions). Start at §13.2.2 for what this project can and cannot claim.
+
+A narrative account of the measurement work, written for a general engineering reader, is `docs/PORTFOLIO.md`.
 
 ## Authors
 

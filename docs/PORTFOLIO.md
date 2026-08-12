@@ -1,0 +1,49 @@
+# Five things were broken. None of them was the model.
+
+I sat down to spend a day improving a segmentation model. By the end of the work, five defects had been found and fixed, and not one of them was the model.
+
+The project is `auto-pick`: a vision-guided robotic cell that picks loose 18650 lithium-ion cells out of a camera view and places them into protective cartridges. A Faster R-CNN detector finds cartridges, a per-cartridge segmenter labels each crop into bay, cells, electronics, debris and shell, a planner packs cell footprints into the free floor, and execution streams EthernetKRL packets to a KUKA controller. Training data is path-traced in Blender from real measured CAD.
+
+The segmenter's headline number was a `bay` IoU of 0.6555 on held-out cartridge geometry, against 0.9009 for a control trained on that geometry directly. A 0.25 gap is a big gap and the obvious response is to train harder. I decomposed the metric first instead, and the decomposition said the model was not the problem.
+
+## Where the gap actually was
+
+`bay 0.6555, instances 213` looks like one number about 213 crops. It is not: the IoU is pooled over a union accumulated across all **836** crops, and 623 of those contain no bay at all because the cartridge is sealed shut. Split the two populations and the picture inverts. On the 213 crops that *do* contain a bay, the procedural model scores **0.8801** against the control's 0.9013 — within 0.021. **91.4 % of the gap was `bay` painted onto closed cartridges**: 136 of 623 sealed crops, against the control's 2. The failure was not "segments bays badly"; it was "cannot tell whether a cartridge is open".
+
+That is a different question with a different answer. I measured both lid populations off the glTF. My procedural lids were `primitive_cube_add` — perfectly planar, sharp-edged slabs. All four real Anker lids are barrel-crowned, with a long-edge fillet radius of **11.10 mm**, equal to the entire lid height, and **89 % of their upward-facing polygons more than 18° off vertical** against 0 % for mine. Rendered top-down, that is ten times less internal luminance structure. In 614 of 614 sealed training examples, "closed" had looked exactly like "featureless flat top". The model had learned a shortcut that was true in its training set and false in the world.
+
+Before changing anything I checked whether its behaviour tracked that cue. Hallucination rate by quintile of the sealed shell's own luminance gradient: 6.4 %, 14.5 %, 22.4 %, 26.6 %, **39.2 %** — monotone, a 6× spread, and still monotone inside every one of seven lighting rigs and every brightness tercile. That dose-response is the difference between a plausible story and a mechanism.
+
+The fix was one field: roll a sampled fillet, drawn uniformly from 0 to 12 mm, onto the top edges of the procedural lid. Hallucinations on sealed cartridges fell **21.8 % → 2.6 %** and pooled `bay` went **0.6555 → 0.8755** against the 0.9009 ceiling. The gradient dependence collapsed to flat — the signature of a covered distribution. A model that had merely become shy of predicting `bay` would have lowered all five quintiles proportionally and dragged the present-only score with it; present-only `bay` rose instead, and the crowned model is very slightly *worse* on its own validation split, which is the shape a genuine out-of-distribution result has.
+
+I will not claim this shows procedural training transfers. I picked the crown range *after* measuring the real lids, and the real value sits inside it. The honest claim is narrower and I have stated it that way everywhere: a measured coverage gap was the mechanism behind a measured gap in performance.
+
+## The other four
+
+Four more defects surfaced alongside it, none visible from any metric I had.
+
+**The segmenter was not in the pipeline.** `load_detector` took no segmenter argument and the planner builder hardcoded the heuristic extractor, so no configuration could reach the trained model from the end-to-end entry point. Any earlier claim that the pipeline demonstrated it end to end was overstated, and I said so in the README rather than quietly fixing it.
+
+**A gate I had already retired was still running.** The confidence threshold `tau` was gone from the documentation but not from `plan/placement_area.py`, with three inconsistent values live at once — 0.85 in code, 0.7492 in YAML read by nothing, 0.5715 in the README. At the project's own configured scale the erosion widened until every observed IoU sat below the code default, so the gate **rejected 8 of 8 plannable cartridges**, one `except: continue` at a time.
+
+**The packer never scanned its shelf origin in y**, so one blocked row killed a whole pack. On one real frame it was handed a grid that was 93 % free, containing a clear 48 × 112 mm rectangle, and placed zero cells — when 79 of the 80 admissible shelf origins would have accepted one.
+
+**`mm_per_px` was a constant while the renderer randomised zoom.** True ground sample distance ran 0.490–1.045 mm/px against a configured 0.625, under-reading the scene by **27 % at the median** — and, on six instances, over-reading it and reserving a footprint *smaller than the cell it was about to place*.
+
+And earlier, the one that should worry anyone: Blender's glTF importer inverts this CAD's up-axis, and the helper that laid parts flat chose which axis was vertical but had no notion of which *end* was up. Every open cartridge had been rendering upside down and closed, with the bay plane painted on the outside of a lid.
+
+All five degraded output silently. The suite grew from **621 to 752 tests** and never went red on any of them. The upside-down tray was caught by rendering frames and comparing them against the source CAD; nothing else could have caught it, because the Blender modules import `bpy` and are not unit-testable.
+
+## Knowing when to stop
+
+At some point the question stops being "can this be better" and becomes "how much better is available". So I built an oracle: the shipping extractor and the shipping packer, fed ground-truth masks and boxes at each frame's true scale. It places 27 cells across 12 of 30 cartridges. The shipping system places 25 across the same 12. Perfect perception was worth two cells, so I stopped doing perception work.
+
+The two remaining levers for the last two unsafe placements were swept rather than argued about, and both were rejected: a clearance margin costs up to twelve cells and at 1.5 mm *creates* a third overlap, and a guard rejecting placements outside the predicted free floor rejects nothing, because four of the five offenders sit 100.0 % inside it. That is the fact that retired `tau`, learned a second time: **you cannot detect your own prediction error using that same prediction.** Where the segmenter labels wall as floor, every check computed from that label map agrees with it. The mitigations that work are the ones using information the prediction does not contain — a better boundary, or a force sensor.
+
+Underneath all of it sat a specification finding I did not expect. One cartridge's bay is **exactly** 65.0 mm and the planner's nominal cell is exactly 65.0 mm long. The cartridge sits in a jig with ±2° of jitter, and an axis-aligned packer loses 0.32 mm per degree. With perfect segmentation, perfect boxes and perfect calibration, that SKU takes zero cells in 10 of 10 instances. The general form is the transferable part: **a bay packed to exact tolerance cannot be certified by a vision system**, because certification needs margin to absorb a non-zero measurement error, and an exact fit offers none.
+
+## What I cannot claim
+
+Real photographs of these cells and cartridges are not obtainable for this project. That is a fixed constraint, not a scheduling gap, so **sim-to-real transfer is unvalidated and cannot be validated here** — not "not yet". Every figure above is synthetic-to-synthetic: measured on renders, against ground truth derived from the same renders. There is no physical robot either; the KR 6 was withdrawn, and execution runs against a mock that speaks the real binary protocol. Nothing is deployed.
+
+Three comparisons came out null, and they sit in the repository at the same prominence as the ones that worked: the confidence gate correlates with error in the wrong direction in all four SKUs; two training distributions differing across every sampled parameter scored 0.6801 and 0.6794; and a cell-format hypothesis I expected to recover most of a gap recovered 7.6 % of it. They are most of what I learned.
