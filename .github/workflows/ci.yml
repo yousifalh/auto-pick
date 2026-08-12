@@ -15,17 +15,25 @@ permissions:
 
 jobs:
   test:
-    name: install + torch-free suite
+    name: install + torch-free suite (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
+
+    # pyproject declares requires-python >=3.10. Only 3.14 had ever been
+    # verified, so the floor was a claim with no evidence behind it. The
+    # matrix tests the claim the package actually makes; if an older version
+    # fails, the honest fix is to raise the floor in pyproject, not to drop
+    # the version from here.
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12", "3.14"]
 
     steps:
       - uses: actions/checkout@v5
 
-      # 3.14 is the version a fresh clone was verified on (2026-08-12).
-      # pyproject declares >=3.10; older versions are not tested here.
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.14"
+          python-version: ${{ matrix.python-version }}
 
       # opencv-python (not -headless) is a hard dependency, and its manylinux
       # wheel links libGL, which a headless runner does not ship.
