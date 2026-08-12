@@ -16,7 +16,7 @@ Yousif Al-Haidary, MEng, University of Nottingham. Every figure below is checked
 
 ### For a general software engineering audience
 
-> **auto-pick — vision-guided robotic cell (MEng individual project, ~16k lines of production Python plus a 1,074-test suite).** Designed and built a three-module pipeline with frozen dataclass contracts at every boundary, a torch-free demo path that runs the whole loop with no GPU or hardware, and tool-generated receipts for every published number. Found and fixed five silent defects — including a retired feature still live in code and a calibration constant that was wrong in three derived quantities at once — none of which any test had caught.
+> **auto-pick — vision-guided robotic cell (MEng individual project, ~16k lines of production Python plus a 1,211-test suite).** Designed and built a three-module pipeline with frozen dataclass contracts at every boundary, a torch-free demo path that runs the whole loop with no GPU or hardware, and tool-generated receipts for every published number. Found and fixed five silent defects — including a retired feature still live in code and a calibration constant that was wrong in three derived quantities at once — none of which any test had caught.
 
 ---
 
@@ -44,7 +44,7 @@ Yousif Al-Haidary, MEng, University of Nottingham. Every figure below is checked
 
 ## Bullets — general software engineering
 
-- Delivered a **1,074-test**, three-module Python system with frozen dataclass contracts at every boundary and a **torch-free demo path** that runs the full loop with no GPU, camera or controller.
+- Delivered a **1,211-test**, three-module Python system with frozen dataclass contracts at every boundary and a **torch-free demo path** that runs the full loop with no GPU, camera or controller.
 - Found and fixed **five defects that degraded output silently and that no test caught**, while the suite grew from **621 to 752 tests** and never went red — including a feature documented as retired but still live in code, holding three mutually inconsistent values across three files, whose only test asserted the retired behaviour.
 - That retired gate was **rejecting 8 of 8** valid inputs at the project's own configured scale; deleted the constructor argument outright so any caller still passing it raises `TypeError` rather than being silently ignored.
 - Discovered the trained model was **unreachable from the end-to-end entry point under any configuration**, wired it in, and corrected the overstated claim in the public README rather than quietly shipping the fix.

@@ -536,7 +536,7 @@ def test_seg_ablation_counts_val_instances_at_the_checkpoints_crop_size(
     historical breakages had in common: they were `main()`-only.
     """
     import numpy as np
-    import torch
+    torch = pytest.importorskip("torch")
     import yaml
     from PIL import Image
 

@@ -45,19 +45,40 @@ jobs:
         run: pip install -e ".[dev]"
 
       # A subset of the full suite. The remainder are skipped here by design, not
-      # excluded by a filter: 31 need torch (`.[train]`, a ~GB download whose
-      # useful tests want a GPU), 1 needs a Blender-generated COCO dataset,
-      # 1 needs the `.[cad]` STEP converter. Each guards itself with an
-      # importorskip/skipif, so this run is green rather than quietly thinner.
+      # excluded by a filter: 46 tests need torch (`.[train]`, a ~GB download
+      # whose useful tests want a GPU), 30 of them in tests/test_bay_segmenter.py,
+      # which skips whole at import and so reports as one skip; 1 needs a
+      # Blender-generated COCO dataset, 1 needs `bpy`, and 1 needs the `.[cad]`
+      # STEP converter. Each guards itself with an importorskip/skipif, so this
+      # run is green rather than quietly thinner: `pytest -q` reports
+      # `1162 passed, 20 skipped` against the 1,211 collected with torch present.
+      #
+      # That claim was false until 2026-08-12: tests/test_calibration.py did a
+      # bare `import torch`, so this job was red on all three Pythons while this
+      # comment asserted every torch test guarded itself.
       - name: Tests
         run: pytest -q
 
       # The README's "Running it" steps 2 and 3: the torch-free demo loop,
       # which is what the reproducibility claim rests on.
-      - name: Torch-free demo loop
+      #
+      # Exit 0 is not enough on its own, and this is not hypothetical: the
+      # README and configs/demo.yaml claimed 37 cartridges / 77 batteries /
+      # 41 queue poses over 10 cycles while this exact command produced
+      # 3 / 5 / 3 over 1, because those figures were measured in a tree
+      # holding a gitignored detector checkpoint. This job ran green
+      # throughout, because it only ever asserted the process did not crash.
+      # So the run now regenerates its own receipt and diffs it against the
+      # committed one. Only the `generated:` timestamp is allowed to move;
+      # the `detector:` line is what tells the two paths apart.
+      - name: Torch-free demo loop (README steps 2 and 3)
         run: |
           python -m recog.synth_dataset --out recog/dataset --n 50
-          python main.py --config configs/demo.yaml
+          python main.py --config configs/demo.yaml \
+            --receipt docs/receipts/main_run.txt
+          diff --strip-trailing-cr \
+               <(git show HEAD:docs/receipts/main_run.txt | grep -v '^  generated') \
+               <(grep -v '^  generated' docs/receipts/main_run.txt)
 
   # recog/synth3d/_gate_orientation.py called itself a CI gate for months
   # while no CI ran it. It is the ONLY executable check against the

@@ -122,7 +122,7 @@ the workspace folder; ~~every measurement quoted in the body can be
 re-generated from a single named script in `docs/receipts/`.~~ **Most
 measurements quoted in the body can be re-generated from a named script;
 the exceptions are enumerated rather than glossed — sixteen of
-thirty-four receipts have no surviving generator (Appendix C.3), O3's
+thirty-seven receipts have no surviving generator (Appendix C.3), O3's
 `bench_cycles.py` and O1.a's `pr_curves.py` were never committed
 (§10.4, Appendix E), and no dataset or checkpoint is tracked by git.**
 
@@ -4101,8 +4101,12 @@ figures with the April snapshot struck in place; §9.3's per-module
 table is kept, marked as the 2026-04-20 measurement, because the
 conclusion it supports survives at 89 %.
 
-**3. Sixteen of the thirty-four committed receipts have no surviving
-tool.** `ffdh_ablation.{csv,txt}`, `frcnn_map{,_default}.txt`,
+**3. Sixteen of the thirty-seven committed receipts have no surviving
+tool.** (Thirty-four when this appendix was written; `detector_bench.txt`,
+`seed_reproducibility.txt` and `main_run.txt` have been added since, each
+with a committed generator — `scripts/detector_bench.py`,
+`scripts/seed_check.py` and `main.py --receipt` — so the numerator below
+is unchanged at sixteen.) `ffdh_ablation.{csv,txt}`, `frcnn_map{,_default}.txt`,
 `frcnn_latency.txt`, `heuristic_ablation.txt`, the two
 `heuristic_failure_*.json`, `pr_summary.txt`, `train{,_default}.log`,
 `train_curve{,_default}.csv`, `train_eval.txt`,
@@ -4334,7 +4338,7 @@ re-running the named script against the committed source tree.~~
 
 **Corrected 2026-08-12: that closing sentence was contradicted by
 Appendix C.3 in this same document, which records that sixteen of the
-thirty-four committed receipts have no surviving generator.** The
+thirty-seven committed receipts have no surviving generator.** The
 accurate statement is narrower and is given per cell rather than in
 general. Nine of the eleven project-requirement cells can be
 re-verified from committed tooling. **O3** named `bench_cycles.py`,
