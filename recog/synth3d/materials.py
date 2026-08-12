@@ -47,6 +47,30 @@ def set_input(node, name, value) -> bool:
     return False
 
 
+def socket_by_identifier(sockets, identifier):
+    """A node socket addressed by its stable `identifier` - not name, not index.
+
+    `ShaderNodeMix` is the node that replaced `ShaderNodeMixRGB` in Blender
+    4.0, and it carries one typed A/B/Result triple per `data_type` behind a
+    single interface. Every one of those triples is *named* "A"/"B"/"Result",
+    and there are two sockets named "Factor". A name lookup on a bpy
+    collection silently returns whichever duplicate comes first, and a
+    positional index is the socket layout of one particular Blender build.
+    The `identifier` - "Factor_Float", "A_Float", "B_Float", "Result_Float" -
+    is the only key that actually says which typed socket is meant.
+
+    Raises `KeyError` listing what the running build does offer, rather than
+    returning None: a caller that cannot find the socket it asked for must
+    stop, not quietly wire up a different one.
+    """
+    for s in sockets:
+        if s.identifier == identifier:
+            return s
+    raise KeyError(
+        f"no node socket with identifier {identifier!r}; this Blender build "
+        f"offers {[s.identifier for s in sockets]}")
+
+
 def rng_range(rng: random.Random, span: Tuple[float, float]) -> float:
     lo, hi = span
     return lo if lo == hi else rng.uniform(lo, hi)
@@ -55,6 +79,67 @@ def rng_range(rng: random.Random, span: Tuple[float, float]) -> float:
 def rng_color(rng: random.Random, span) -> Tuple[float, float, float, float]:
     lo, hi = span
     return tuple(rng.uniform(a, b) for a, b in zip(lo, hi)) + (1.0,)
+
+
+# A bpy float socket stores single precision, so a value written from a
+# Python float reads back with ~1e-7 relative error. This is a "did the write
+# land at all" tolerance, not a physical one - the failure being guarded
+# against leaves the socket at its 0.5 default or writes to a different
+# socket entirely, both of which are orders of magnitude outside it.
+_SOCKET_TOL = 1e-6
+
+
+def _assert_wear_mix_took(mix, ramp, bsdf, drawn) -> None:
+    """Verify the wear mix `build` just wired matches what `drawn` records.
+
+    This module imports bpy, so pytest cannot reach it - `tests/
+    test_synth3d.py` pins that boundary explicitly - and an assertion that
+    runs on every material built is therefore the only evidence this code
+    path can produce. That is the same treatment
+    `world._assert_procedural_tray_geometry` gives the procedural tray, for
+    the same reason: the failure it guards against renders plausibly and
+    leaves a receipt saying the opposite, so a green test suite and a
+    good-looking image both stay silent.
+
+    The four checks, and the specific way each one can go wrong:
+
+      1/2. The drawn `wear` and `roughness` landed on the FLOAT pair. A
+           lookup that resolves to the Vector or Color pair instead - which
+           is precisely what name- and index-based access to this node
+           risks - writes somewhere harmless-looking and leaves the Float
+           sockets at their defaults.
+      3.   The noise ramp drives B rather than the shader directly. Linking
+           the ramp into Roughness is the exact shape of the old fallback
+           and the reason this function exists.
+      4.   Principled's Roughness is driven by the mix RESULT. If it is fed
+           by anything else, or by nothing, then `drawn["roughness"]` is not
+           what renders while `meta["materials"]` says it is.
+    """
+    factor = socket_by_identifier(mix.inputs, "Factor_Float")
+    a_in = socket_by_identifier(mix.inputs, "A_Float")
+    b_in = socket_by_identifier(mix.inputs, "B_Float")
+    result = socket_by_identifier(mix.outputs, "Result_Float")
+    rough = bsdf.inputs["Roughness"]
+
+    assert abs(factor.default_value - drawn["wear"]) < _SOCKET_TOL, (
+        f"wear {drawn['wear']!r} did not reach the mix Factor_Float socket "
+        f"(reads {factor.default_value!r}); meta['materials'] would record a "
+        f"wear this render never used")
+    assert abs(a_in.default_value - drawn["roughness"]) < _SOCKET_TOL, (
+        f"roughness {drawn['roughness']!r} did not reach the mix A_Float "
+        f"socket (reads {a_in.default_value!r}); meta['materials'] would "
+        f"record a roughness this render never used")
+    assert b_in.is_linked and b_in.links[0].from_node == ramp, (
+        f"the wear noise ramp does not drive the mix B_Float socket "
+        f"(linked={b_in.is_linked}); the surface would render uniformly "
+        f"rough rather than worn")
+    assert (rough.is_linked
+            and rough.links[0].from_node == mix
+            and rough.links[0].from_socket.identifier
+            == result.identifier), (
+        f"Principled BSDF Roughness is not driven by the mix result "
+        f"(linked={rough.is_linked}); the drawn roughness/wear pair is not "
+        f"what will render")
 
 
 def build(preset_name: str, rng: random.Random, cfg, name: str = None):
@@ -93,15 +178,31 @@ def build(preset_name: str, rng: random.Random, cfg, name: str = None):
         ramp.color_ramp.elements[1].position = 0.75
         nt.links.new(noise.outputs["Fac"], ramp.inputs["Fac"])
 
+        # Roughness = mix(drawn roughness, noise ramp, factor=drawn wear).
+        #
+        # Every socket is addressed by identifier and nothing here is
+        # wrapped in a try. The previous version set mix.inputs[2]/[3]
+        # positionally under `except Exception:` and, on failure, linked the
+        # raw ramp straight into Roughness - which discards BOTH
+        # drawn["roughness"] and drawn["wear"] and renders every surface
+        # with an all-or-nothing 0->1 specular swing, while meta["materials"]
+        # still records the two values that never reached the shader. Every
+        # preset in configs/synth3d.yaml has wear >= 0.05 > 0.01, so that
+        # fallback sat on 100% of surfaces, and MIN_LUMA_DELTA above was
+        # measured from renders made on the correct path. A generator that
+        # renders something other than what it recorded is worse than one
+        # that stops, so this stops.
         mix = nt.nodes.new("ShaderNodeMix")
         mix.data_type = "FLOAT"
-        mix.inputs["Factor"].default_value = drawn["wear"]
-        try:
-            mix.inputs[2].default_value = drawn["roughness"]
-            nt.links.new(ramp.outputs["Color"], mix.inputs[3])
-            nt.links.new(mix.outputs[0], bsdf.inputs["Roughness"])
-        except Exception:
-            nt.links.new(ramp.outputs["Color"], bsdf.inputs["Roughness"])
+        socket_by_identifier(mix.inputs, "Factor_Float") \
+            .default_value = drawn["wear"]
+        socket_by_identifier(mix.inputs, "A_Float") \
+            .default_value = drawn["roughness"]
+        nt.links.new(ramp.outputs["Color"],
+                     socket_by_identifier(mix.inputs, "B_Float"))
+        nt.links.new(socket_by_identifier(mix.outputs, "Result_Float"),
+                     bsdf.inputs["Roughness"])
+        _assert_wear_mix_took(mix, ramp, bsdf, drawn)
 
         bump = nt.nodes.new("ShaderNodeBump")
         bump.inputs["Strength"].default_value = 0.02 + 0.10 * drawn["wear"]

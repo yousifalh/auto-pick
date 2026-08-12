@@ -196,13 +196,23 @@ def configure_beauty(cfg, out_png: str, exposure=None):
     c.use_adaptive_sampling = True
     c.adaptive_threshold = cfg.adaptive_threshold
     c.use_denoising = cfg.denoise
+    # Applied only where the attribute exists, because Cycles' denoiser
+    # options have moved across versions - but deliberately NOT under a
+    # blanket `except`. An attribute that is present and rejects a
+    # documented value is a real failure, and swallowing it renders a whole
+    # dataset noisier than the manifest's `denoise: true` claims, with
+    # nothing anywhere recording that the denoiser was never configured.
+    # `c.use_denoising` above is already unguarded, so a build with no
+    # denoiser at all has raised before reaching here; this loop tolerates
+    # attribute-name drift and nothing else.
     for attr, val in (("denoiser", "OPENIMAGEDENOISE"),
                       ("denoising_input_passes", "RGB_ALBEDO_NORMAL"),
                       ("denoising_prefilter", "ACCURATE")):
-        try:
-            setattr(c, attr, val)
-        except Exception:
-            pass
+        if not hasattr(c, attr):
+            print(f"[warn] cycles.{attr} is absent on this Blender build; "
+                  f"leaving its default in place")
+            continue
+        setattr(c, attr, val)
     c.max_bounces = cfg.max_bounces
     c.diffuse_bounces = 4
     c.glossy_bounces = 8
@@ -216,10 +226,25 @@ def configure_beauty(cfg, out_png: str, exposure=None):
     if hasattr(c, "use_light_tree"):
         c.use_light_tree = True
 
-    try:
-        s.view_settings.view_transform = cfg.view_transform
-    except TypeError:
-        pass
+    # No try, and an explicit read-back. Blender raises TypeError on an
+    # invalid enum item, and the previous version caught it and continued -
+    # leaving the run on the build's DEFAULT view transform while the
+    # exposure set on the very next line was applied regardless. That
+    # exposure band (param_space.exposure samples -5.2..-3.2) is tuned
+    # specifically against AgX's response, so under any other transform
+    # every image in the run is uniformly mis-tone-mapped: plausible
+    # pictures, wrong distribution. manifest.json records cfg.to_dict(),
+    # i.e. the REQUESTED transform, so --sweep sheets look internally
+    # consistent precisely because every entry is wrong the same way. The
+    # valid set has moved twice recently (Filmic removed in 4.0, AgX added
+    # in 4.0, Khronos PBR Neutral after), which is the reason to fail loudly
+    # here rather than drift.
+    s.view_settings.view_transform = cfg.view_transform
+    assert s.view_settings.view_transform == cfg.view_transform, (
+        f"view transform did not take: asked for {cfg.view_transform!r}, "
+        f"the scene reads {s.view_settings.view_transform!r}. The exposure "
+        f"band applied below is calibrated against {cfg.view_transform!r} "
+        f"and would mis-tone-map every image in this run.")
     s.view_settings.exposure = cfg.exposure if exposure is None else exposure
 
     if cfg.device == "GPU":
@@ -289,10 +314,17 @@ def _configure_index_render(cfg):
 def read_index_exr(path: str, expect_res=None) -> np.ndarray:
     """Load the EXR back through Blender; return an int32 (H, W) id map."""
     img = bpy.data.images.load(path, check_existing=False)
-    try:
-        img.colorspace_settings.name = "Non-Color"
-    except Exception:
-        pass
+    # Not wrapped in a try. This is the single line standing between the
+    # np.rint() below and a colour-managed float buffer: if the object-index
+    # pass is read back through a display transform, every instance id
+    # decodes to the wrong value and every mask in the dataset is silently
+    # mislabelled while looking entirely normal. A build or OCIO config with
+    # no "Non-Color" space cannot produce correct masks here at all, so it
+    # has to stop rather than continue. (The sibling assignment in
+    # save_mask_png keeps its `pass` on purpose: that image is a diagnostic
+    # PNG written from ids that are already decoded, so a colour-space slip
+    # there costs a slightly wrong debug picture and nothing else.)
+    img.colorspace_settings.name = "Non-Color"
     w, h = img.size
     nchan = img.channels
     if not (w and h and nchan):
