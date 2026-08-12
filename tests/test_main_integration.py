@@ -38,16 +38,63 @@ def demo_config(tmp_path: Path) -> Path:
         "{x_min: -350, x_max: 350, y_min: -350, y_max: 350}}\n"
         "cartridge: {safety_margin_px: 4}\n"
         "occupancy_grid: {resolution_mm_per_cell: 1.5}\n"
-        "motion: {approach_height_mm: 60, insert_height_mm: 2}\n"
+        "motion: {grasp_height_mm: 5, insert_height_mm: 2}\n"
     )
     (root / "configs" / "execution.yaml").write_text(
         "kuka: {host: 127.0.0.1, port: 54611, max_retries: 3}\n"
-        "motion: {approach_height_mm: 60, transport_height_mm: 80, "
-        "insert_height_mm: 2, vacuum_level_percent: 80}\n"
+        "motion: {transport_height_mm: 80, vacuum_level_percent: 80}\n"
         "simulation: {listen_host: 127.0.0.1, listen_port: 54611, "
         "drop_probability: 0.0, simulated_move_time_ms_per_100mm: 5}\n"
     )
     demo = root / "configs" / "demo.yaml"
+    demo.write_text(
+        "recognition: configs/recognition.yaml\n"
+        "planning: configs/planning.yaml\n"
+        "execution: configs/execution.yaml\n"
+        "mode:\n  source: synthetic\n  robot: mock\n  max_cycles: 3\n"
+        "  log_level: WARNING\n"
+    )
+    return demo
+
+
+@pytest.fixture
+def one_scene_config(tmp_path: Path) -> Path:
+    """`demo_config`, but ONE scene, cycled.
+
+    `_synthetic_source` wraps around, so every cycle sees the same frame
+    and the twin's IoU matcher keeps the same cartridge alive across
+    them - the fixed-mount-camera case, where a reservation can actually
+    outlive the queue that made it.
+    """
+    root = tmp_path / "auto-pick-1"
+    (root / "configs").mkdir(parents=True)
+    (root / "recog" / "dataset" / "images").mkdir(parents=True)
+    (root / "recog" / "dataset" / "annotations").mkdir(parents=True)
+
+    from recog.synth_dataset import generate_dataset
+    generate_dataset(str(root / "recog" / "dataset"), n=1, seed=9,
+                     size=(480, 640))
+
+    (root / "configs" / "recognition.yaml").write_text(
+        "dataset:\n"
+        f"  img_dir: {root}/recog/dataset/images\n"
+        "training:\n  checkpoint_dir: /tmp/nothing\n"
+    )
+    (root / "configs" / "planning.yaml").write_text(
+        "battery: {diameter_mm: 18.5, length_mm: 65.0}\n"
+        "camera: {mm_per_px_x: 0.38, workspace_bounds_mm: "
+        "{x_min: -350, x_max: 350, y_min: -350, y_max: 350}}\n"
+        "cartridge: {safety_margin_px: 4}\n"
+        "occupancy_grid: {resolution_mm_per_cell: 1.5}\n"
+        "motion: {grasp_height_mm: 5, insert_height_mm: 2}\n"
+    )
+    (root / "configs" / "execution.yaml").write_text(
+        "kuka: {host: 127.0.0.1, port: 54617, max_retries: 3}\n"
+        "motion: {transport_height_mm: 80, vacuum_level_percent: 80}\n"
+        "simulation: {listen_host: 127.0.0.1, listen_port: 54617, "
+        "drop_probability: 0.0, simulated_move_time_ms_per_100mm: 5}\n"
+    )
+    demo = root / "configs" / "demo_one.yaml"
     demo.write_text(
         "recognition: configs/recognition.yaml\n"
         "planning: configs/planning.yaml\n"
@@ -64,6 +111,46 @@ def test_main_run_short_cycle(demo_config: Path):
     # In a 0%-drop environment most cycles should place successfully
     assert stats["placed"] + stats["pick_failed"] + stats["place_failed"] == \
         stats["cycles"]
+
+
+def test_run_surfaces_released_reservations(one_scene_config: Path,
+                                            tmp_path: Path):
+    """`Planner.released_reservation_count` reaches the run's output.
+
+    The counter guards a failure that is invisible in every other number
+    here: without the release, each re-plan leaves the twin's cartridge
+    holding reservations for cells nobody picked, the packer runs out of
+    room, and the run reports "queue empty, job done" over a tray that is
+    still full - with `placed` reading exactly the same as a healthy run.
+
+    Asserted NON-ZERO deliberately. `main` executes one pose per cycle
+    and re-plans, so a re-planning run over a queue longer than one MUST
+    release; a zero would mean either the release stopped happening or
+    the statistic stopped being wired to it, and an
+    `== stats["released_reservations"]` self-comparison would pass in
+    both cases.
+
+    It needs `one_scene_config`, not `demo_config`, and that is the point
+    of the separate fixture: the twin matches cartridges across frames by
+    IoU and DROPS any it does not see again
+    (`EnvironmentModel.update_from_snapshot`), so on `demo_config`'s three
+    unrelated scenes the previous frame's cartridge is discarded whole and
+    its stale reservations go with it, uncounted - `released_reservations`
+    reads 0 there while nothing is leaking. A repeated scene is the
+    fixed-mount-camera case this counter is actually about.
+    """
+    receipt = tmp_path / "receipts" / "run.txt"
+    stats = main_run(str(one_scene_config), receipt_path=str(receipt))
+
+    assert stats["cycles"] >= 2, "fixture must re-plan for this to assert"
+    assert stats["queue_poses"] > stats["cycles"], (
+        "queues must be longer than one pose for any reservation to be "
+        "left over")
+    assert stats["released_reservations"] > 0, (
+        "a re-planning run released no reservations: either the planner "
+        "stopped releasing them or main stopped reporting the count")
+    assert (f"reservations released  : {stats['released_reservations']} "
+            in receipt.read_text(encoding="utf-8"))
 
 
 def test_full_cycle_with_a_stub_segmenter_attaches_masks_and_plans():
@@ -335,12 +422,11 @@ def demo_seg_config(tmp_path: Path) -> Path:
         "{x_min: -350, x_max: 350, y_min: -350, y_max: 350}}\n"
         "cartridge: {safety_margin_px: 4}\n"
         "occupancy_grid: {resolution_mm_per_cell: 1.5}\n"
-        "motion: {approach_height_mm: 60, insert_height_mm: 2}\n"
+        "motion: {grasp_height_mm: 5, insert_height_mm: 2}\n"
     )
     (root / "configs" / "execution.yaml").write_text(
         "kuka: {host: 127.0.0.1, port: 54613, max_retries: 3}\n"
-        "motion: {approach_height_mm: 60, transport_height_mm: 80, "
-        "insert_height_mm: 2, vacuum_level_percent: 80}\n"
+        "motion: {transport_height_mm: 80, vacuum_level_percent: 80}\n"
         "simulation: {listen_host: 127.0.0.1, listen_port: 54613, "
         "drop_probability: 0.0, simulated_move_time_ms_per_100mm: 5}\n"
     )

@@ -409,6 +409,16 @@ def run(config_path: str, receipt_path: Optional[str] = None) -> Dict[str, int]:
     stats["placement_disagreements"] = planner.placement_disagreement_count
     stats["bad_detector_boxes"] = planner.bad_detector_box_count
     stats["rescaled_area_drops"] = planner.rescaled_area_drop_count
+    # Reservations released because their queue was rebuilt before they
+    # were executed. This loop executes ONE pose per cycle and re-plans,
+    # so a queue of n leaves n-1 reservations behind every cycle and a
+    # non-zero count is the NORMAL state, not an alarm. It is surfaced
+    # because the failure it guards against is invisible from every
+    # other number here: without the release, the twin's cartridges fill
+    # with cells nobody picked, the packer runs out of room, the queue
+    # goes empty and the run reports "queue empty, job done" over a tray
+    # that is still full. `placed` would look identical.
+    stats["released_reservations"] = planner.released_reservation_count
 
     # A segmentation run that planned nothing is a FAILED run, not a
     # quiet one. The two ways this happens are both configuration
@@ -615,6 +625,8 @@ def _write_receipt(
         "",
         f"  loose batteries detected: {stats['batteries_detected']}",
         f"  poses queued           : {stats['queue_poses']}",
+        f"  reservations released  : {stats['released_reservations']} "
+        f"(queued, then re-planned before execution - expected non-zero)",
         f"  placed                 : {stats['placed']}",
         f"  pick failed            : {stats['pick_failed']}",
         f"  place failed           : {stats['place_failed']}",
