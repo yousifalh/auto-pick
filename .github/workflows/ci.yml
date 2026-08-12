@@ -1,0 +1,59 @@
+name: CI
+
+# What this proves: a fresh clone installs with the README's own command and
+# the torch-free test suite and demo loop pass on a machine with no GPU, no
+# torch and no Blender. `pip install -e .` was broken outright until 5ad9c85
+# (setuptools' flat-layout discovery refused to guess between the top-level
+# packages), which is exactly the class of breakage a reader hits first.
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: install + torch-free suite
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      # 3.14 is the version a fresh clone was verified on (2026-08-12).
+      # pyproject declares >=3.10; older versions are not tested here.
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      # opencv-python (not -headless) is a hard dependency, and its manylinux
+      # wheel links libGL, which a headless runner does not ship.
+      - name: System libraries for opencv-python
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1
+
+      # Verbatim the README's "Running it" step 1, on a clean checkout: this
+      # step failing is the failure this workflow exists to catch.
+      - name: Install (README step 1)
+        run: pip install -e .
+
+      # The README's dev install; adds pytest and pytest-cov, nothing else.
+      - name: Install dev extras
+        run: pip install -e ".[dev]"
+
+      # 719 of the 752 tests. The other 33 are skipped here by design, not
+      # excluded by a filter: 31 need torch (`.[train]`, a ~GB download whose
+      # useful tests want a GPU), 1 needs a Blender-generated COCO dataset,
+      # 1 needs the `.[cad]` STEP converter. Each guards itself with an
+      # importorskip/skipif, so this run is green rather than quietly thinner.
+      - name: Tests
+        run: pytest -q
+
+      # The README's "Running it" steps 2 and 3: the torch-free demo loop,
+      # which is what the reproducibility claim rests on.
+      - name: Torch-free demo loop
+        run: |
+          python -m recog.synth_dataset --out recog/dataset --n 50
+          python main.py --config configs/demo.yaml
