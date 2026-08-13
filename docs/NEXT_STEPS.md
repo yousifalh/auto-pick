@@ -896,7 +896,9 @@ as this item's next steps in Step 5 below. Measurement:
 `docs/superpowers/specs/2026-08-11-placement-safety.md` §2.3–§2.4;
 decision and rationale: FDR §13.2.1.
 
-### 7. Three gaps the 2026-08-12 claim audit opened, that documentation cannot close
+### 7. ~~Three~~ Four gaps the 2026-08-12 claim audit opened, that documentation cannot close
+
+*(a fourth, (d), was added 2026-08-13 by the objective-closure pass)*
 
 The FDR corrections of 2026-08-12
 (`docs/superpowers/specs/2026-08-12-fdr-claim-corrections.md`) fixed
@@ -919,7 +921,8 @@ on a Cat-0 stop, but it has no notion of *elapsed* dwell, so a bound
 added controller-side would need a test that measures time rather than
 state.
 
-**(b) O3's published latency distribution has no artefact.**
+**(b) O3's published latency distribution has no artefact — and is now
+withdrawn, because re-measuring it made it worse.**
 `bench_cycles.py` was never committed (`git log --all` is empty for it),
 so "mean 5.0 / median 3.0 / p95 13.0 ms" — and the 10 % `empty_queue`
 rate in FDR §10.6 — cannot be checked in either direction. The budget
@@ -927,7 +930,17 @@ itself is fine: two committed tests and §13.2.1 exercise it, and audit K
 measured the true worst case at 2.04 ms against 8 ms. What is missing is
 a committed cycle benchmark emitting the distribution, in the shape
 `scripts/forbidden_bench.py` and `scripts/detector_bench.py` already
-take. **Related and load-bearing:** that 3.9× margin is held by
+take. **Updated 2026-08-13.** `Planner.cycle` was re-timed at HEAD on
+`tests/test_planner.py`'s own fixture, 100 cycles per arm, twice:
+**7.8–7.9 ms median cold, 5.7–6.0 ms warm**, against the published
+3.0 ms median and the "under 2 ms" steady state. FDR §10.4 and
+Appendix E now withdraw the distribution and keep only the threshold.
+**Build the benchmark only if the report intends to quote a
+distribution again, and budget for the verdict getting worse**: the
+cold path now runs *at* the 8 ms budget rather than at 38 % of it, so
+the honest artefact is less flattering than the number it replaces.
+That is a finding worth having; it is not one that makes the report
+look better. **Related and load-bearing:** that 3.9× margin is held by
 `_MAX_CARTRIDGE_EXTENT_MM = (81.7, 180.0)` in
 `plan/placement_area.py`, a safety interlock written to reject bad
 detector boxes, which incidentally caps the packer's input size. Raising
@@ -953,6 +966,27 @@ find the parameter and stop looking. The mirror-image finding: there is
 `pick_grasp_height_mm` (5.0) and `place_insert_height_mm` (2.0) — both
 read by `PlannerConfig.from_dict` — come from dataclass defaults that no
 config states.
+
+**(d) O2's Fail is exact in prose but still first-order in the tooling
+(added 2026-08-13).** FDR §10.5 now states O2 in millimetres as well as
+pixels, which is the only unit its own derivation (a 3 mm gripper
+stack-up) makes sense in, and shows the Fail reaches the median:
+`recog/dataset3d`'s per-scene `ortho_scale` spans 0.488–1.086 mm/px
+(median 0.771), so O2's 0.76 mm allowance is worth 0.99 px at the median
+scene and the shipped detector's 1.13 px median is ≈ 0.87 mm — outside
+it. **Those millimetre figures are the pixel statistic times the
+corpus's median scale, not a per-pair join**, because
+`scripts/detector_bench.py` does not currently attach each matched pair
+to its own frame's scale. `recog/calibration.py` already exposes
+`frame_mm_per_px_for_image()`, which reads the per-scene sidecar;
+joining it per pair and emitting a millimetre column beside the pixel
+one is roughly **twenty lines** and converts an approximate Fail into an
+exact one. **Do not expect it to change the verdict** — no reading
+passes, and the point of the work is to end the "but the median passes"
+objection permanently, not to chase a Pass. The requirements finding is
+the deliverable: the criterion carried 5 px (v1/v2 prose, on corners),
+2 px (their own tables, on centroids) and 2.63 px (the shared
+derivation) across three drafts, with no quantile attached anywhere.
 
 ---
 

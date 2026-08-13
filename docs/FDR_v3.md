@@ -56,10 +56,14 @@ the scope note opening §6.3.1.) End-to-end the perception + planning stack cons
 median 6 ms per cycle, leaving the 50 ms PPR overall budget
 dominated by the simulated robot round-trip. The mock-driven
 verification suite contains ~~102 passing tests and reaches 86 %
-branch coverage~~ **1 074 passing tests and reaches 89 % branch
+branch coverage~~ ~~1 074 passing tests and reaches 89 % branch
 coverage on O6's scope (65 % over every module the coverage config
-resolves to today)** across the production source tree; the 102/86 %
-figures were the 2026-04-20 run and are superseded (§9.3, Appendix C.2).
+resolves to today)~~ **1 210 passing tests and reaches 93 % branch
+coverage over `main.py`'s import closure (67 % over every module the
+coverage config resolves to today)**; the 102/86 % figures were the
+2026-04-20 run and the 89 % was measured over an April module list
+that excluded the packer and the segmenter — both superseded 2026-08-13
+(§9.3, Appendix C.2).
 
 Three findings worth reading the body for. (1) An anchor-design
 ablation under identical 15-epoch schedules demonstrates that the
@@ -97,15 +101,36 @@ zero; no claim is made there. See §6.3.1.
 
 Status against the success criteria. ~~Four of six numbered project
 objectives are fully met (centroid error ≤ 2 px, queue rebuild ≤ 8 ms,
-deterministic queue, ≥ 70 % branch coverage).~~ **Corrected
+deterministic queue, ≥ 70 % branch coverage).~~ ~~**Corrected
 2026-08-12: three of six are fully met — queue rebuild ≤ 8 ms,
-deterministic queue, ≥ 70 % branch coverage.** O2 (centroid error
+deterministic queue, ≥ 70 % branch coverage.**~~ **Corrected again
+2026-08-13: four of six are fully met — mAP@0.5 ≥ 0.90 *in domain*,
+queue rebuild ≤ 8 ms, deterministic queue, ≥ 70 % branch coverage.**
+O1 (mAP@0.5 ≥ 0.90) had been carried against April's superseded
+checkpoint at 0.874; the shipped detector scores **0.9053** on the
+production configuration at its operating confidence threshold, on a
+held-out 150-image split of the Blender corpus it was trained on
+(`docs/receipts/detector_bench.txt` arm 3). That is a re-citation, not
+a retrain, and it certifies **in-domain performance only**: on the six
+scorable held-out phone photographs the same checkpoint scores
+**0.8484**, which does not clear the bar and does not sample enough to
+settle it either (`docs/receipts/real_photo_eval.txt`).
+O5 (deterministic queue) is now observed rather than argued: a test
+added 2026-08-13 runs the planner twice on one snapshot and asserts
+bit-identical output. O6 is re-scoped from an April module list that
+excluded the packer and the segmenter to `main.py`'s import closure,
+and reads **93 %** there. O2 (centroid error
 ≤ 2 px) was carried as a Pass on a unit test of the metric that
 measured no detector; measured for the first time in §10.5, the
 shipped detector's centroid error is a **1.13 px median but a 4.4 px
-p95, with 24 % of matched detections outside the 2 px bound**, so O2
-is partially met, not met. O1 (mAP@0.5 ≥ 0.90) is
-partially met at 0.87 inside the CPU-only training envelope. O4
+p95, with 24 % of matched detections outside the 2 px bound**, and
+restated in the millimetres its own derivation uses it **fails at the
+median as well** — the corpus's median scale is 0.771 mm/px, so O2's
+0.76 mm allowance is worth 0.99 px there and the 1.13 px median is
+≈ 0.87 mm. **O2 is not met, at any quantile, in either unit**, and the
+requirement was never internally consistent to begin with: 5 px in v1
+and v2 prose, 2 px in their own tables, 2.63 px from the shared
+derivation, and no quantile attached anywhere (§3, §10.5). O4
 (single-pick-failure recovery) is not assessed: the laboratory
 robot was withdrawn in mid-March and the executor was not validated
 against real hardware. The standards-compliance items (IEC 60204-1
@@ -144,15 +169,24 @@ KUKA EthernetKRL 3.1 binary protocol with CRC-16 integrity. Measured over
 100 synthetic frames, the perception–planning algorithmic stack runs in a
 median 3.0 ms for perception and 3.0 ms for planning (medians inside the
 8 ms O3 budget; the planning p95 of 13.0 ms is not, and the distribution
-behind these three figures is no longer reproducible — §10.4), with
+behind these three figures is **withdrawn** — it had no artefact, and
+re-measured at HEAD the planner cycle runs 7.8–7.9 ms median cold and
+5.7–6.0 ms warm, so the 8 ms threshold still holds but the published
+distribution does not reproduce and the newer measurement is the worse
+one — §10.4), with
 ~~86% branch coverage across the production source and 102 passing
-tests~~ **89 % branch coverage on O6's scope and 1 074 passing tests**.
+tests~~ ~~89 % branch coverage on O6's scope and 1 074 passing tests~~
+**93 % branch coverage over `main.py`'s import closure and 1 210
+passing tests**.
 Two 15-epoch from-scratch Faster R-CNN runs on the
 synthetic 85/15 split — one with the PPR's custom k-means anchors,
 one with torchvision's defaults — show the latter reaches val mAP@0.5
 = 0.87 against the former's 0.76 (and the heuristic baseline of 0.40),
 sitting within 0.03 of the 0.90 PPR target and forcing a revision of
-the anchor-design choice originally specified in the PPR. The
+the anchor-design choice originally specified in the PPR. **Those two
+runs are the April chapter (§10); the detector the project ships was
+trained later on a 1 000-scene Blender corpus and clears the target
+in domain at mAP@0.5 = 0.9053 (§10.1, §10.5).** The
 laboratory KR 6 R700 was withdrawn for an external project in
 mid-March 2026 and lab access was not regained before the deadline,
 so the execution layer (EthernetKRL 3.1 framing, CRC-16 trailer,
@@ -376,12 +410,12 @@ the examiner a clear map from artefact back to requirement.
 
 | ID | Requirement | Threshold | Verified in |
 |----|-------------|-----------|-------------|
-| O1 | Recognition accuracy | mAP@0.5 ≥ 0.90 | `tests/test_evaluate.py` |
+| O1 | Recognition accuracy | mAP@0.5 ≥ 0.90 | `docs/receipts/detector_bench.txt` arm 3 *(re-cited 2026-08-13; was `tests/test_evaluate.py`, which measures no detector — see §10.5)* |
 | O2 | Localisation precision | Centroid error ≤ 2 px | `docs/receipts/detector_bench.txt` *(corrected 2026-08-12; was `tests/test_evaluate.py`, which measures no detector — see §10.5)* |
 | O3 | Planning latency | Queue rebuild ≤ 8 ms | `tests/test_bin_packing.py`, `tests/test_planner.py` |
 | O4 | Execution robustness | Single pick failure triggers replan | (lab access not obtained — §10.3) |
-| O5 | Determinism | Fixed input → fixed output | `tests/test_planner.py` |
-| O6 | Test coverage | ≥ 70 % line coverage | `pytest --cov` receipt |
+| O5 | Determinism | Fixed input → fixed output | `tests/test_planner.py::test_row_major_ordering` (ordering) and `::test_two_fresh_planners_on_one_snapshot_produce_the_same_queue` (fixed input → fixed output) *(second test added 2026-08-13 — see §10.5)* |
+| O6 | Test coverage | ≥ 70 % line coverage | `pytest --cov` receipt, scope A |
 
 The mAP@0.5 threshold of 0.90 is one standard deviation above the 0.85
 baseline reported for Faster R-CNN on COCO subsets resembling the two-
@@ -391,6 +425,25 @@ gripper has a 6 mm grasp radius, and at a 0.38 mm/px calibration the
 recogniser is allowed one third of the 3 mm end-to-end budget.
 Requirements outside the six — safety (IEC 60204 Cat-0 E-stop),
 sustainability, and ergonomics — are discussed in §11.
+
+**O2's threshold does not follow from O2's derivation, and this was
+never recorded (added 2026-08-13).** The paragraph above allocates the
+recogniser **one third of 3 mm = 1.00 mm**, which at the declared
+0.38 mm/px is **2.63 px** — not the 2 px the table states, and not the
+**5 px** that FDR v1 §1.2 and FDR v2 §1.2 state in prose over a
+*different* measurand ("centroid localisation error **on cartridge
+corners** … shall not exceed 5 px"), while both of those drafts' own
+criteria tables say 2 px. This revision harmonised to 2 px without
+saying that it had. Three numbers, two measurands, and **no draft, no
+appendix and no config key attaches a quantile to any of them**:
+`configs/recognition.yaml`'s `evaluation.centroid_error_target_px: 2.0`
+carries none either. The consequence is worked through in §10.5, where
+the criterion is measured for the first time; the reason it cannot be
+rescued by choosing a friendlier reading is that the 3 mm is a
+**tolerance stack-up** — a 6 mm-radius cup on a 9 mm-radius cell has
+3 mm of lateral slop before it overhangs the cell edge — and a
+stack-up bounds each individual grasp. There is no grasp that succeeds
+at the median.
 
 **Operating envelope: the cartridge geometries these criteria can be
 certified over (added 2026-08-11).** The six criteria are properties of
@@ -1197,7 +1250,21 @@ deterministic given a fixed snapshot: FFDH sorts by a total-order key,
 nearest-battery uses the canonical min over a sorted `available` list,
 cell assignment walks the packed items in fixed (y, x) order. No thread
 pool, no unseeded random sampling, no floating-point reduction that might
-reorder. Verified by `tests/test_planner.py::test_row_major_ordering`.
+reorder. ~~Verified by `tests/test_planner.py::test_row_major_ordering`.~~
+**Corrected 2026-08-13: `test_row_major_ordering` verifies the
+*ordering*, which is only half of what this paragraph claims.** The
+claim that a fixed snapshot yields a fixed queue is now observed as
+well as argued, by
+`tests/test_planner.py::test_two_fresh_planners_on_one_snapshot_produce_the_same_queue`,
+which cycles two fresh `Planner` instances on one snapshot and asserts
+the queues agree on `float.hex()` of every millimetre coordinate
+(§9.4, §10.5). One caveat this paragraph should carry: the guarantee is
+per-`Planner`, because the instance owns a persistent `Scene`, and it
+does **not** extend to the end-to-end loop —
+`execution/mock_kuka_server.py`'s failure injection draws from an
+unseeded `random.random()`, which is downstream of the planner and
+outside O5's scope but is a genuine reproducibility gap in `main.py`
+runs.
 
 **Corrected 2026-08-12: what a PLANNED transition actually marked.** The
 transitions above are as designed, but until this date `_build_pose`
@@ -1659,9 +1726,11 @@ space is large). Cross-module integration tests wire two or more
 modules — the best example is `test_planner.py::test_cycle_produces_poses`,
 which exercises extractor, packer, and queue generator together on a
 deterministic snapshot. The recognition and planning layers run under
-a single `pytest` invocation and collectively cover ~~86 %~~ **89 %**
+a single `pytest` invocation and collectively cover ~~86 %~~ ~~89 %~~
+**93 %**
 of
-branch-counted lines on O6's 18-module scope (§9.3), excluding
+branch-counted lines over `main.py`'s import closure — the scope O6 is
+now verdicted on, replacing the 18-module snapshot (§9.3) — excluding
 torch-gated files in the optional
 `[train]` extras. The execution layer's branch coverage is
 incidentally counted in the total but the corresponding code paths
@@ -1715,13 +1784,49 @@ as Blender-only renderers, synthetic-data generators and CLI entry
 points landed, several of which cannot be unit-tested outside Blender
 and sit at 0 %.
 
-**The O6 conclusion survives, and by a wider margin than it claimed: 89 %
-on O6's own scope against the ≥ 70 % threshold.** What does not survive
+~~**The O6 conclusion survives, and by a wider margin than it claimed: 89 %
+on O6's own scope against the ≥ 70 % threshold.**~~ What does not survive
 is the table and the sentence attaching it to that receipt. Appendix
 C.2 and Appendix E's O6 row already carried the dual-scope disclosure;
-this section did not, and now does. The suite itself stands at **1 074
-tests** at the head this revision describes (`pytest --collect-only`),
-not the 102 quoted in §1 and Appendix C.
+this section did not, and now does. The suite itself stands at
+**1 212 collected, 1 210 passing and 2 skipped** on a clean worktree of
+`885a044` (2026-08-13), not the 102 quoted in §1 and Appendix C, and
+not the 1 074 this paragraph carried on 2026-08-12.
+
+**Re-scoped 2026-08-13, and the "18 modules O6 was written against" is
+retired.** That list was never a scope statement — it is a snapshot of
+whatever `pytest --cov` printed on 2026-04-20, and it is wrong in both
+directions. Computed from the AST import graph of `main.py`, it
+**omits four modules that run in production**: `common/packing.py` (the
+packer O3 is certified on), `plan/arbitration.py`,
+`recog/bay_segmenter.py` (the shipping segmentation path §13 spends
+most of its pages certifying) and `recog/calibration.py`. It
+**includes three that `main.py` never loads**: `recog/augmentation.py`,
+`recog/dataset.py` and `recog/evaluate.py`, all training and evaluation
+tooling. A headline that excludes the packer and the segmenter is not
+"the production code", which is what O6's wording claims to measure.
+
+The replacement denominator is mechanically derivable rather than
+curated: **`main.py`'s transitive import closure**, less `recog/model.py`,
+which `[tool.coverage.run] omit` excludes because it needs torch. The
+derivation script and its output are in the receipt, so a reader can
+check the membership rather than take it. Measured on one clean run at
+`885a044`:
+
+| Scope | Modules | Stmts | Branch cover |
+|---|---:|---:|---:|
+| **`main.py`'s import closure — O6's figure** | **19** | **1 845** | **93 %** |
+| Everything `[tool.coverage.run] source` resolves to — the disclosure | 49 | 7 208 | 67 % |
+| ~~The 2026-04-20 18-module list — retired~~ | ~~18~~ | ~~1 784~~ | ~~91 %~~ |
+
+**O6 is met at 93 % over the code `main.py` actually runs**, and the
+67 % over the full configured source stays on the record, below the
+70 % bar, because Blender-only renderers, dataset generators and CLI
+entry points cannot be unit-tested outside Blender and sit at 0 %. The
+two figures differ by scope, not by regression: no module lost
+coverage. Both, and the retired third, are in
+`docs/receipts/pytest-cov.txt` with the exact command that produced
+each.
 
 ### 9.4 Property-based invariants
 
@@ -1733,6 +1838,15 @@ asserts placements come out sorted lexicographically by
 `(grid_row, grid_col)` per cartridge. *Evaluator self-consistency*:
 `test_evaluate.py` checks that the 11-point AP returns 1.0 on a
 perfect-prediction synthetic case and 0.0 on a no-prediction case.
+
+**A fourth, added 2026-08-13 because O5 claimed it and nothing
+asserted it.** *Repeatability*:
+`test_planner.py::test_two_fresh_planners_on_one_snapshot_produce_the_same_queue`
+runs the whole cycle on two fresh `Planner` instances over one snapshot
+and asserts the queues are equal field-by-field and identical under
+`float.hex()` on every millimetre coordinate. §6.5 argues determinism
+by construction; this observes it. See §10.5 for why the test must use
+two instances rather than cycling one twice.
 
 ### 9.5 Reproducibility
 
@@ -1838,6 +1952,63 @@ model is not a precision improvement (the two are similar at low
 recall) but a recall improvement of 0.4–0.5 absolute, which
 directly attacks the `empty_queue` failure rate quoted in §10.6.
 
+**§10 is the April chapter, and the project has a materially better
+detector than the one it reports (added 2026-08-13).** Everything above
+is the 2026-04-20 run: 100 cv2-composited images, 85/15 split,
+ResNet-34+FPN **from scratch**, 15 epochs, batch 1, CPU, ~31 min
+(`docs/receipts/train_eval.txt`). The 0.874 default-anchor arm is not an
+ablation baseline set up to lose — it is §10's *winner*, the better of
+the two arms §10.7 compares, and it is the best detector this section
+knows about. The section was never rewritten when the Blender detector
+of §13 landed. On the production configuration —
+`configs/recognition.yaml` as shipped, `best.pt`, the 150-image
+`recog/dataset3d` val split, at the **operating** confidence of 0.70
+rather than the 0.05 used to expose a full PR curve — the shipped
+detector scores **mAP@0.50 = 0.9053** with precision **0.9488** and
+recall **0.9544**, and localises **4.3×** better (1.13 px vs 4.88 px
+median centroid). Receipt `docs/receipts/detector_bench.txt` arm 3,
+regenerable by `python scripts/detector_bench.py`.
+
+**Cite that figure with its arm, its quantity and its checkpoint, because
+0.9053 appears twice in that receipt meaning two different things.** Arm
+2's **`AP_battery@0.50`** is 0.9053 and arm 3's **`mAP@0.50`** is also
+0.9053 — the same four digits, a different quantity, a different
+checkpoint and a different corpus. The figure O1 is verdicted on is
+*arm 3's `mAP@0.50`*: shipped `best.pt`, shipped anchors
+(`[0.28, 0.5, 1.0, 2.0, 3.5] × [40, 64, 96, 144]`), 150-image
+`recog/dataset3d` validation split, confidence 0.70, NMS IoU 0.40. That
+arm is also the answer to "the shipped detector has no published
+held-out mAP" — true of `frcnn_map.txt` and `frcnn_map_default.txt`,
+which score April checkpoints, and not true since
+`detector_bench.txt` was committed.
+
+| | §10's detector (arm 2) | shipped (arm 3) |
+|---|---|---|
+| corpus | `recog/dataset`, 100 cv2 composites; 15 val images / 134 GT | `recog/dataset3d`, 1 000 Blender scenes; 150 val images / 1 205 GT |
+| training | 15 epochs, bs 1, CPU, from scratch | 35 epochs, bs 2, GPU |
+| **inference resize** | **min 320 / max 512** | **min 500 / max 900** |
+| score threshold | 0.05 (full PR curve) | 0.70 (operating point) |
+| mAP@0.50 | 0.8736 | **0.9053** |
+| precision · recall | *not quotable at 0.05* | 0.9488 · 0.9544 |
+| centroid median | 4.88 px | **1.13 px** |
+
+**Part of that localisation gap is an evaluation artefact, not model
+quality, and the honest comparison has to net it out.** Both corpora are
+natively 1280 × 720. `torchvision`'s detection transform scales by
+`min(min_size / 720, max_size / 1280)`, so arm 2 runs at
+`min(320/720, 512/1280) = 0.400` — the network sees 512 × 288 — and
+arm 3 at `min(500/720, 900/1280) = 0.694`, seeing 889 × 500. Boxes are
+mapped back to 1280 × 720 before scoring, so **one network-space pixel
+of regression error is reported as 2.50 px in arm 2 and 1.44 px in
+arm 3: a factor of 1.74 that is present before any question of which
+network is better.** The remaining ~2.5× of the 4.3× is corpus,
+schedule and initialisation. §10.7's *losing* arm is additionally no
+longer reproducible: `docs/receipts/train_eval.txt` names
+`recog/checkpoints/best.pt` as the epoch-11 custom-anchor checkpoint
+scoring 0.7643, and the file at that path today is the shipped Blender
+model written over it. `default_anchors_best.pt` survives, so the
+winning arm can be re-run and the losing one cannot.
+
 ### 10.2 Planning results
 
 ![Figure 4 — FFDH latency vs perception/planning distributions](figures/fig4_latency.png)
@@ -1912,6 +2083,33 @@ either direction. Committing a cycle benchmark, as
 `scripts/forbidden_bench.py` already is for §6.3.1, is what would
 settle it.
 
+**The distribution is withdrawn, not merely un-receipted, because
+re-measuring it makes it worse (2026-08-13).** `Planner.cycle` was
+re-timed at HEAD on this project's own committed fixture —
+`tests/test_planner.py`'s 800 × 600 synthetic frame, one cartridge,
+eight batteries, so per-cartridge equals per-cycle — over 100 cycles
+per arm after a five-cycle warm-up, on the `HeuristicPlacementAreaExtractor`
+path that is the arm this table measured. Two independent runs:
+
+| arm | mean | median | p95 | min | max |
+|---|---:|---:|---:|---:|---:|
+| cold (fresh `Planner`, extractor runs) | 7.89–7.95 ms | **7.82–7.91 ms** | 8.27–8.48 ms | 7.55 ms | 8.62–9.06 ms |
+| warm (twin cached, FFDH-only) | 5.80–6.18 ms | **5.71–5.98 ms** | 6.18–7.09 ms | 5.53 ms | 7.79–9.47 ms |
+
+Against the withdrawn table and the paragraph above it: the cold median
+is **~2.6 × the published 3.0 ms** and sits essentially *on* the 8 ms
+budget rather than at 38 % of it, and the warm path is **~3 × the
+"under 2 ms"** claimed two paragraphs up — which is therefore withdrawn
+with the rest. The published p95 of 13.0 ms is, conversely,
+*pessimistic* against today's 8.3–8.5 ms. The distribution moved in
+both directions, so it cannot be repaired by adjustment; it is
+withdrawn. **What survives is exactly the threshold**, and it survives
+on the two named committed tests and §13.2.1, none of which depends on
+this table. This measurement was taken from a session scratchpad and is
+not itself receipted — it is reported to justify the withdrawal, not to
+replace the withdrawn figures with new ones, and no number from it
+should be quoted as a result.
+
 **And one load-bearing accident worth recording next to the budget,
 because nothing in the code or the tests says it.** The margin O3 enjoys
 is not a property of the packer. `SegmentationPlacementAreaExtractor`
@@ -1930,6 +2128,23 @@ which the extractor cannot deliver. **Anyone who raises
 it, and no test would report the loss of margin.** The measurement
 behind this paragraph is
 `docs/superpowers/audit/2026-08-12-K-complexity.md` §1.5.
+
+**Stated as the dependency it is (2026-08-13): O3's verdict is
+protected by a safety interlock, and the two are not connected
+anywhere in the code, the tests or the configuration.**
+`reject_if_not_one_cartridge_floor` is a *perception* guard — it exists
+because a detector box once spanned a cartridge and three loose cells —
+and it is the only thing bounding the item count the packer is ever
+handed. Removing it, relaxing it, or moving the extractor to a path
+that does not call it would leave every O3 test passing while the
+budget it certifies silently ceased to hold, because those tests
+exercise fixed fixtures rather than the ceiling. The re-measurement
+above sharpens this: with the cold path now running *at* the budget
+rather than at 38 % of it, the guard is not spare margin, it is the
+margin. It should be treated as an O3 dependency in any future change
+to `max_cartridge_extent_mm`, and 2.04 ms is itself un-receipted (audit
+K's scripts were never committed), so the ceiling is argued rather than
+certified.
 
 The Faster R-CNN detector, in contrast, takes a median 437 ms / p95
 484 ms on the same hardware (Intel i7-12700H, 2 threads, 320×512
@@ -1951,12 +2166,12 @@ bottleneck.
 
 | ID | Threshold                         | Verdict                       | Receipt              |
 |----|-----------------------------------|-------------------------------|----------------------|
-| O1 | mAP@0.5 ≥ 0.90                    | **Partial** — 0.87 vs target  | §10.1, §10.7         |
-| O2 | Centroid error ≤ 2 px             | ~~Pass (in-domain)~~ **Fail as an absolute bound** — 1.13 px median on the shipped detector, but 24 % of matched detections exceed 2 px; 4.88 px median on the detector §10.1 reports | `detector_bench.txt` *(was `test_evaluate.py`)* |
-| O3 | Queue rebuild ≤ 8 ms median       | Pass on the threshold; the **3 ms median is not reproducible** — its artefact `bench_cycles.py` was never committed (§10.4) | `test_planner.py`, `test_packing_ceiling.py`, §13.2.1 |
+| O1 | mAP@0.5 ≥ 0.90                    | ~~**Partial** — 0.87 vs target~~ **Pass, in-domain — 0.9053** on the shipped detector at its operating threshold; the 0.874 it used to cite is April's superseded checkpoint (§10.1). Out of domain, on six phone photographs, the same checkpoint scores 0.8484, which does not meet the bar and does not sample enough to settle it either way | `detector_bench.txt` arm 3, `real_photo_eval.txt`, §10.1 |
+| O2 | Centroid error ≤ 2 px             | ~~Pass (in-domain)~~ **Fail as an absolute bound** — 1.13 px median on the shipped detector, but 24 % of matched detections exceed 2 px; 4.88 px median on the detector §10.1 reports. **Restated in millimetres it fails at the median too** (2026-08-13) | `detector_bench.txt` *(was `test_evaluate.py`)* |
+| O3 | Queue rebuild ≤ 8 ms median       | Pass on the threshold; the **3 ms median is withdrawn** — its artefact `bench_cycles.py` was never committed, and re-measured at HEAD the cycle runs 7.8–7.9 ms median cold / 5.7–6.0 ms warm (§10.4) | `test_planner.py`, `test_packing_ceiling.py`, §13.2.1 |
 | O4 | Recover from single pick failure  | **Not tested** — no lab access | §10.3                |
-| O5 | Deterministic queue               | Pass — row-major ordering only; the fixed-input/fixed-output half is unobserved | `test_planner.py`, Appendix E |
-| O6 | ≥ 70 % coverage                   | Pass — 89 % on O6's scope     | `pytest --cov`, §9.3, Appendix C.2 |
+| O5 | Deterministic queue               | ~~Pass — row-major ordering only~~ **Pass, both halves observed** (2026-08-13): ordering by `test_row_major_ordering`, fixed input → fixed output by `test_two_fresh_planners_on_one_snapshot_produce_the_same_queue` | `test_planner.py`, Appendix E |
+| O6 | ≥ 70 % coverage                   | ~~Pass — 89 % on O6's scope~~ **Pass — 93 %** over `main.py`'s import closure (19 modules, 1 845 stmts); 67 % over every module the coverage config resolves to (49 modules, 7 208 stmts) | `pytest --cov`, §9.3, Appendix C.2 |
 
 **O2 corrected 2026-08-12. It had been carried as a Pass on no
 measurement at all.** All three places this row appeared cited
@@ -1995,24 +2210,150 @@ median. The correct verdict is therefore **Fail** against the criterion
 as written, with the qualification that the production detector meets
 it *typically* and misses it *in the tail* — which is the distinction
 the original threshold should have drawn and did not, since a 2 px
-bound with no stated quantile is not a testable criterion. §3 derives
+bound with no stated quantile is not a testable criterion. ~~§3 derives
 the 2 px figure from a 3 mm end-to-end gripper budget at 0.38 mm/px;
 the shipped detector's p95 of 4.4 px is 1.7 mm at that calibration,
 inside the 3 mm total but not inside the third of it O2 allocated to
-perception.
+perception.~~ **That last sentence is superseded by the paragraph below
+and was wrong in the safe direction: it converted at 0.38 mm/px, which
+is not the calibration the shipped detector was measured at. At the
+corpus's own median scale the p95 is 3.37 mm, which is outside the 3 mm
+total, not inside it.**
 
-~~Four of six criteria are met fully (O2, O3, O5, O6).~~ **Three of six
-are met fully (O3, O5, O6); O2 joins O1 as partially met.** O1 is
-partially met: Faster R-CNN with default anchors reaches val
-mAP@0.5 = 0.87,
-0.03 short of the 0.90 PPR target, and substantially above the
-heuristic's 0.40. This remaining gap is the principal open item and
-is marked priority 1 in §13.2. O4 (single-pick-failure recovery) is
+**Restated in millimetres, which is the only form in which O2's own
+derivation makes sense, the Fail is worse rather than better — it
+reaches the median (2026-08-13).** O2's 2 px is not a pixel quantity.
+It is a *physical* allowance of **0.76 mm** (2 px × 0.38 mm/px) wearing
+pixel clothing, and it is only worth 2 px at the 0.38 mm/px calibration
+§3 declares. The corpus the shipped detector is measured on has no
+single calibration: `recog/synth3d/world.py` sets `camera.ortho_scale`
+**per scene** from that scene's framing requirement and a sampled zoom,
+and records it in the sidecar precisely so the planner can measure each
+frame at its own scale (§8). Over all 1 000 sidecars
+(`recog/dataset3d/meta/scene_*.json`, `ortho_scale × 1000 / width`,
+which is the conversion `world.py` itself documents) the scale spans
+
+```
+mm/px   min 0.488   p05 0.520   median 0.771   p95 1.026   max 1.086
+```
+
+— a **median 2.0× coarser** than the calibration O2 was written
+against. So at the median `dataset3d` scene, **O2's 0.76 mm allowance
+buys only 0.99 px**, not 2 px, and the pixel column above flatters the
+detector by roughly a factor of two:
+
+| Detector · corpus | scale used | median | p95 | max | allowance |
+|---|---|---:|---:|---:|---|
+| shipped `best.pt`, `dataset3d` val — all | 0.771 mm/px (corpus median) | **0.87 mm** | 3.37 mm | 15.25 mm | 0.76 mm |
+| — battery only | 0.771 mm/px | 0.76 mm | 3.02 mm | — | 0.76 mm |
+| — cartridge only | 0.771 mm/px | 1.71 mm | 5.58 mm | — | 0.76 mm |
+| default anchors, `recog/dataset` val (the detector §10.1 reports) | 0.38 mm/px (§3's declared) | 1.86 mm | 8.61 mm | 21.75 mm | 0.76 mm |
+| `HeuristicDetector`, `recog/dataset` | 0.38 mm/px | 0.27 mm | 1.72 mm | 45.60 mm | 0.76 mm |
+
+(First-order: the pixel statistic times the corpus's median scale.
+`scripts/detector_bench.py` does not currently join each matched pair
+to its own frame's scale, so these are the honest approximation and are
+labelled as such; the exact figures need that join, about twenty lines
+against `recog/calibration.py::frame_mm_per_px_for_image`.)
+
+**No reading rescues it, and each candidate fails for its own reason.**
+*(a) Absolute, which is what §3's derivation means* — a 3 mm
+stack-up bounds every individual grasp, so the governing statistic is
+the tail: 24 % of the shipped detector's matched detections exceed
+2 px, its p95 is 3.37 mm, and its worst matched pair is 15.2 mm. Fail.
+*(b) At the median, in millimetres* — 0.87 mm against a 0.76 mm
+allowance. Fail, and the battery class alone lands *on* the allowance
+(0.76 mm) rather than inside it. (The `HeuristicDetector`'s 0.27 mm
+median is inside the allowance, and is not a candidate: it is
+conditional on the 46 % of objects it detects at all, 5.8 % of even
+those exceed 2 px, and its worst matched pair is 120 px / 45.6 mm —
+60× the bound. It fails the absolute reading outright, and §10.1
+already says it is not the answer to O1.) *(c) At the median, against the
+derivation's own arithmetic rather than the table's* — one third of
+3 mm is 1.00 mm, or 2.63 px, and the 0.87 mm median **is** inside that.
+This is the single arrangement under which any part of O2 passes, and
+it requires simultaneously attaching a quantile no draft states and
+overriding the threshold the criteria table states with a different
+number derived in the prose beside it. Even then the p95 of 3.37 mm
+exceeds the **entire** 3 mm end-to-end stack-up, so in the tail
+perception alone consumes the whole gripper budget and leaves nothing
+for calibration or the arm. *(d) On cartridge corners, as FDR v1 and v2
+§1.2 word it* — the governing metric becomes edge error, and the
+shipped detector gives 2.64 px median / 7.94 px p95 (L∞), which fails
+at the median in pixels before any conversion.
+
+**So: O2 is not met.** Stated precisely rather than rhetorically — no
+reading that takes the criterion as the criteria table states it passes,
+at any quantile, in either unit. The one arrangement that puts a median
+inside the allowance, (c), reaches it by replacing the stated threshold
+with a different number from the prose beside it *and* inventing a
+quantile the requirement never had, and its own tail then exceeds the
+entire stack-up. That is not a reading of O2; it is a different
+requirement.
+
+The finding worth more than the verdict is the requirements one, and it
+is recorded in §3: a criterion carried three numbers across three
+drafts (5 px prose, 2 px table, 2.63 px derivation) over two measurands,
+attached no quantile anywhere, and was verified for four months by a
+unit test of its own metric function.
+
+~~Four of six criteria are met fully (O2, O3, O5, O6).~~
+~~**Three of six are met fully (O3, O5, O6); O2 joins O1 as partially
+met.**~~ **Four of six are met fully (2026-08-13): O1 in-domain, O3 on
+its threshold, O5 on both halves, O6 at 93 %. O2 is not met and O4 is
+not tested.** O1's promotion is a re-citation, not a retrain: the row
+had been carried against April's 0.874 checkpoint while the shipped
+detector, receipted since 2026-08-12, scores **0.9053** on the
+production configuration at its operating confidence threshold (§10.1).
+(~~This remaining gap is the principal open item and is marked priority 1
+in §13.2.~~ **The in-domain half of that item is done; what remains under
+priority 1 is the transfer half, and §13.2 is re-aimed accordingly.**)
+Two things must be said with it or the Pass is not honest. **It is
+in-domain** — a held-out 150-image split of the same 1 000-scene
+Blender corpus, same generator, same asset catalogue — so it certifies
+in-domain performance and nothing else; the original O1 wording
+("under varying lighting conditions", FDR v1 §1.2) is arguably
+satisfied, since `configs/synth3d.yaml`'s `param_space` samples a
+lighting preset per scene from a named list (`overcast_softbox`,
+`harsh_inspection`, `warm_indoor`, …) together with a per-scene
+exposure over [−5.2, −3.2] stops and one of five backdrops — but
+"varying lighting" and "real imagery" are not the same claim. **Out of domain it does not
+clear the bar**: the same `best.pt` scores mAP@0.50 = **0.8484** /
+mAP@0.75 = 0.8044 on the held-out phone photographs
+(`docs/receipts/real_photo_eval.txt`, generated by `recog/eval_real.py`),
+and that is **six scorable images** — a seventh carries no ground-truth
+boxes and is excluded, loudly, in the receipt. Six photographs settle
+nothing in either direction and are reported as a caution rather than
+as a Fail with the authority of a measurement. Both figures are the
+*same* checkpoint; the 0.8647 quoted in earlier audit prose is
+`last.pt`, a different network, and must not be paired with 0.9053.
+O4 (single-pick-failure recovery) is
 not assessed in this report: the laboratory robot was withdrawn
 in mid-March (§11.1) and no real-hardware testing of the executor
 was undertaken. The implementation exists (§7) but its behaviour
 under real CRC corruption, real timeouts, and real ESTOP escalation
 remains unverified; this is recorded as priority 3 in §13.2.
+
+**O5 closed 2026-08-13.** §3's threshold is "fixed input → fixed
+output", and until now no test ran the planner twice on one snapshot
+and compared;
+`tests/test_planner.py::test_two_fresh_planners_on_one_snapshot_produce_the_same_queue`
+now does, comparing the two queues field-by-field and again on
+`float.hex()` of every millimetre coordinate, so agreement is asserted
+to the last ulp rather than to a printed precision. It uses **two fresh
+`Planner` instances rather than one instance cycled twice**, which is
+both the semantically correct construction — `Planner` owns a
+persistent `Scene` tracker, so a second `cycle` on a live instance is a
+different input by design — and the trap the test's docstring records:
+cycling one instance twice differs in exactly one field,
+`battery_detection_id`, a monotonic per-instance counter, while every
+geometric field stays bit-identical. Written the obvious way the test
+would have failed and would have looked like a determinism bug. The
+result also holds across processes: the queue's `float.hex()` digest is
+unchanged under `PYTHONHASHSEED` 0, 1, 4242 and 9999.
+
+**O6 re-scoped 2026-08-13, and the figure improved because the
+denominator got more honest, not less.** See §9.3.
 
 ### 10.6 Failure analysis
 
@@ -2333,7 +2674,7 @@ answer depends entirely on the scope and none of the three is 2,750:
 
 | Scope | Files | Lines |
 |---|---:|---:|
-| The 18 modules `pytest --cov` scopes O6 against | 18 | **3,852** |
+| ~~The 18 modules `pytest --cov` scopes O6 against~~ *(that scope was retired 2026-08-13, §9.3; the row is left because the line count it reports is unaffected)* | 18 | **3,852** |
 | `common/` `plan/` `recog/` `execution/`, excluding `recog/synth3d/` and `main.py` | 38 | **10,692** |
 | The same four modules including `recog/synth3d/`, plus `main.py` | 52 | **15,974** |
 
@@ -2803,8 +3144,18 @@ Six follow-on programmes remain. (1, priority 1) Extend the
 15-epoch from-scratch Faster R-CNN runs (val mAP@0.5 = 0.87 with default
 anchors) to a full 60-epoch schedule on GPU with COCO-pretrained
 weights, paired with a domain-randomisation study on real factory
-imagery, to close the remaining 0.87→0.90 gap in O1 and measure the
-synthetic-to-real transfer delta on a common test set. (3, priority 3)
+imagery, ~~to close the remaining 0.87→0.90 gap in O1~~ and measure the
+synthetic-to-real transfer delta on a common test set.
+**Re-aimed 2026-08-13: the in-domain half of this item is done.** The
+shipped Blender-trained detector scores mAP@0.50 = 0.9053 on its own
+held-out split (`detector_bench.txt` arm 3), so O1 is met in domain and
+the 0.87→0.90 framing describes the April checkpoint, not the shipped
+one. What remains is the *transfer* half, and it is now the whole of
+this item: the same checkpoint scores 0.8484 on six real photographs
+(`real_photo_eval.txt`), which is below the bar on a sample far too
+small to conclude from — so the priority is a real corpus (item 4) and
+a domain-randomisation study against it, not more epochs.
+(3, priority 3)
 A real-robot integration campaign on the
 laboratory KR 6 once it returns, to validate the retry policy and
 the EthernetKRL framing against real CRC corruption events rather
@@ -3714,12 +4065,27 @@ merged defensively, not trusted.
 
 What was underestimated: the engineering cost of writing tests that
 genuinely interrogate behaviour rather than just exercise code paths.
-86 % branch coverage was achieved at roughly the cost of writing the
+~~86 %~~ **93 %** branch coverage was achieved at roughly the cost of
+writing the
 production code itself, and many of the most useful tests (the FFDH
 no-overlap invariant, the CRC corruption rejection, the planner's
 deterministic ordering) emerged from bug-hunts rather than upfront
 test-first work. A more disciplined test-first cadence might have
 yielded the same coverage at lower total effort.
+
+**And one that arrived late enough to be its own lesson (2026-08-13).**
+O5's second test — two fresh planners, one snapshot, identical output —
+is fifteen lines and was written in under an hour, four months after
+the objective it verifies was reported as met. Nothing prevented it
+being written first. What existed instead was
+`test_row_major_ordering`, which asserts the half of O5 that is easy to
+assert, and a paragraph in §6.5 arguing the other half by
+construction; the gap between the two survived every review because
+each looked like coverage of the other. The pattern this project keeps
+finding — a test that would pass unchanged if the criterion were
+deleted (O4.b, O2, and half of O5) — is not a testing-effort problem.
+It is a problem of writing the criterion down and then never checking
+that the assertion and the criterion are about the same quantity.
 
 ---
 
@@ -4019,10 +4385,13 @@ five removed keys removed.
 
 Full output of `pytest tests/ --cov` is archived at
 `docs/receipts/pytest-cov.txt` (~~102 tests passing, 86 % branch
-coverage~~ **1 032 tests passing, 89 % branch coverage on O6's 18-module
+coverage~~ ~~1 032 tests passing, 89 % branch coverage on O6's 18-module
 scope and 65 % over all 49 modules the coverage config now resolves to;
-the receipt was regenerated at `82cff22` and no longer holds the April
-figures — see C.2 and §9.3**). `git log --oneline` at submission time is at
+the receipt was regenerated at `82cff22`~~ **1 210 passing / 2 skipped,
+93 % branch coverage over `main.py`'s import closure and 67 % over all
+49 modules the coverage config resolves to; regenerated 2026-08-13 at
+`885a044`, and the 18-module scope it used to headline is retired to a
+third block in the receipt at 91 %** — see C.2 and §9.3). `git log --oneline` at submission time is at
 `docs/receipts/git-log.txt`. The two Faster R-CNN training runs are
 logged at `docs/receipts/train.log` (custom anchors, 0.76 mAP@0.5)
 and `docs/receipts/train_default.log` (default anchors, 0.87 mAP@0.5),
@@ -4071,26 +4440,36 @@ because overwriting a placeholder with a log taken eleven weeks after
 submission would misrepresent *when* it was taken; a reader wanting the
 progression should run the command.
 
-**2. `docs/receipts/pytest-cov.txt` was stale, and has been regenerated.**
+**2. `docs/receipts/pytest-cov.txt` was stale, and has been regenerated
+— twice, the second time with a different denominator.**
 It recorded **102 tests** from an Ubuntu / Python 3.10 run. The suite now
-stands at **1032** tests on Windows / Python 3.14, and the receipt was
-re-measured on 2026-08-12 against a clean checkout of `82cff22`. It now
-reports *two* figures, because one number can no longer describe this
-project honestly. Over the 18 modules the original receipt listed — the
+stands at **1 212 collected** on Windows / Python 3.14, and the receipt was
+re-measured on 2026-08-13 against a clean git worktree of `885a044`
+(1 210 passed, 2 skipped, exit 0). It now
+reports *three* figures, because one number can no longer describe this
+project honestly. ~~Over the 18 modules the original receipt listed — the
 scope O6 was written against — branch coverage is **89 %**, so the 86 %
 previously quoted in §1, §9.3 and §10.5 still holds and was, if
 anything, slightly conservative (all three sites now carry the 89 %
-figure, as of 2026-08-12). Over every module
+figure, as of 2026-08-12).~~ **Superseded 2026-08-13: the 18-module list
+is retired.** It was a snapshot of what the April run happened to print,
+not a scope — it excludes `common/packing.py`, `plan/arbitration.py`,
+`recog/bay_segmenter.py` and `recog/calibration.py`, all on the runtime
+path, and includes three training-and-evaluation modules `main.py` never
+loads. O6's figure is now measured over **`main.py`'s transitive import
+closure**, which is derivable from the source rather than curated: **93 %**
+over 19 modules / 1 845 statements. Over every module
 `[tool.coverage.run] source` resolves to
-*today* it is **65 %**, which is below the 70 % O6 threshold. Nothing
+*today* it is **67 %**, which is below the 70 % O6 threshold. Nothing
 regressed: no module lost coverage, but the denominator grew from 1 142 to
-6 897 statements as Blender-only renderers, synthetic-data generators and
+7 208 statements as Blender-only renderers, synthetic-data generators and
 CLI entry points landed, and several of those cannot be imported outside
 Blender, let alone unit-tested. The O6 row of Appendix E carries both
-figures with their scopes named. The receipt's nine trailing lines — a
+live figures with their scopes named, and the retired 91 % beside them.
+The receipt's nine trailing lines — a
 hand-appended end-to-end smoke-test summary that `pytest --cov` never
-emitted — are gone; the file is now tool output and its two commands,
-nothing else. ~~The 86 % figures in §1, §9.3 and §10.5 remain the
+emitted — are gone; the file is now tool output, the three commands that
+produced it, and the script that derives the closure, nothing else. ~~The 86 % figures in §1, §9.3 and §10.5 remain the
 2026-04-20 run's and are left as written: they are a self-consistent
 snapshot of that run (102 tests, 1 142 statements), and this appendix is
 where its currency is recorded.~~ **Superseded 2026-08-12: leaving them
@@ -4099,7 +4478,9 @@ before this appendix and nothing at either site said the figures were
 historical.** §1, §9.3, §10.5 and Appendix C now carry the current
 figures with the April snapshot struck in place; §9.3's per-module
 table is kept, marked as the 2026-04-20 measurement, because the
-conclusion it supports survives at 89 %.
+conclusion it supports survives ~~at 89 %~~ **at 93 %, on a scope that
+now includes the packer and the segmenter it used to omit
+(re-scoped 2026-08-13)**.
 
 **3. Sixteen of the thirty-seven committed receipts have no surviving
 tool.** (Thirty-four when this appendix was written; `detector_bench.txt`,
@@ -4258,17 +4639,17 @@ I = Inspection.
 
 | Req  | Criterion                          | Method · Artefact                                                  | Result               |
 |------|------------------------------------|--------------------------------------------------------------------|----------------------|
-| O1   | mAP@0.5 ≥ 0.90 on val              | T+A · `train_default.log`, §10.1                                   | **Partial** — 0.874  |
+| O1   | mAP@0.5 ≥ 0.90 on val              | T+A · `docs/receipts/detector_bench.txt` arm 3, `scripts/detector_bench.py`, `docs/receipts/real_photo_eval.txt`, §10.1 *(was `train_default.log`)* | ~~**Partial** — 0.874~~ **Pass, in-domain — 0.9053** (re-cited 2026-08-13). The former citation was the 2026-04-20 checkpoint on the 100-image cv2 corpus, at a 0.05 score threshold, superseded and never updated when the Blender detector landed in §13. The shipped `best.pt` on the production configuration — `recog/dataset3d` val, 150 frames / 1 205 GT, confidence 0.70, NMS IoU 0.40 — gives mAP@0.50 **0.9053** (battery 0.9046, cartridge 0.9061), precision 0.9488, recall 0.9544. **No retraining was done and none should be**: training was seeded and BatchNorm behaviour changed at `dd36329`, so a rerun produces a different network and invalidates every §10/§13 figure keyed to this checkpoint. **Scope: in-domain.** A held-out split of the same 1 000-scene Blender corpus, same generator, same catalogue. Out of domain the same checkpoint scores **0.8484** mAP@0.50 / 0.8044 mAP@0.75 on **six** scorable phone photographs, which does not clear the bar and does not sample enough to settle it. Do not pair 0.9053 with the 0.8647 that appears in earlier audit prose: that figure is `last.pt`, a different network. |
 | O1.a | Heuristic baseline measurable      | T · `pr_summary.txt`, Figure 8                                     | Pass — 0.479 val. **Present, not regenerable (2026-08-12):** the receipt is committed and its 0.4463 / 0.5121 average to 0.4792 exactly, but its generator `pr_curves.py` was never committed (`git log --all` empty) and its raw arrays lived outside the repository. |
 | O1.b | Custom-anchor ablation-justified   | T+A · `train_curve_default.csv`, §10.7                             | Pass — defaults +0.11|
-| O2   | Centroid error ≤ 2 px              | T · `docs/receipts/detector_bench.txt`, `scripts/detector_bench.py`, §10.5 | ~~Pass~~ **Fail as an absolute bound** (corrected 2026-08-12). The former citation, `tests/test_evaluate.py`, unit-tests the metric and measures no detector; one of its two cases asserts a 5 px error as correct. Measured: shipped detector median 1.13 px / p95 4.37 px, 75.6 % within 2 px; the detector §10.1 reports, 4.88 px median, 18.6 % within. See §10.5. |
-| O3   | Queue rebuild ≤ 8 ms median        | T+A · `tests/test_planner.py::test_segmentation_extract_arithmetic_stays_under_the_o3_budget`, `tests/test_packing_ceiling.py::test_stays_inside_the_o3_latency_budget`, §13.2.1 | Pass on the threshold; **the 3 ms median is not reproducible (2026-08-12)**. Both this row and §10.4 cited `bench_cycles.py`, which is not in the tree and `git log --all -- bench_cycles.py` shows was never committed, so the mean 5.0 / median 3.0 / p95 13.0 ms distribution has no artefact behind it. The 8 ms budget itself is independently exercised by the two named tests and by §13.2.1's receipted 2.0–2.2 ms per cartridge; the specific distribution is not. See §10.4. |
+| O2   | Centroid error ≤ 2 px              | T · `docs/receipts/detector_bench.txt`, `scripts/detector_bench.py`, §10.5 | ~~Pass~~ **Fail as an absolute bound** (corrected 2026-08-12). The former citation, `tests/test_evaluate.py`, unit-tests the metric and measures no detector; one of its two cases asserts a 5 px error as correct. Measured: shipped detector median 1.13 px / p95 4.37 px, 75.6 % within 2 px; the detector §10.1 reports, 4.88 px median, 18.6 % within. **Made exact 2026-08-13 by restating it in millimetres, the unit O2's derivation uses.** O2's 2 px is a 0.76 mm physical allowance at the 0.38 mm/px §3 declares; `recog/dataset3d` samples `ortho_scale` per scene and spans 0.488–1.086 mm/px (median 0.771), so that allowance is worth **0.99 px** at the median scene and the 1.13 px median is **≈ 0.87 mm — outside it**. The Fail therefore reaches the median and not only the tail. The one arrangement in which any part of O2 passes needs a quantile no draft states *and* the derivation's 2.63 px in place of the table's 2 px, and even then the p95 of 3.37 mm exceeds the entire 3 mm end-to-end stack-up. See §10.5. |
+| O3   | Queue rebuild ≤ 8 ms median        | T+A · `tests/test_planner.py::test_segmentation_extract_arithmetic_stays_under_the_o3_budget`, `tests/test_packing_ceiling.py::test_stays_inside_the_o3_latency_budget`, §13.2.1 | Pass on the threshold; **the 3 ms median is not reproducible (2026-08-12)**. Both this row and §10.4 cited `bench_cycles.py`, which is not in the tree and `git log --all -- bench_cycles.py` shows was never committed, so the mean 5.0 / median 3.0 / p95 13.0 ms distribution has no artefact behind it. The 8 ms budget itself is independently exercised by the two named tests and by §13.2.1's receipted 2.0–2.2 ms per cartridge; the specific distribution is not. **Withdrawn rather than merely un-receipted (2026-08-13):** re-measured at HEAD on the repository's own planner fixture, the cycle runs **7.8–7.9 ms median cold / 5.7–6.0 ms warm** over two independent 100-cycle runs — ~2.6× the published 3.0 ms median and ~3× the "under 2 ms" steady state §10.4 claimed, sitting *on* the budget rather than at 38 % of it, while the published p95 of 13.0 ms is conversely pessimistic against today's 8.3–8.5 ms. The distribution moved in both directions, so it cannot be repaired by adjustment. The threshold survives; the distribution does not, and the newer measurement is the worse one. The margin is additionally held by `plan/placement_area.py::reject_if_not_one_cartridge_floor`, a perception interlock written for an unrelated reason: raising `max_cartridge_extent_mm` would raise the packing cost with it and no test would report the loss (§10.4). See §10.4. |
 | O3.a | FFDH no-overlap invariant          | T · `_assert_no_overlaps` in `test_bin_packing.py`                 | Pass                 |
 | O3.b | FFDH rotation gain quantified      | T+A · `ffdh_ablation.csv`, Figure 7                                | Pass — 0–57 % gain   |
 | O3.c | Forbidden-mask FFDH benchmarked    | T+A · `forbidden_bench.csv`, `forbidden_bench.py`, §6.3.1          | Pass — beats baseline ≤ 10 % coverage; the receipt's third block benchmarks `pack_best_effort`, the arm set the planner now runs (§6.3.1 scope note) |
 | O4   | Recover from single pick failure   | (lab access not obtained — §10.3, §13.2)                           | **Not tested**       |
-| O5   | Deterministic queue, row-major     | T · `tests/test_planner.py::test_row_major_ordering`               | **Half-supported** (2026-08-12). `test_row_major_ordering` genuinely asserts placements sort by `(grid_row, grid_col)`, so the row-major half holds. §3's stated threshold is "fixed input → fixed output", and **no test runs the planner twice on one snapshot and compares the queues**. The closest is `test_the_frames_scale_beats_a_configured_fallback`, which asserts one field of one element matches across two planner instances — and does so to check scale precedence, not repeatability. §6.5's determinism argument is sound by construction; it is not observed. |
-| O6   | Branch coverage ≥ 70 %             | I · `pytest-cov.txt`                                               | Pass — 89 % on the scope O6 was written against: the 18 production modules the original receipt measured (re-measured 2026-08-12 at `82cff22`, 1032 tests). Over everything `[tool.coverage.run] source` resolves to *today* — 49 modules — the figure is 65 %, below the 70 % threshold. The two numbers differ by scope, not by regression: no module lost coverage, but the denominator grew from 1 142 to 6 897 statements as Blender-only renderers, synthetic-data generators and CLI entry points landed, several of which cannot be unit-tested outside Blender and sit at 0 %. Both figures and their exact commands are in the receipt. |
+| O5   | Deterministic queue, row-major     | T · `tests/test_planner.py::test_row_major_ordering` **and `::test_two_fresh_planners_on_one_snapshot_produce_the_same_queue`** | ~~**Half-supported** (2026-08-12)~~ **Pass, both halves observed (2026-08-13).** `test_row_major_ordering` genuinely asserts placements sort by `(grid_row, grid_col)`, so the row-major half always held. §3's other half is "fixed input → fixed output", and until 2026-08-13 **no test ran the planner twice on one snapshot and compared the queues** — the closest, `test_the_frames_scale_beats_a_configured_fallback`, asserts one field of one element across two planner instances, to check scale precedence rather than repeatability. The new test runs the full cycle on **two fresh `Planner` instances** and asserts equality field-by-field and then on `float.hex()` of every millimetre coordinate, so the claim is bit-identity rather than agreement at a printed precision; the digest is also unchanged across processes at `PYTHONHASHSEED` 0, 1, 4242 and 9999. Two instances, not one cycled twice: `Planner` owns a persistent `Scene`, so a second `cycle` on a live instance is a different input by design and differs in exactly one field, `battery_detection_id`, a monotonic counter — the docstring records this because the obvious construction fails and looks like a determinism bug. §6.5's argument by construction is now also observed. |
+| O6   | Branch coverage ≥ 70 %             | I · `pytest-cov.txt` scope A                                       | ~~Pass — 89 % on the scope O6 was written against: the 18 production modules the original receipt measured~~ **Pass — 93 %, re-scoped 2026-08-13 at `885a044` (1 212 collected, 1 210 passed, 2 skipped).** The 18-module list is **retired**: it was a snapshot of what the 2026-04-20 run printed, not a scope, and it excluded `common/packing.py` (the packer O3 is certified on), `plan/arbitration.py`, `recog/bay_segmenter.py` (the shipping segmentation path §13 certifies) and `recog/calibration.py`, while including `recog/augmentation.py`, `recog/dataset.py` and `recog/evaluate.py`, which `main.py` never loads — so the headline excluded the two components the report spends the most pages on. O6's figure is now **`main.py`'s transitive import closure**, derived from the AST import graph rather than curated: **93 %** over 19 modules / 1 845 statements. Over everything `[tool.coverage.run] source` resolves to *today* — 49 modules, 7 208 statements — the figure is **67 %**, below the 70 % threshold, and stays on the record because Blender-only renderers, dataset generators and CLI entry points cannot be unit-tested outside Blender and sit at 0 %. The two live figures differ by scope, not by regression: no module lost coverage. The retired list re-measures at 91 % today and is kept in the receipt as a third block so the supersession is visible. All three, the derivation script and their exact commands are in the receipt. |
 
 *Standards compliance.* The execution layer was implemented against
 IEC 60204-1, the EthernetKRL 3.1 specification, and the CRC-16/MODBUS
@@ -4321,13 +4702,26 @@ hardware is not.
 
 Eleven numbered project requirements (six headline objectives plus
 five derived sub-requirements), three standards-compliance items,
-and nine AHEP-4 learning outcomes are tracked. Of the eleven project
+and nine AHEP-4 learning outcomes are tracked. ~~Of the eleven project
 requirements, nine pass, one (O1) is partially met with
 the residual gap documented in §10.1, and one (O4) is
 not assessed in this report because the laboratory robot was
 withdrawn (§10.3). Of the nine passes, **two are narrowed by the
 2026-08-12 corrections above**: O2 becomes a fail against the bound as
-written (§10.5), and O5 is supported on its row-major half only. The
+written (§10.5), and O5 is supported on its row-major half only.~~
+**Restated 2026-08-13. Of the eleven project requirements, nine pass,
+one (O2) fails against the bound as written and against its own
+derivation restated in millimetres (§10.5), and one (O4) is not
+assessed because the laboratory robot was withdrawn (§10.3). Three of
+the nine passes carry a scope that must travel with them: O1 passes
+*in domain only* — 0.9053 on a held-out split of the corpus it was
+trained on, 0.8484 on six real photographs; O3 passes *on its
+threshold only*, its published distribution having been withdrawn; and
+O6 passes at 93 % over `main.py`'s import closure, with 67 % over the
+full configured source disclosed beside it. O5, half-supported on
+2026-08-12, is now supported in full.** Of the six headline
+objectives, **four are met (O1 in domain, O3 on threshold, O5, O6),
+one is not met (O2) and one is not tested (O4)**. The
 three standards-compliance items are
 implemented to specification in code but were not hardware-validated
 within the project window — the same caveat applies, recorded as

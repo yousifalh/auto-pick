@@ -393,6 +393,46 @@ def test_row_major_ordering():
         assert keys == sorted(keys)
 
 
+def test_two_fresh_planners_on_one_snapshot_produce_the_same_queue():
+    """O5's other half: fixed input -> fixed output, observed.
+
+    ``test_row_major_ordering`` above asserts the *ordering* half of O5.
+    This asserts the half §3 actually states, by running the whole cycle
+    twice and comparing. ``PickPlacePose`` and ``WorkspacePoint`` are
+    frozen dataclasses, so ``==`` on the two lists is a field-by-field
+    comparison; the ``float.hex()`` pass after it is stricter still, and
+    is there because ``==`` on floats that agree to the last ulp is the
+    claim being made, not agreement to a printed precision.
+
+    TWO FRESH PLANNERS, not one planner cycled twice. That is not
+    fussiness. ``Planner`` owns a persistent ``Scene`` tracker, so a
+    second ``cycle`` on a live instance is a different input by design,
+    and the one field that then differs is ``battery_detection_id`` - a
+    monotonic per-instance counter that returns 0..7 on the first cycle
+    and 8..15 on the second while every geometric field stays
+    bit-identical. Writing this test the obvious way would have failed
+    and would have looked like a determinism bug.
+    """
+    snap = _snapshot_with_cart_and_batteries(
+        [(5, 5), (10, 5), (15, 5), (5, 30), (10, 30)])
+
+    q1 = _make_planner().cycle(snap, _synth_image())
+    q2 = _make_planner().cycle(snap, _synth_image())
+
+    assert len(q1) > 1, "a degenerate empty queue would pass vacuously"
+    assert q1 == q2
+
+    def _hexed(queue):
+        return [
+            (p.cartridge_id, p.grid_row, p.grid_col, p.battery_detection_id,
+             p.pick.x_mm.hex(), p.pick.y_mm.hex(), p.pick.z_mm.hex(),
+             p.place.x_mm.hex(), p.place.y_mm.hex(), p.place.z_mm.hex())
+            for p in queue
+        ]
+
+    assert _hexed(q1) == _hexed(q2)
+
+
 def test_planner_config_from_dict():
     cfg = PlannerConfig.from_dict({
         "battery": {"diameter_mm": 21.0, "length_mm": 70.0},
