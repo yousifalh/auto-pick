@@ -20,9 +20,10 @@ Training data is path-traced in Blender from real measured CAD. The robot is a m
 **Start here** — 15 minutes, no GPU:
 
 1. The story, in 5 minutes: [`docs/PORTFOLIO.md`](docs/PORTFOLIO.md)
-2. Run it, in 2: `pip install -e . && python -m recog.synth_dataset --out recog/dataset --n 50 && python main.py --config configs/demo.yaml` — output pinned in [`docs/receipts/main_run.txt`](docs/receipts/main_run.txt)
-3. How every number was arrived at: [`docs/superpowers/specs/README.md`](docs/superpowers/specs/README.md)
-4. What is authoritative vs. history: [`docs/README.md`](docs/README.md)
+2. The models — what they are, what they score, where they fail: [`docs/MODEL_CARD.md`](docs/MODEL_CARD.md). Nine checkpoints in one comparison table, every figure generated from a receipt, with the failure modes and the scope limits in the same document. The datasets behind them: [`docs/datasets/`](docs/datasets/README.md)
+3. Run it, in 2: `pip install -e . && python -m recog.synth_dataset --out recog/dataset --n 50 && python main.py --config configs/demo.yaml` — output pinned in [`docs/receipts/main_run.txt`](docs/receipts/main_run.txt)
+4. How every number was arrived at: [`docs/superpowers/specs/README.md`](docs/superpowers/specs/README.md)
+5. What is authoritative vs. history: [`docs/README.md`](docs/README.md)
 
 ---
 

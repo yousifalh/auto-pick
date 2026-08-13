@@ -1,0 +1,118 @@
+{
+  "dataset3d": {
+    "manifest": {
+      "bytes": 27588,
+      "sha256": "b2526c72e0412ce421556cbc0cf0281e99cdf732261c6afad2c6a603e8d2daed"
+    }
+  },
+  "dataset3d_seg": {
+    "annotations": {
+      "bytes": 4092743,
+      "file": "instances_seg.json",
+      "sha256": "8d18f8f46cb81f8b780bd4ae5a9c24b4c3f5c7f06e66b4faa8b06a6566d1ed3c"
+    },
+    "manifest": {
+      "bytes": 31743,
+      "sha256": "d3113c2525bb6c7c813490706afaa06fc05f387939ca9290896a8be034d2c8ca"
+    }
+  },
+  "dataset3d_seg_anchored": {
+    "annotations": {
+      "bytes": 3408089,
+      "file": "instances_seg.json",
+      "sha256": "fc24619b753aca5bbbe0e6c0ea99315955812ca5ee425b5499534fd0dfabe4d5"
+    },
+    "manifest": {
+      "bytes": 32954,
+      "sha256": "07e112f47ef41ec5db2f5512dad9aa38251cd60e4d400f16292ab4eb4c12a37b"
+    }
+  },
+  "dataset3d_seg_anchored_18650": {
+    "annotations": {
+      "bytes": 3219835,
+      "file": "instances_seg.json",
+      "sha256": "d5e0b31ef2320d439b6c586fe525821cec3ee82e0e3851ad4274f72d6e696bb1"
+    },
+    "manifest": {
+      "bytes": 32917,
+      "sha256": "43bde94f79a16860358318a0f3fd4cd7d23c569b4ebeabc13e5575f01af70faa"
+    }
+  },
+  "dataset3d_seg_anchored_crown": {
+    "annotations": {
+      "bytes": 3408089,
+      "file": "instances_seg.json",
+      "sha256": "561c0781dba3ca83f3302010ba7b5bec3e2dfbbba0494d9e69dc4cf52619d6ef"
+    },
+    "manifest": {
+      "bytes": 33091,
+      "sha256": "51e6987ea2c1e97fcb81cdf6f10af4659afc4a359e92b044a107411c7d2650a1"
+    }
+  },
+  "dataset3d_seg_cad_control_holdout_AnkerPowerCore10000": {
+    "annotations": {
+      "bytes": 4993005,
+      "file": "instances_seg.json",
+      "sha256": "ac81fe7422f598a2475bc6e3b959f4d2469a5cc5c3e21fe6b72604b7d8ba7fa5"
+    },
+    "manifest": {
+      "bytes": 32956,
+      "sha256": "510f559c60072c5f327e2f53fd27597da023d2bfb333bfec12a6677b9e7fd92e"
+    }
+  },
+  "dataset3d_seg_cad_control_holdout_AnkerPowerCore13000": {
+    "annotations": {
+      "bytes": 4715250,
+      "file": "instances_seg.json",
+      "sha256": "e74d41e7599e58bd7ec1dce7324fb2e4b6f91c841a4c33d2d13ea9df0dd0be1e"
+    },
+    "manifest": {
+      "bytes": 32956,
+      "sha256": "1b68b51d4d4f7e1b708b1a5709ded5912204c2223cb07665461d52cc7f01b89f"
+    }
+  },
+  "dataset3d_seg_cad_control_holdout_AnkerPowerCore20100": {
+    "annotations": {
+      "bytes": 4320468,
+      "file": "instances_seg.json",
+      "sha256": "9746aa20fd0e385f4cc15e80a9dbe3d7f054b72cf229d39e316c862b3fea2814"
+    },
+    "manifest": {
+      "bytes": 32956,
+      "sha256": "f48e698caace5665d36f3a4081050aae681f73fdfc8046f5efcdf4b6a018c441"
+    }
+  },
+  "dataset3d_seg_cad_control_holdout_AnkerPowerCore26800": {
+    "annotations": {
+      "bytes": 3895303,
+      "file": "instances_seg.json",
+      "sha256": "532bbfa2af067bc69a63582e9789efd8ba42296629db9f6bd1e2853d84f3c441"
+    },
+    "manifest": {
+      "bytes": 32956,
+      "sha256": "9ac12fdd411a8d256d18b0bfb5e85edc9999b5938a88bebd9adfa2860e54eb8d"
+    }
+  },
+  "dataset3d_seg_cad_test": {
+    "annotations": {
+      "bytes": 4236510,
+      "file": "instances_seg.json",
+      "sha256": "acfd09a1771e556d04b3dd4fa8ceaa3204a0d322567edd72d1b5f8a877b8f9ee"
+    },
+    "manifest": {
+      "bytes": 32956,
+      "sha256": "56fc0122905d13aac2be320e1a4011832452bbc89e49cd8d996d04a4505a2adc"
+    }
+  },
+  "dataset3d_seg_wide": {
+    "annotations": {
+      "bytes": 4454941,
+      "file": "instances_seg.json",
+      "sha256": "0cefc20f60a1beeb9d01cc49c74d76d6dd9c56efebfc9b7afc0dea25bd95ebad"
+    },
+    "manifest": {
+      "bytes": 32960,
+      "sha256": "43423843ef7a36347cf7b88b9692c6025af93cb51b315cebc70ff0e3109304dd"
+    }
+  }
+}

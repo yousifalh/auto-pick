@@ -1,0 +1,1668 @@
+{
+  "classes": [
+    "battery",
+    "cartridge"
+  ],
+  "class_to_id": {
+    "battery": 1,
+    "cartridge": 2
+  },
+  "num_classes_with_background": 3,
+  "seed": 0,
+  "config": {
+    "render": {
+      "res": [
+        1280,
+        720
+      ],
+      "samples": 192,
+      "adaptive_threshold": 0.01,
+      "denoise": true,
+      "device": "GPU",
+      "view_transform": "AgX",
+      "exposure": -3.5,
+      "max_bounces": 12,
+      "clamp_indirect": 10.0,
+      "film_transparent": false,
+      "persistent_data": true
+    },
+    "layout": {
+      "area": [
+        0.8,
+        0.45
+      ],
+      "mode": "scatter",
+      "pad": 0.008,
+      "max_tries": 500,
+      "jitter_deg": 2.0,
+      "allow_90s": true,
+      "max_overlap_iou": 0.2,
+      "jig_clearance": 0.002,
+      "jig_jitter_deg": 1.0,
+      "jig_depth": [
+        0.006,
+        0.012
+      ],
+      "jig_wall": 0.003,
+      "p_seated": 0.5,
+      "seated_frac": [
+        0.15,
+        0.85
+      ]
+    },
+    "camera": {
+      "ortho": true,
+      "height": 0.9,
+      "margin_range": [
+        1.02,
+        1.1
+      ],
+      "shift_range": [
+        -0.006,
+        0.006
+      ],
+      "focal": 50.0
+    },
+    "filter": {
+      "min_px": 500,
+      "min_side": 6,
+      "min_visibility": 0.25,
+      "drop_truncated": false,
+      "max_aspect": 4.0
+    },
+    "obstruction": {
+      "p_none": 0.4,
+      "n_adhesive": [
+        0,
+        6
+      ],
+      "n_foam": [
+        0,
+        1
+      ],
+      "n_tape": [
+        0,
+        2
+      ],
+      "n_label": [
+        0,
+        1
+      ],
+      "adhesive_frac": [
+        0.04,
+        0.14
+      ],
+      "foam_frac": [
+        0.15,
+        0.35
+      ],
+      "tape_frac": [
+        0.05,
+        0.12
+      ],
+      "label_frac": [
+        0.1,
+        0.22
+      ]
+    },
+    "tray_anchored": {
+      "cell_formats": [
+        "18650"
+      ],
+      "n_cols_range": [
+        3,
+        5
+      ],
+      "n_rows_range": [
+        1,
+        2
+      ],
+      "pitch_mm_range": [
+        0.5,
+        2.0
+      ],
+      "wall_mm_range": [
+        3.3,
+        4.7
+      ],
+      "bay_margin_mm_range": [
+        17.0,
+        34.0
+      ],
+      "case_half_height_mm_range": [
+        10.5,
+        11.7
+      ],
+      "tray_floor_mm_range": [
+        1.6,
+        2.3
+      ],
+      "free_bay_edge": false
+    },
+    "tray_wide": {
+      "cell_formats": [
+        "18650",
+        "21700",
+        "26650"
+      ],
+      "n_cols_range": [
+        2,
+        8
+      ],
+      "n_rows_range": [
+        1,
+        4
+      ],
+      "pitch_mm_range": [
+        0.3,
+        6.0
+      ],
+      "wall_mm_range": [
+        1.5,
+        9.0
+      ],
+      "bay_margin_mm_range": [
+        6.0,
+        60.0
+      ],
+      "case_half_height_mm_range": [
+        4.0,
+        28.0
+      ],
+      "tray_floor_mm_range": [
+        0.8,
+        4.5
+      ],
+      "free_bay_edge": true
+    },
+    "param_space": {
+      "n_assemblies": [
+        1,
+        4
+      ],
+      "layout_mode": {
+        "scatter": 0.7,
+        "jig": 0.3
+      },
+      "backdrop": [
+        "concrete",
+        "brushed_metal",
+        "fabric",
+        "paper",
+        "conveyor_belt"
+      ],
+      "lighting": [
+        "overcast_softbox",
+        "harsh_inspection",
+        "warm_indoor",
+        "fluorescent_factory",
+        "high_bay_led",
+        "dim_workshop",
+        "mixed_daylight"
+      ],
+      "exposure": [
+        -5.2,
+        -3.2
+      ],
+      "zoom": [
+        0.75,
+        1.6
+      ],
+      "overlap_prob": 0.5
+    },
+    "backdrops": {
+      "concrete": {
+        "image": null,
+        "proc": "concrete",
+        "color": [
+          [
+            0.22,
+            0.22,
+            0.215
+          ],
+          [
+            0.46,
+            0.455,
+            0.44
+          ]
+        ],
+        "luma_ref": 0.458,
+        "uv_scale": [
+          1.5,
+          4.0
+        ],
+        "brightness": [
+          -0.06,
+          0.06
+        ],
+        "roughness": [
+          0.55,
+          0.85
+        ],
+        "bump": [
+          0.05,
+          0.25
+        ]
+      },
+      "brushed_metal": {
+        "image": null,
+        "proc": "brushed",
+        "color": [
+          [
+            0.3,
+            0.305,
+            0.31
+          ],
+          [
+            0.52,
+            0.525,
+            0.535
+          ]
+        ],
+        "luma_ref": 0.815,
+        "uv_scale": [
+          2.0,
+          6.0
+        ],
+        "brightness": [
+          -0.04,
+          0.08
+        ],
+        "roughness": [
+          0.35,
+          0.55
+        ],
+        "bump": [
+          0.02,
+          0.1
+        ]
+      },
+      "fabric": {
+        "image": null,
+        "proc": "fabric",
+        "color": [
+          [
+            0.05,
+            0.06,
+            0.08
+          ],
+          [
+            0.12,
+            0.135,
+            0.165
+          ]
+        ],
+        "luma_ref": 0.433,
+        "uv_scale": [
+          6.0,
+          18.0
+        ],
+        "brightness": [
+          -0.05,
+          0.05
+        ],
+        "roughness": [
+          0.7,
+          0.95
+        ],
+        "bump": [
+          0.1,
+          0.35
+        ]
+      },
+      "paper": {
+        "image": null,
+        "proc": "paper",
+        "color": [
+          [
+            0.44,
+            0.42,
+            0.37
+          ],
+          [
+            0.54,
+            0.51,
+            0.45
+          ]
+        ],
+        "luma_ref": 0.689,
+        "uv_scale": [
+          1.0,
+          3.0
+        ],
+        "brightness": [
+          -0.03,
+          0.1
+        ],
+        "roughness": [
+          0.6,
+          0.9
+        ],
+        "bump": [
+          0.01,
+          0.08
+        ]
+      },
+      "conveyor_belt": {
+        "image": null,
+        "proc": "belt",
+        "color": [
+          [
+            0.035,
+            0.035,
+            0.038
+          ],
+          [
+            0.115,
+            0.115,
+            0.12
+          ]
+        ],
+        "luma_ref": 0.233,
+        "uv_scale": [
+          3.0,
+          8.0
+        ],
+        "brightness": [
+          -0.08,
+          0.02
+        ],
+        "roughness": [
+          0.5,
+          0.8
+        ],
+        "bump": [
+          0.15,
+          0.45
+        ]
+      }
+    },
+    "lighting": {
+      "overcast_softbox": {
+        "kind": "camera_softbox",
+        "energy": [
+          120.0,
+          260.0
+        ],
+        "size": [
+          0.9,
+          1.6
+        ],
+        "kelvin": [
+          5600,
+          6800
+        ],
+        "offset": [
+          0.0,
+          0.1
+        ],
+        "world_strength": [
+          0.25,
+          0.55
+        ],
+        "world_kelvin": [
+          6000,
+          8000
+        ],
+        "hdri": null,
+        "hdri_strength": [
+          0,
+          0
+        ],
+        "hdri_rotation": [
+          0,
+          0
+        ]
+      },
+      "harsh_inspection": {
+        "kind": "camera_softbox",
+        "energy": [
+          80.0,
+          150.0
+        ],
+        "size": [
+          0.1,
+          0.25
+        ],
+        "kelvin": [
+          5000,
+          6000
+        ],
+        "offset": [
+          0.0,
+          0.05
+        ],
+        "world_strength": [
+          0.02,
+          0.12
+        ],
+        "world_kelvin": [
+          5500,
+          7000
+        ],
+        "hdri": null,
+        "hdri_strength": [
+          0,
+          0
+        ],
+        "hdri_rotation": [
+          0,
+          0
+        ]
+      },
+      "warm_indoor": {
+        "kind": "camera_softbox",
+        "energy": [
+          140.0,
+          300.0
+        ],
+        "size": [
+          0.4,
+          0.9
+        ],
+        "kelvin": [
+          2900,
+          3800
+        ],
+        "offset": [
+          0.05,
+          0.22
+        ],
+        "world_strength": [
+          0.15,
+          0.4
+        ],
+        "world_kelvin": [
+          3200,
+          4500
+        ],
+        "hdri": null,
+        "hdri_strength": [
+          0,
+          0
+        ],
+        "hdri_rotation": [
+          0,
+          0
+        ]
+      },
+      "fluorescent_factory": {
+        "kind": "off_axis",
+        "energy": [
+          700.0,
+          1300.0
+        ],
+        "size": [
+          1.2,
+          2.2
+        ],
+        "kelvin": [
+          4000,
+          5000
+        ],
+        "tint": [
+          0.96,
+          1.045,
+          0.95
+        ],
+        "azimuth": [
+          0,
+          360
+        ],
+        "elevation": [
+          55,
+          80
+        ],
+        "distance": [
+          1.6,
+          2.4
+        ],
+        "world_strength": [
+          0.3,
+          0.6
+        ],
+        "world_kelvin": [
+          4200,
+          5200
+        ],
+        "hdri": null,
+        "hdri_strength": [
+          0,
+          0
+        ],
+        "hdri_rotation": [
+          0,
+          0
+        ]
+      },
+      "high_bay_led": {
+        "kind": "off_axis",
+        "energy": [
+          1400.0,
+          2600.0
+        ],
+        "size": [
+          0.25,
+          0.6
+        ],
+        "kelvin": [
+          5000,
+          6500
+        ],
+        "azimuth": [
+          0,
+          360
+        ],
+        "elevation": [
+          50,
+          78
+        ],
+        "distance": [
+          1.8,
+          2.6
+        ],
+        "world_strength": [
+          0.05,
+          0.18
+        ],
+        "world_kelvin": [
+          5500,
+          7000
+        ],
+        "hdri": null,
+        "hdri_strength": [
+          0,
+          0
+        ],
+        "hdri_rotation": [
+          0,
+          0
+        ]
+      },
+      "dim_workshop": {
+        "kind": "off_axis",
+        "energy": [
+          170.0,
+          420.0
+        ],
+        "size": [
+          0.15,
+          0.5
+        ],
+        "kelvin": [
+          2700,
+          3600
+        ],
+        "azimuth": [
+          0,
+          360
+        ],
+        "elevation": [
+          18,
+          42
+        ],
+        "distance": [
+          1.0,
+          1.8
+        ],
+        "world_strength": [
+          0.012,
+          0.055
+        ],
+        "world_kelvin": [
+          3000,
+          4500
+        ],
+        "hdri": null,
+        "hdri_strength": [
+          0,
+          0
+        ],
+        "hdri_rotation": [
+          0,
+          0
+        ]
+      },
+      "mixed_daylight": {
+        "kind": "off_axis",
+        "energy": [
+          600.0,
+          1200.0
+        ],
+        "size": [
+          1.0,
+          2.0
+        ],
+        "kelvin": [
+          6000,
+          7800
+        ],
+        "azimuth": [
+          0,
+          360
+        ],
+        "elevation": [
+          22,
+          45
+        ],
+        "distance": [
+          1.6,
+          2.4
+        ],
+        "fill_energy": [
+          150.0,
+          400.0
+        ],
+        "fill_size": [
+          0.8,
+          1.6
+        ],
+        "fill_kelvin": [
+          2700,
+          3400
+        ],
+        "fill_azimuth_offset": [
+          110,
+          250
+        ],
+        "fill_elevation": [
+          45,
+          75
+        ],
+        "fill_distance": [
+          1.2,
+          2.0
+        ],
+        "world_strength": [
+          0.1,
+          0.3
+        ],
+        "world_kelvin": [
+          5000,
+          7500
+        ],
+        "hdri": null,
+        "hdri_strength": [
+          0,
+          0
+        ],
+        "hdri_rotation": [
+          0,
+          0
+        ]
+      }
+    },
+    "materials": {
+      "shell_white": {
+        "color": [
+          [
+            0.68,
+            0.68,
+            0.67
+          ],
+          [
+            0.86,
+            0.86,
+            0.84
+          ]
+        ],
+        "luma_ref": 0.788,
+        "metallic": [
+          0.0,
+          0.1
+        ],
+        "roughness": [
+          0.3,
+          0.55
+        ],
+        "coat": [
+          0.15,
+          0.55
+        ],
+        "wear": [
+          0.05,
+          0.3
+        ]
+      },
+      "shell_black": {
+        "color": [
+          [
+            0.015,
+            0.015,
+            0.018
+          ],
+          [
+            0.055,
+            0.055,
+            0.06
+          ]
+        ],
+        "luma_ref": 0.436,
+        "metallic": [
+          0.0,
+          0.15
+        ],
+        "roughness": [
+          0.28,
+          0.6
+        ],
+        "coat": [
+          0.15,
+          0.6
+        ],
+        "wear": [
+          0.05,
+          0.4
+        ]
+      },
+      "shell_navy": {
+        "color": [
+          [
+            0.03,
+            0.05,
+            0.13
+          ],
+          [
+            0.07,
+            0.11,
+            0.24
+          ]
+        ],
+        "luma_ref": 0.589,
+        "metallic": [
+          0.0,
+          0.12
+        ],
+        "roughness": [
+          0.3,
+          0.55
+        ],
+        "coat": [
+          0.15,
+          0.55
+        ],
+        "wear": [
+          0.05,
+          0.3
+        ]
+      },
+      "shell_alu": {
+        "color": [
+          [
+            0.55,
+            0.56,
+            0.58
+          ],
+          [
+            0.74,
+            0.75,
+            0.77
+          ]
+        ],
+        "luma_ref": 0.835,
+        "metallic": [
+          0.85,
+          1.0
+        ],
+        "roughness": [
+          0.2,
+          0.45
+        ],
+        "coat": [
+          0.0,
+          0.0
+        ],
+        "wear": [
+          0.1,
+          0.45
+        ]
+      },
+      "cell_green": {
+        "color": [
+          [
+            0.06,
+            0.3,
+            0.07
+          ],
+          [
+            0.14,
+            0.42,
+            0.13
+          ]
+        ],
+        "luma_ref": 0.54,
+        "metallic": [
+          0.05,
+          0.25
+        ],
+        "roughness": [
+          0.28,
+          0.48
+        ],
+        "coat": [
+          0.2,
+          0.6
+        ],
+        "wear": [
+          0.05,
+          0.35
+        ]
+      },
+      "cell_blue": {
+        "color": [
+          [
+            0.04,
+            0.12,
+            0.38
+          ],
+          [
+            0.1,
+            0.22,
+            0.55
+          ]
+        ],
+        "luma_ref": 0.467,
+        "metallic": [
+          0.05,
+          0.25
+        ],
+        "roughness": [
+          0.26,
+          0.46
+        ],
+        "coat": [
+          0.2,
+          0.6
+        ],
+        "wear": [
+          0.05,
+          0.35
+        ]
+      },
+      "cell_black": {
+        "color": [
+          [
+            0.02,
+            0.02,
+            0.024
+          ],
+          [
+            0.06,
+            0.06,
+            0.065
+          ]
+        ],
+        "luma_ref": 0.249,
+        "metallic": [
+          0.0,
+          0.2
+        ],
+        "roughness": [
+          0.32,
+          0.58
+        ],
+        "coat": [
+          0.1,
+          0.5
+        ],
+        "wear": [
+          0.05,
+          0.4
+        ]
+      },
+      "cell_nickel": {
+        "color": [
+          [
+            0.62,
+            0.63,
+            0.65
+          ],
+          [
+            0.8,
+            0.81,
+            0.83
+          ]
+        ],
+        "luma_ref": 0.428,
+        "metallic": [
+          0.95,
+          1.0
+        ],
+        "roughness": [
+          0.12,
+          0.35
+        ],
+        "coat": [
+          0.0,
+          0.0
+        ],
+        "wear": [
+          0.05,
+          0.45
+        ]
+      },
+      "cell_purple": {
+        "color": [
+          [
+            0.26,
+            0.16,
+            0.42
+          ],
+          [
+            0.42,
+            0.28,
+            0.62
+          ]
+        ],
+        "luma_ref": 0.544,
+        "metallic": [
+          0.05,
+          0.25
+        ],
+        "roughness": [
+          0.28,
+          0.5
+        ],
+        "coat": [
+          0.2,
+          0.6
+        ],
+        "wear": [
+          0.05,
+          0.35
+        ]
+      },
+      "cell_grey": {
+        "color": [
+          [
+            0.38,
+            0.38,
+            0.4
+          ],
+          [
+            0.58,
+            0.58,
+            0.6
+          ]
+        ],
+        "luma_ref": 0.655,
+        "metallic": [
+          0.05,
+          0.3
+        ],
+        "roughness": [
+          0.3,
+          0.55
+        ],
+        "coat": [
+          0.1,
+          0.5
+        ],
+        "wear": [
+          0.05,
+          0.4
+        ]
+      }
+    },
+    "role_materials": {
+      "case": [
+        "shell_white",
+        "shell_black",
+        "shell_navy",
+        "shell_alu"
+      ],
+      "case_lid": [
+        "shell_white",
+        "shell_black",
+        "shell_navy",
+        "shell_alu"
+      ],
+      "case_liner": [
+        "shell_white",
+        "shell_black",
+        "shell_navy",
+        "shell_alu"
+      ],
+      "cell": [
+        "cell_green",
+        "cell_blue",
+        "cell_black",
+        "cell_nickel",
+        "cell_purple",
+        "cell_grey"
+      ]
+    }
+  },
+  "variants": [
+    "assembled",
+    "cells_only",
+    "open_case"
+  ],
+  "catalog": {
+    "units": "m",
+    "note": "glTF geometry is in metres; extents_mm are millimetres",
+    "tol_linear_mm": 0.05,
+    "tol_angular": 0.3,
+    "assets": [
+      {
+        "extents_mm": [
+          62.9,
+          90.9,
+          22.2
+        ],
+        "triangles": 20790,
+        "subparts": [
+          {
+            "name": "004696_A;2-Case10000_btm_102fb0",
+            "role": "case",
+            "extents_mm": [
+              62.9,
+              90.9,
+              11.1
+            ],
+            "triangles": 1180,
+            "volume_mm3": null
+          },
+          {
+            "name": "004697_A;2-Case10000_top",
+            "role": "case_lid",
+            "extents_mm": [
+              62.9,
+              90.9,
+              11.1
+            ],
+            "triangles": 1180,
+            "volume_mm3": null
+          },
+          {
+            "name": "004696_A;2-Case10000_btm_fb3ae6",
+            "role": "case_liner",
+            "extents_mm": [
+              59.02,
+              90.9,
+              18.32
+            ],
+            "triangles": 712,
+            "volume_mm3": null
+          },
+          {
+            "name": "004695_A;1-Cell_18650",
+            "role": "cell",
+            "extents_mm": [
+              18.3,
+              18.3,
+              65.0
+            ],
+            "triangles": 5906,
+            "volume_mm3": null
+          },
+          {
+            "name": "004695_A;1-Cell_18650_18652",
+            "role": "cell",
+            "extents_mm": [
+              18.3,
+              18.3,
+              65.0
+            ],
+            "triangles": 5906,
+            "volume_mm3": null
+          },
+          {
+            "name": "004695_A;1-Cell_18651",
+            "role": "cell",
+            "extents_mm": [
+              18.3,
+              18.3,
+              65.0
+            ],
+            "triangles": 5906,
+            "volume_mm3": null
+          }
+        ],
+        "role_counts": {
+          "cell": 3,
+          "case_liner": 1,
+          "case": 1,
+          "case_lid": 1
+        },
+        "cell_union_mm": [
+          -27.45,
+          -43.0,
+          27.45,
+          22.0,
+          20.25
+        ],
+        "tray_outer_mm": [
+          -31.45,
+          -45.45,
+          31.45,
+          45.45,
+          11.1
+        ],
+        "case_wall_mm": 4.0,
+        "interior_mm": [
+          -27.45,
+          -43.0,
+          27.45,
+          41.45
+        ],
+        "module_bay_mm": [
+          -27.45,
+          22.0,
+          27.45,
+          41.45
+        ],
+        "tray_floor_mm": 1.95,
+        "name": "AnkerPowerCore10000",
+        "source": "004694_A_1-AnkerPowerCore10000.stp",
+        "file": "AnkerPowerCore10000.glb",
+        "tol_linear_mm": 0.05,
+        "tol_angular": 0.3,
+        "detected_unit": "MILLIMETRE",
+        "unit_m": 0.001
+      },
+      {
+        "extents_mm": [
+          80.7,
+          97.0,
+          22.2
+        ],
+        "triangles": 26696,
+        "subparts": [
+          {
+            "name": "004703_A;2-Case13000_btm_33e787",
+            "role": "case",
+            "extents_mm": [
+              80.7,
+              97.0,
+              11.1
+            ],
+            "triangles": 1180,
+            "volume_mm3": null
+          },
+          {
+            "name": "004704_A;2-Case13000_top",
+            "role": "case_lid",
+            "extents_mm": [
+              80.7,
+              97.0,
+              11.1
+            ],
+            "triangles": 1180,
+            "volume_mm3": null
+          },
+          {
+            "name": "004703_A;2-Case13000_btm_cdde7f",
+            "role": "case_liner",
+            "extents_mm": [
+              76.82,
+              97.0,
+              18.32
+            ],
+            "triangles": 712,
+            "volume_mm3": null
+          },
+          {
+            "name": "004695_A;1-Cell_18650",
+            "role": "cell",
+            "extents_mm": [
+              18.3,
+              18.3,
+              65.0
+            ],
+            "triangles": 5906,
+            "volume_mm3": null
+          },
+          {
+            "name": "004695_A;1-Cell_18650_18652",
+            "role": "cell",
+            "extents_mm": [
+              18.3,
+              18.3,
+              65.0
+            ],
+            "triangles": 5906,
+            "volume_mm3": null
+          },
+          {
+            "name": "004695_A;1-Cell_18650_18653",
+            "role": "cell",
+            "extents_mm": [
+              18.3,
+              18.3,
+              65.0
+            ],
+            "triangles": 5906,
+            "volume_mm3": null
+          },
+          {
+            "name": "004695_A;1-Cell_18651",
+            "role": "cell",
+            "extents_mm": [
+              18.3,
+              18.3,
+              65.0
+            ],
+            "triangles": 5906,
+            "volume_mm3": null
+          }
+        ],
+        "role_counts": {
+          "cell": 4,
+          "case_liner": 1,
+          "case": 1,
+          "case_lid": 1
+        },
+        "cell_union_mm": [
+          -36.6,
+          -43.0,
+          36.6,
+          22.0,
+          20.25
+        ],
+        "tray_outer_mm": [
+          -40.35,
+          -48.5,
+          40.35,
+          48.5,
+          11.1
+        ],
+        "case_wall_mm": 3.75,
+        "interior_mm": [
+          -36.6,
+          -44.75,
+          36.6,
+          44.75
+        ],
+        "module_bay_mm": [
+          -36.6,
+          22.0,
+          36.6,
+          44.75
+        ],
+        "tray_floor_mm": 1.95,
+        "name": "AnkerPowerCore13000",
+        "source": "004702_A_2-AnkerPowerCore13000.stp",
+        "file": "AnkerPowerCore13000.glb",
+        "tol_linear_mm": 0.05,
+        "tol_angular": 0.3,
+        "detected_unit": "MILLIMETRE",
+        "unit_m": 0.001
+      },
+      {
+        "extents_mm": [
+          62.3,
+          167.8,
+          22.2
+        ],
+        "triangles": 38364,
+        "subparts": [
+          {
+            "name": "004706_A;2-Case20100_btm_6f758f",
+            "role": "case",
+            "extents_mm": [
+              62.3,
+              167.8,
+              11.1
+            ],
+            "triangles": 1036,
+            "volume_mm3": null
+          },
+          {
+            "name": "004707_A;2-Case20100_top",
+            "role": "case_lid",
+            "extents_mm": [
+              62.3,
+              167.8,
+              11.1
+            ],
+            "triangles": 1180,
+            "volume_mm3": null
+          },
+          {
+            "name": "004706_A;2-Case20100_btm_97de9a",
+            "role": "case_liner",
+            "extents_mm": [
+              58.31,
+              167.8,
+              18.21
+            ],
+            "triangles": 712,
+            "volume_mm3": null
+          },
+          {
+            "name": "004695_A;1-Cell_18650",
+            "role": "cell",
+            "extents_mm": [
+              18.3,
+              18.3,
+              65.0
+            ],
+            "triangles": 5906,
+            "volume_mm3": null
+          },
+          {
+            "name": "004695_A;1-Cell_18650_18652",
+            "role": "cell",
+            "extents_mm": [
+              18.3,
+              18.3,
+              65.0
+            ],
+            "triangles": 5906,
+            "volume_mm3": null
+          },
+          {
+            "name": "004695_A;1-Cell_18650_18653",
+            "role": "cell",
+            "extents_mm": [
+              18.3,
+              18.3,
+              65.0
+            ],
+            "triangles": 5906,
+            "volume_mm3": null
+          },
+          {
+            "name": "004695_A;1-Cell_18650_18654",
+            "role": "cell",
+            "extents_mm": [
+              18.3,
+              18.3,
+              65.0
+            ],
+            "triangles": 5906,
+            "volume_mm3": null
+          },
+          {
+            "name": "004695_A;1-Cell_18650_18655",
+            "role": "cell",
+            "extents_mm": [
+              18.3,
+              18.3,
+              65.0
+            ],
+            "triangles": 5906,
+            "volume_mm3": null
+          },
+          {
+            "name": "004695_A;1-Cell_18651",
+            "role": "cell",
+            "extents_mm": [
+              18.3,
+              18.3,
+              65.0
+            ],
+            "triangles": 5906,
+            "volume_mm3": null
+          }
+        ],
+        "role_counts": {
+          "cell": 6,
+          "case_liner": 1,
+          "case": 1,
+          "case_lid": 1
+        },
+        "cell_union_mm": [
+          -27.45,
+          -78.0,
+          27.45,
+          55.0,
+          20.25
+        ],
+        "tray_outer_mm": [
+          -31.15,
+          -83.9,
+          31.15,
+          83.9,
+          11.1
+        ],
+        "case_wall_mm": 3.7,
+        "interior_mm": [
+          -27.45,
+          -80.2,
+          27.45,
+          80.2
+        ],
+        "module_bay_mm": [
+          -27.45,
+          55.0,
+          27.45,
+          80.2
+        ],
+        "tray_floor_mm": 1.95,
+        "name": "AnkerPowerCore20100",
+        "source": "004705_A_2-AnkerPowerCore20100.stp",
+        "file": "AnkerPowerCore20100.glb",
+        "tol_linear_mm": 0.05,
+        "tol_angular": 0.3,
+        "detected_unit": "MILLIMETRE",
+        "unit_m": 0.001
+      },
+      {
+        "extents_mm": [
+          81.7,
+          180.0,
+          22.2
+        ],
+        "triangles": 50304,
+        "subparts": [
+          {
+            "name": "004709_A;2-Case26800_btm_02f64f",
+            "role": "case",
+            "extents_mm": [
+              81.7,
+              180.0,
+              11.1
+            ],
+            "triangles": 1180,
+            "volume_mm3": null
+          },
+          {
+            "name": "004710_A;2-Case26800_top",
+            "role": "case_lid",
+            "extents_mm": [
+              81.7,
+              180.0,
+              11.1
+            ],
+            "triangles": 1180,
+            "volume_mm3": null
+          },
+          {
+            "name": "004709_A;2-Case26800_btm_aac221",
+            "role": "case_liner",
+            "extents_mm": [
+              76.77,
+              180.0,
+              17.32
+            ],
+            "triangles": 696,
+            "volume_mm3": null
+          },
+          {
+            "name": "004695_A;1-Cell_18650",
+            "role": "cell",
+            "extents_mm": [
+              18.3,
+              18.3,
+              65.0
+            ],
+            "triangles": 5906,
+            "volume_mm3": null
+          },
+          {
+            "name": "004695_A;1-Cell_18650_18652",
+            "role": "cell",
+            "extents_mm": [
+              18.3,
+              18.3,
+              65.0
+            ],
+            "triangles": 5906,
+            "volume_mm3": null
+          },
+          {
+            "name": "004695_A;1-Cell_18650_18653",
+            "role": "cell",
+            "extents_mm": [
+              18.3,
+              18.3,
+              65.0
+            ],
+            "triangles": 5906,
+            "volume_mm3": null
+          },
+          {
+            "name": "004695_A;1-Cell_18650_18654",
+            "role": "cell",
+            "extents_mm": [
+              18.3,
+              18.3,
+              65.0
+            ],
+            "triangles": 5906,
+            "volume_mm3": null
+          },
+          {
+            "name": "004695_A;1-Cell_18650_18655",
+            "role": "cell",
+            "extents_mm": [
+              18.3,
+              18.3,
+              65.0
+            ],
+            "triangles": 5906,
+            "volume_mm3": null
+          },
+          {
+            "name": "004695_A;1-Cell_18650_18656",
+            "role": "cell",
+            "extents_mm": [
+              18.3,
+              18.3,
+              65.0
+            ],
+            "triangles": 5906,
+            "volume_mm3": null
+          },
+          {
+            "name": "004695_A;1-Cell_18650_18657",
+            "role": "cell",
+            "extents_mm": [
+              18.3,
+              18.3,
+              65.0
+            ],
+            "triangles": 5906,
+            "volume_mm3": null
+          },
+          {
+            "name": "004695_A;1-Cell_18651",
+            "role": "cell",
+            "extents_mm": [
+              18.3,
+              18.3,
+              65.0
+            ],
+            "triangles": 5906,
+            "volume_mm3": null
+          }
+        ],
+        "role_counts": {
+          "cell": 8,
+          "case_liner": 1,
+          "case": 1,
+          "case_lid": 1
+        },
+        "cell_union_mm": [
+          -36.6,
+          -85.0,
+          36.6,
+          55.0,
+          20.25
+        ],
+        "tray_outer_mm": [
+          -40.85,
+          -90.0,
+          40.85,
+          90.0,
+          11.1
+        ],
+        "case_wall_mm": 4.25,
+        "interior_mm": [
+          -36.6,
+          -85.75,
+          36.6,
+          85.75
+        ],
+        "module_bay_mm": [
+          -36.6,
+          55.0,
+          36.6,
+          85.75
+        ],
+        "tray_floor_mm": 1.95,
+        "name": "AnkerPowerCore26800",
+        "source": "004708_A_2-AnkerPowerCore26800.stp",
+        "file": "AnkerPowerCore26800.glb",
+        "tol_linear_mm": 0.05,
+        "tol_angular": 0.3,
+        "detected_unit": "MILLIMETRE",
+        "unit_m": 0.001
+      }
+    ]
+  },
+  "stats": {
+    "n_images": 502,
+    "n_boxes": 1771,
+    "per_class": {
+      "battery": 923,
+      "cartridge": 848
+    },
+    "per_variant": {
+      "assembled": 614,
+      "open_case": 748,
+      "cells_only": 409
+    },
+    "per_layout_mode": {
+      "scatter": 363,
+      "jig": 139
+    },
+    "dropped_instances": 1173,
+    "per_seg_class_kept": {
+      "battery": 923,
+      "cartridge": 848,
+      "electronics_module": 200,
+      "placement_area": 234,
+      "obstruction": 615
+    },
+    "per_seg_class_dropped": {
+      "battery": 6,
+      "cartridge": 0,
+      "electronics_module": 34,
+      "placement_area": 0,
+      "obstruction": 84
+    },
+    "box_w_px": {
+      "min": 17,
+      "max": 359,
+      "mean": 98.0
+    },
+    "box_h_px": {
+      "min": 17,
+      "max": 369,
+      "mean": 113.0
+    },
+    "box_diag_px": {
+      "p05": 67.7,
+      "p50": 125.3,
+      "p95": 318.3
+    },
+    "box_sqrt_area_px": {
+      "p05": 35.4,
+      "p50": 65.7,
+      "p95": 207.6
+    }
+  }
+}
