@@ -25,13 +25,30 @@ Scoring it turns every correct detection into a false positive, which
 drags precision (and therefore AP) down for the whole set with no way
 to see it in the headline number. Images with no ground truth are
 therefore excluded by default, loudly: the report names them, says
-how many predictions each one attracted, and states the scored count
-against the found count on the summary line. ``--include-empty``
-scores them anyway. See :func:`partition_records`.
+how many predictions each one attracted, states the scored count
+against the found count on the summary line, and a warning naming
+them goes to *stderr* as well, so the exclusion survives a run whose
+stdout was piped into a receipt and never read.
+``--include-empty`` scores them anyway — and then the report carries
+a banner saying the headline is depressed by an annotation gap and is
+not comparable with the default figure, because a bare mAP line is
+exactly what gets quoted. See :func:`partition_records`.
+
+The cost is not hypothetical and it is not small; it is measured in
+``docs/receipts/real_photo_eval.txt``, which ``--out`` writes.
+
+``--out`` exists because this evaluation publishes a number and, until
+it was added, that number had no committed generator — it was quoted
+from prose. No ``.pt`` is tracked in this repository, so the receipt
+also fingerprints the weights it scored: two checkpoints under one
+command produce two different figures, and the sha256 is what stops
+them being conflated.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
+import shlex
 import sys
 import time
 from dataclasses import dataclass
@@ -67,7 +84,12 @@ GT_COLOUR = (40, 190, 255)
 # it is deliberately loose: a genuinely bad detector over-fires too, so this
 # names the image and leaves the judgement to whoever reads the report.
 # IMG_4435 carries a single box for a photo of a full tray, which is what
-# this exists to surface.
+# this exists to surface — and it shows how coarse the instrument is. Under
+# `last.pt` it fires (4 predictions, 4.0x); under the shipped `best.pt` it
+# does not (3 predictions, exactly 3.0x, and the test is strict). So this
+# heuristic catches a *gross* labelling gap, not a marginal one. The gap that
+# actually mattered on this corpus — IMG_4428's zero boxes — is caught by
+# partition_records instead, which needs no threshold.
 OVER_PREDICTION_FACTOR = 3.0
 
 Box = Tuple[float, float, float, float]
@@ -148,6 +170,34 @@ def _brief(exc: BaseException, limit: int = 400) -> str:
     return f"{type(exc).__name__}: {text}"
 
 
+def checkpoint_fingerprint(path: Optional[str]) -> Optional[str]:
+    """``sha256:<hex> (<n> bytes)`` for a checkpoint, or ``None``.
+
+    ``recog/checkpoints/`` is gitignored and no ``.pt`` is tracked
+    anywhere in this repository, so a receipt that names only the *path*
+    pins nothing: ``best.pt`` and ``last.pt`` are different networks that
+    score differently on this corpus, and a reader cannot tell from
+    ``--checkpoint recog/checkpoints/best.pt`` which weights produced the
+    number. The digest is the only thing that can.
+
+    Returns ``None`` when no checkpoint was named (the heuristic
+    fallback) or the file cannot be read — a receipt is still worth
+    writing without a digest, and the missing-checkpoint case is already
+    a hard error in :func:`build_detector`.
+    """
+    if not path:
+        return None
+    p = Path(path)
+    try:
+        digest = hashlib.sha256()
+        with open(p, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                digest.update(chunk)
+        return f"sha256:{digest.hexdigest()} ({p.stat().st_size} bytes)"
+    except OSError:
+        return None
+
+
 def load_image_rgb(path: Path) -> np.ndarray:
     """Read an image as an HWC uint8 RGB array (what ``Detector`` wants)."""
     try:
@@ -226,6 +276,21 @@ def partition_records(records: Sequence, include_empty: bool = False):
     whose photograph is plainly full of objects. That is a gap in the
     CVAT export, so it is excluded by default. ``include_empty=True``
     restores the old behaviour of scoring everything.
+
+    **The ground for the exclusion is that an unannotated image cannot
+    serve as evaluation ground truth** — not that it scores badly. The
+    distinction matters: the second is a reason to drop an inconvenient
+    member and this eval set must never do that. So the exclusion is
+    stated in three places a reader cannot miss — a stderr warning, a
+    named block in the report, and ``docs/receipts/real_photo_eval.txt``
+    — and the cost of *not* excluding it is measured in that receipt
+    rather than asserted here. Annotating ``IMG_4428.jpg`` is the fix;
+    this function is the honest interim, and it needs no change when the
+    annotation arrives (a labelled image simply stops being empty).
+
+    This filter is deliberately a property of the *data*, never of the
+    filename. Nothing here knows about ``IMG_4428``: a new unlabelled
+    image is excluded on the same ground and named in the same places.
     """
     if include_empty:
         return list(records), []
@@ -313,18 +378,30 @@ def format_report(
     rows: Optional[Sequence[ImageRow]] = None,
     n_found: Optional[int] = None,
     per_image_iou: float = 0.5,
+    checkpoint_digest: Optional[str] = None,
 ) -> str:
     """Render the whole run as a plain-text block.
 
-    ``rows`` drives the per-image table and the two notices; ``n_found``
-    is how many annotated images existed before any exclusion, so the
-    reader is told the scored count *against* the found count and cannot
-    mistake an exclusion for a smaller test set.
+    ``rows`` drives the per-image table and the three notices;
+    ``n_found`` is how many annotated images existed before any
+    exclusion, so the reader is told the scored count *against* the
+    found count and cannot mistake an exclusion for a smaller test set.
+
+    Three notices, not two. The default path names what it *excluded*;
+    ``--include-empty`` has to name what it *included*, because that is
+    the run whose headline is wrong. Before this banner existed, a
+    ``--include-empty`` report differed from the default one only in a
+    per-image note and a count on line five, and the number a reader
+    copies out of a report is the mAP line.
     """
     thresholds = sorted(results)
     rows = list(rows or [])
     n_found = n_images if n_found is None else n_found
     excluded = [r for r in rows if not r.scored]
+    # Scored *despite* having no ground truth: only reachable via
+    # --include-empty, and every prediction on such an image is a false
+    # positive by construction.
+    contaminated = [r for r in rows if r.scored and r.n_gt == 0]
     suspect = [r for r in rows if r.scored and "under-annotated" in r.note]
     n_inferred = len(rows) or n_images
 
@@ -333,10 +410,15 @@ def format_report(
     lines.append("Real-photo held-out evaluation")
     lines.append(f"  detector    : {detector_name}")
     lines.append(f"  checkpoint  : {checkpoint or '(none)'}")
+    if checkpoint_digest:
+        lines.append(f"  weights     : {checkpoint_digest}")
     lines.append(f"  config      : {config_path or '(none)'}")
     scope = f"{n_images} of {n_found} scored"
     if excluded:
         scope += f"  ({len(excluded)} excluded: no ground-truth boxes)"
+    if contaminated:
+        scope += (f"  ({len(contaminated)} WITH ZERO GROUND TRUTH, scored "
+                  f"anyway: --include-empty)")
     lines.append(f"  images      : {scope}")
     lines.append(f"  confidence  : {confidence:.2f}")
     lines.append(f"  inference   : {elapsed_s:.1f} s over {n_inferred} image(s)"
@@ -375,6 +457,28 @@ def format_report(
         lines.append("  score them anyway.")
         lines.append("")
 
+    # ---- contamination notice (--include-empty) --------------------------
+    if contaminated:
+        n_fp = sum(r.n_pred for r in contaminated)
+        lines.append(f"WARNING - THE SCORE BELOW IS DEPRESSED BY AN "
+                     f"ANNOTATION GAP. {len(contaminated)} image(s) with zero")
+        lines.append("ground-truth boxes were scored anyway "
+                     "(--include-empty):")
+        for r in contaminated:
+            lines.append(f"  {r.file_name}  0 GT, {r.n_pred} prediction(s), "
+                         f"all counted as false positives")
+        lines.append(f"  These contribute no true positive and no recall - "
+                     f"only {n_fp} false")
+        lines.append("  positive(s), which lower precision and therefore AP "
+                     "for the WHOLE set.")
+        lines.append("  The mAP below is a measurement of the annotation gap "
+                     "as much as of the")
+        lines.append("  detector, and it is NOT comparable with the default "
+                     "(exclusion) figure or")
+        lines.append("  with any synthetic figure. Do not quote it as the "
+                     "real-photo result.")
+        lines.append("")
+
     if suspect:
         lines.append(f"POSSIBLY UNDER-ANNOTATED - predictions exceed ground "
                      f"truth by more than {OVER_PREDICTION_FACTOR:g}x:")
@@ -409,12 +513,46 @@ def format_report(
         row += f"{results[t][f'mAP@{t:.2f}']:>11.4f}"
     lines.append(row)
     lines.append("")
-    lines.append(f"mAP above is over {n_images} of the {n_found} annotated "
-                 f"image(s) found"
-                 + (f"; {len(excluded)} excluded (see above)."
-                    if excluded else "."))
+    tail = f"mAP above is over {n_images} of the {n_found} annotated image(s) found"
+    if excluded:
+        tail += f"; {len(excluded)} excluded (see above)."
+    elif contaminated:
+        tail += (f"; {len(contaminated)} of them scored with ZERO ground "
+                 f"truth (see the warning above).")
+    else:
+        tail += "."
+    lines.append(tail)
     lines.append("")
     return "\n".join(lines)
+
+
+def receipt_text(report: str, argv: Sequence[str]) -> str:
+    """Wrap ``report`` in the provenance preamble a receipt needs.
+
+    Until this existed the real-photo AP was quoted from prose — an audit
+    finding in its own right, and the same defect the receipt convention
+    exists to prevent. A receipt has to say what produced it and how to
+    produce it again.
+    """
+    cmd = " ".join(["python", "-m", "recog.eval_real",
+                    *(shlex.quote(a) for a in argv)])
+    return "\n".join([
+        "Real-photo held-out detector evaluation",
+        "=" * 64,
+        "Generated by recog/eval_real.py --out. Reproduce with:",
+        f"  {cmd}",
+        "",
+        "AP is recog.evaluate's VOC 11-point implementation - the same code",
+        "path the synthetic figures use, so the two are comparable in",
+        "convention. They are not comparable in domain: this is seven phone",
+        "photographs, and the detector was trained only on Blender renders.",
+        "",
+        "NO .pt IS TRACKED IN THIS REPOSITORY (recog/checkpoints/ is",
+        "gitignored). The weights line below is what pins this receipt to a",
+        "specific network - best.pt and last.pt are different checkpoints",
+        "and score differently on this corpus under an identical command.",
+        report,
+    ])
 
 
 # ----------------------------------------------------------- overlays ----
@@ -520,12 +658,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
                          "IMG_4428 is unlabelled, not empty).")
     ap.add_argument("--save-overlays", default=None, metavar="DIR",
                     help="write GT-vs-prediction overlay JPEGs to DIR")
+    ap.add_argument("--out", default=None, metavar="PATH",
+                    help="also write the report to PATH as a receipt, with "
+                         "the reproducing command and a sha256 of the "
+                         "checkpoint (no .pt is tracked in this repo, so the "
+                         "path alone does not identify the weights). "
+                         "docs/receipts/real_photo_eval.txt is the committed "
+                         "one.")
     ap.add_argument("--quiet", action="store_true",
                     help="suppress the per-image progress lines")
     return ap
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
     args = build_arg_parser().parse_args(argv)
 
     img_dir = Path(args.img_dir)
@@ -568,6 +714,30 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             f"anyway (every prediction will be a false positive)."
         )
 
+    # The zero-ground-truth population is announced on stderr as well as in
+    # the report. --quiet silences the progress lines and a receipt run sends
+    # stdout to a file; neither should be able to hide the fact that the
+    # scored set is not the found set. Audit E found this class of silence in
+    # five separate places, and a count that only exists inside a block of
+    # report prose is one bad `| tail -3` away from being one of them.
+    empty_records = [r for r in records if not r.boxes]
+    if empty_records:
+        names = ", ".join(r.file_name for r in empty_records)
+        if args.include_empty:
+            print(f"warning: --include-empty is scoring {len(empty_records)} "
+                  f"of {len(records)} image(s) that carry ZERO ground-truth "
+                  f"boxes ({names}). Every prediction on them is a false "
+                  f"positive, so the reported mAP is depressed by an "
+                  f"annotation gap and is not the detector's real-photo "
+                  f"result.", file=sys.stderr, flush=True)
+        else:
+            print(f"warning: {len(empty_records)} of {len(records)} image(s) "
+                  f"carry ZERO ground-truth boxes and are EXCLUDED from the "
+                  f"score ({names}). They are unlabelled in the source "
+                  f"export, not empty scenes; annotate them or accept a "
+                  f"{len(scored)}-image test set.",
+                  file=sys.stderr, flush=True)
+
     detector = build_detector(args.checkpoint, cfg)
 
     log = None if args.quiet else (lambda msg: print(msg, flush=True))
@@ -590,7 +760,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     for r in scored}
 
     results = summarise(gts_by_image, scored_preds)
-    print(format_report(
+    report = format_report(
         results,
         _counts(gts_by_image, 1),
         _counts(scored_preds, 1),
@@ -602,7 +772,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         elapsed_s=elapsed,
         rows=build_image_rows(scored, excluded, preds_by_image),
         n_found=len(records),
-    ))
+        checkpoint_digest=checkpoint_fingerprint(args.checkpoint),
+    )
+    print(report)
+
+    if args.out:
+        out_path = Path(args.out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(receipt_text(report, raw_argv), encoding="utf-8")
+        print(f"wrote receipt to {out_path}")
 
     if args.save_overlays:
         out_dir = Path(args.save_overlays)
@@ -617,11 +795,13 @@ __all__ = [
     "build_arg_parser",
     "build_detector",
     "build_image_rows",
+    "checkpoint_fingerprint",
     "collect_predictions",
     "format_report",
     "main",
     "partition_records",
     "per_image_ap",
+    "receipt_text",
     "save_overlays",
     "summarise",
 ]
