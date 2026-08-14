@@ -1379,29 +1379,59 @@ docstring now states both facts at the source
 (`docs/superpowers/specs/2026-08-12-fix-execution-safety.md`,
 "Deliberately not implemented" item 2).
 
-**One artefact in this repository contradicts the specification above,
-and is recorded here rather than reconciled.**
-`execution/krl_prog/laptop-comm.xml` configures the EthernetKRL channel
-with an **XML** payload schema — a single `<Element Tag="Target"
-Type="INT"/>` inside `<Element Tag="Command">`, no binary mode, no
-checksum element — while `execution/protocol.py` implements the 16-byte
-binary framing described here with a CRC trailer. These cannot both be
-the interface, and the binary one is what every line of Python and every
-test in the repository speaks. In the same file set, `routines.src`
-declares `PickAndPlace(pick_pos, place_pos, vacuum_pct)` taking **two**
-Cartesian poses while the `PICK_AND_PLACE` opcode carries one coordinate
-triple; §7.3's two-packet dance is the workaround, and it is the reason
-a place-Z cannot be transmitted at all (see the Appendix D correction).
-Nothing executes the KRL side in this project, so no measurement depends
-on it — it is named because those three files are the artefact a reader
-would use to judge whether the interface is understood, and as written
-they disagree. Note also that `protocol.py`'s docstring asserts
-CRC-16/MODBUS "is the standard integrity check on the KUKA EthernetKRL
-XML transport"; this section's phrasing — *modelled on* EthernetKRL 3.1
-and *augmented with* a CRC-16/MODBUS trailer — is the accurate one, and
-`laptop-comm.xml`'s own absence of a checksum element is enough to show
-it without appealing to anything outside the repository
-(`docs/superpowers/audit/2026-08-12-F-execution-and-config.md` §1.10).
+**The robot-side artefacts contradicted this specification, and the
+paragraph that used to stand here recorded the contradiction rather than
+reconciling it. Corrected and reconciled 2026-08-14**
+(`docs/superpowers/audit/2026-08-14-T-kuka-conformance.md`,
+`docs/superpowers/specs/2026-08-14-kuka-conformance-fixes.md`).
+
+`execution/krl_prog/laptop-comm.xml` configured the EthernetKRL channel
+with an **XML** payload schema while `execution/protocol.py` implements
+16-byte binary framing, so the two halves could not have interoperated;
+worse, the file was not a valid EKI configuration in either mode
+(`<Config>` for `<CONFIGURATION>`, no `<EXTERNAL>`/`<INTERNAL>`,
+lower-case element names, nested `<Element>` where EKI wants a flat list,
+and no `Set_Flag`). It has been rewritten as a fixed-length binary
+(`BinaryFixed`) configuration: `<RAW><ELEMENT Tag="Buffer" Type="BYTE"
+Size="16" Set_Flag="1"/></RAW>` in each direction.
+
+**This report previously implied that EKI had no binary mode. It has.**
+KUKA's EthernetKRL manual documents three connection data types — XML,
+fixed-length binary, and a variable binary stream — so the 16-byte frame
+is a *native* EKI capability rather than a departure from EKI, and the
+project's own `protocol.py` docstring, which asserted that "EthernetKRL's
+own transport is XML", was factually wrong in the project's disfavour.
+Both are corrected. What survives unchanged is the reason for the CRC:
+EKI carries no checksum in any of its three modes, so the CRC-16/MODBUS
+trailer is this repository's addition, not a KUKA standard.
+
+`routines.src` additionally contained hard KRL errors no disclosure
+covered — `RETURN <value>` inside a `DEF` (only `DEFFCT`/`ENDFCT` may
+return a value), a leading `DEF` that did not match the file name, no
+`GLOBAL` on any subprogram, `$ANOUT` written with a 0–100 percentage
+into a ±1.0 range, and no `BAS(#INITMOV,0)` to program the
+`$VEL_AXIS[]`/`$ACC_AXIS[]` that `PTP` obeys. All are fixed, and
+`tests/test_execution.py` now pins the corrected constructs as well as
+the status numbering. A receive loop — channel open, buffer check,
+CRC-16 verification, opcode `SWITCH`, status assembly — did not exist at
+all and has been written as `execution/krl_prog/laptop_comm.src`.
+
+**It has still never been compiled or run**, and both KRL files and the
+XML say so in their own headers: there is no controller in this project.
+The honest description of the execution layer is therefore *a binary
+command protocol designed for EthernetKRL's fixed-length binary mode,
+with a controller-side program written from the manuals and unverified
+against hardware* — not "implemented to the EthernetKRL 3.1
+specification".
+
+The remaining structural mismatch is real and unfixed by design:
+`routines.src` declares `PickAndPlace(pick_pos, place_pos, vacuum_pct)`
+taking **two** Cartesian poses while the `PICK_AND_PLACE` opcode carries
+one coordinate triple. §7.3's two-packet dance is the workaround, and it
+is the reason a place-Z cannot be transmitted at all (see the Appendix D
+correction). `laptop_comm.src` implements exactly that convention:
+it takes the place XY from the arm's current position at the moment the
+subroutine begins.
 
 ### 7.2 KukaClient lifecycle
 
@@ -1491,12 +1521,18 @@ A `PICK_AND_PLACE` uses a two-packet dance: the client first sends a
 `MOVE_TO` programming the place target at transport height, then a
 `PICK_AND_PLACE` carrying the pick target. The controller executes the
 canonical six-step routine — approach, grasp, transport, insert, release,
-retract — returning SUCCESS, PICK_FAILED, or PLACE_FAILED. The KRL 3.1
-subroutine lives in `execution/krl_prog/routines.src`. Steps 1–3 operate
-at `$VEL.CP = 0.150` m/s, the value specified in the R5 safety argument.
+retract — returning SUCCESS or PICK_FAILED. The KRL function lives in
+`execution/krl_prog/routines.src` as `GLOBAL DEFFCT INT PickAndPlace`,
+and `execution/krl_prog/laptop_comm.src` is the loop that dispatches to
+it. Neither has been compiled or run; see §7.1. The `LIN` segments of
+steps 1–4 operate at `$VEL.CP = 0.150` m/s, the value specified in the R5
+safety argument; the two `PTP` segments obey `$VEL_AXIS[]` instead.
 Vacuum sensing on digital input 10 provides the PICK_FAILED branch: if
 pressure is not detected within 50 ms, the controller aborts and returns
-code 2, triggering the planner's FREE-revert.
+code 2, triggering the planner's FREE-revert. **PLACE_FAILED (3) is
+emitted by `mock_kuka_server.py` and has no controller-side
+counterpart** — nothing on this arm reports that a cell seated, so the
+KRL function cannot return it.
 
 ### 7.4 Mock robot simulator
 
@@ -4363,6 +4399,14 @@ than editorial.
   the KRC's T1/T2 limits — and `configs/execution.yaml` now carries a
   comment saying so and warning against re-adding a host-side speed cap
   without a velocity field to enforce it with.
+  **Narrowed 2026-08-14.** `$VEL.CP` is the CP velocity and governs the
+  `LIN` segments only; `PTP` obeys `$VEL_AXIS[]`/`$ACC_AXIS[]`, which
+  `BAS(#INITMOV,0)` programs as percentages of the machine-data maxima.
+  The approach and transport moves of `PickAndPlace` are `PTP` and were
+  never capped by that number. `laptop_comm.src` sets both axis arrays to
+  a deliberately low 30 % for the `MOVE_TO` path; the T1 250 mm/s limit
+  is the cap that applies to everything, and it is the KRC's, not this
+  project's.
 
 The three `kuka:` keys that remain in the list and are also not knobs —
 `command_length_bytes`, `crc_polynomial` and `stop_category` — went the

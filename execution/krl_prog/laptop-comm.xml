@@ -1,25 +1,98 @@
-<EthernetKRL>
-  <Config>
-    <IP>172.31.1.147</IP>
-    <Port>54600</Port>
-    <Type>Server</Type>
-  </Config>
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  laptop-comm.xml — EthernetKRL channel configuration for the
+  pick-and-place cell. Referenced from KRL as EKI_Init("laptop-comm")
+  and EKI_Open("laptop-comm"): the argument is this file's name without
+  its extension.
 
-  <Send>
-    <XML>
-      <Element Tag="RobotStatus">
-        <Element Tag="X" Type="REAL"/>
-        <Element Tag="Y" Type="REAL"/>
-        <Element Tag="Z" Type="REAL"/>
-      </Element>
-    </XML>
-  </Send>
+  *** NOT VERIFIED AGAINST A CONTROLLER. ***
+  No KRC exists in this project, so the EKI parser has never seen this
+  file. What follows says which parts rest on KUKA's own manual and which
+  are the best reading available; the second kind must be checked against
+  the EthernetKRL manual's configuration chapter before anyone loads it.
 
-  <Receive>
-    <XML>
-      <Element Tag="Command">
-        <Element Tag="Target" Type="INT"/>
-      </Element>
-    </XML>
-  </Receive>
-</EthernetKRL>
+  MODE: RAW BINARY, FIXED LENGTH (BinaryFixed), 16 bytes each way.
+
+  Why binary at all. execution/protocol.py defines a 16-byte fixed-length
+  frame. The file that used to be here declared XML payloads, so the
+  Python side and the controller side could not have interoperated. The
+  fix is the mode, not the frame: KUKA's EthernetKRL manual documents
+  three connection data types, XML, binary of fixed length and a variable
+  binary stream, and states that "Binary data records are not interpreted
+  by the EKI and stored together in a memory", read back with
+  EKI_GetString and split with CAST_FROM. A fixed-length binary record is
+  therefore a native EKI capability, not a departure from EKI. The CRC-16
+  trailer in bytes 14..15 is this repository's own addition, because EKI
+  supplies no checksum.
+
+  FROM THE KUKA MANUAL, and relied on here:
+    * ELEMENT attribute Type="BYTE" selects a binary record of fixed
+      length; Size then gives that length, in the range 1 to 3600 bytes.
+      Type="STREAM" with an EOS delimiter is the variable-length variant
+      and is not what this frame is.
+    * Set_Flag sets $FLAG[n] when the element has been received, n in
+      1..1025. It is the mechanism by which KRL learns a telegram
+      arrived; the previous file had none, so the KRL side had nothing to
+      trigger on. laptop_comm.src waits on $FLAG[1].
+    * EXTERNAL/TYPE says whether the EXTERNAL system is server or client.
+      Here the laptop is the client, so the controller is the server;
+      EXTERNAL/IP and EXTERNAL/PORT are documented as ignored in that
+      case, which is why they are absent.
+    * Element names are upper case, attribute names are mixed case, and
+      the manual notes that XML files are case sensitive. The previous
+      file had this backwards.
+    * ELEMENT entries are a flat list; a Tag carries a path when it needs
+      one. The previous file nested ELEMENT inside ELEMENT.
+
+  NOT CONFIRMED, and flagged rather than asserted:
+    * the exact placement of the controller's own IP and PORT in server
+      mode. They are given here under INTERNAL because EXTERNAL/IP and
+      EXTERNAL/PORT are documented as the external system's address. The
+      manual page that lists INTERNAL's children was not obtained.
+    * whether BUFFERING and BUFFSIZE are attributes of INTERNAL, as
+      written here, or attributes of a child element. One extracted page
+      calls them attributes without giving the parent.
+    * ALIVE and its Set_Flag. Included because a link-loss indication is
+      worth having and omitted from the KRL loop's logic, which does not
+      depend on it.
+
+  Port 54600 and address 172.31.1.147 match configs/execution.yaml and
+  ExecutionConfig's defaults. 172.31.1.x is the conventional KRC4 KLI
+  subnet and the EKI server ports are conventionally 54600 to 54615.
+
+  Byte layout of the 16-byte record, both directions, from
+  execution/protocol.py. EKI does not interpret it; laptop_comm.src does.
+    0      version = 0x01
+    1      opcode, or status code on the reply
+    2..5   x, int32, big endian, millimetres
+    6..9   y, int32, big endian, millimetres
+    10..11 z, int16, big endian, millimetres
+    12..13 aux, uint16, big endian (vacuum per cent, or cycle time ms)
+    14..15 CRC-16/MODBUS of bytes 0..13, little endian
+-->
+<ETHERNETKRL>
+
+  <CONFIGURATION>
+    <EXTERNAL>
+      <TYPE>Client</TYPE>
+    </EXTERNAL>
+    <INTERNAL BUFFERING="FIFO" BUFFSIZE="16" TIMEOUT="2000">
+      <IP>172.31.1.147</IP>
+      <PORT>54600</PORT>
+      <ALIVE Set_Flag="2"/>
+    </INTERNAL>
+  </CONFIGURATION>
+
+  <RECEIVE>
+    <RAW>
+      <ELEMENT Tag="Buffer" Type="BYTE" Size="16" Set_Flag="1"/>
+    </RAW>
+  </RECEIVE>
+
+  <SEND>
+    <RAW>
+      <ELEMENT Tag="Buffer" Type="BYTE" Size="16"/>
+    </RAW>
+  </SEND>
+
+</ETHERNETKRL>

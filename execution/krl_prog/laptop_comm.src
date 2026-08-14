@@ -1,0 +1,583 @@
+; ===========================================================================
+; laptop_comm.src — the controller-side receive loop.
+;
+; *** UNVERIFIED AGAINST REAL HARDWARE. NEVER COMPILED, NEVER RUN. ***
+; There is no KUKA controller, no KRL compiler and no WorkVisual or
+; OrangeEdit instance in this project. Every line below is written from
+; published documentation and NOTHING here has been executed. Do not read
+; its existence as evidence that the controller side works: read it as
+; the design, written out, with its sources attached and its gaps named.
+; Where a construct could not be established confidently it is marked
+; UNCONFIRMED at the point of use rather than smoothed over.
+;
+; Until 2026-08-14 this file did not exist. execution/krl_prog held four
+; leaf subprograms with no caller, no channel and no EKI_ call anywhere,
+; so nothing on the controller would ever have opened a socket, checked a
+; CRC or dispatched an opcode.
+;
+; Sources:
+;   [EKI]    KUKA, KUKA.EthernetKRL 2.2, System Technology manual.
+;            Configuration chapter, "Reading Out Data", and the
+;            BinaryFixed sample program.
+;   [EXP]    KUKA, Expert Programming — KSS 5.2, ProgExperteBHR5.2.
+;   [SYSVAR] KUKA, System Variables — KSS, SysVar 08.02.03.
+;   [FORUM]  Robot-Forum. Used only where nothing better was found, and
+;            labelled every time.
+; Provenance for the quotations is recorded in
+; docs/superpowers/audit/2026-08-14-T-kuka-conformance.md and
+; docs/superpowers/specs/2026-08-14-kuka-conformance-fixes.md.
+;
+; The filename must match the first DEF [EXP §"Programs and files"], and
+; a KRL identifier cannot contain a hyphen, so this file is
+; laptop_comm.src while the EKI configuration it opens stays
+; laptop-comm.xml. EKI_Init/EKI_Open take the XML file's name without its
+; extension [EKI], which is why the string argument is hyphenated and the
+; program name is not.
+;
+; WIRE FORMAT — execution/protocol.py, 16 bytes, unchanged by this file:
+;   0      version = 0x01
+;   1      opcode (command) or status code (reply)
+;   2..5   x, int32, big endian, mm
+;   6..9   y, int32, big endian, mm
+;   10..11 z, int16, big endian, mm
+;   12..13 aux, uint16, big endian: vacuum per cent in, cycle ms out
+;   14..15 CRC-16/MODBUS over bytes 0..13, little endian
+;
+; WHY CAST_FROM IS NOT USED TO DECODE THE FRAME. [EKI] says binary
+; records "must be divided into individual variables again in the KRL
+; program with CAST_FROM()", and that is the documented route. It cannot
+; carry this frame, for two reasons that are worth stating because they
+; are not obvious:
+;   1. CAST_FROM decodes type-specifically, and KRL has no 16-bit numeric
+;      type. INT is 32-bit and REAL is 32-bit; CHAR and BOOL are 8-bit.
+;      The z, aux and crc16 fields are 16 bits each, so there is no
+;      variable CAST_FROM could decode them into.
+;   2. The frame is big endian by definition (struct format ">BBiihH").
+;      No KUKA document obtained here states the byte order CAST_FROM
+;      uses, and the only claims found were [FORUM] and mutually
+;      inconsistent. Decoding byte by byte in explicit big-endian order
+;      is correct whatever the controller's native order is, so the
+;      question does not have to be answered to make this file right.
+; The bytes are therefore taken one at a time out of the CHAR array that
+; EKI_GetString fills. That is also what the CRC needs, which has to walk
+; bytes 0..13 individually in any case.
+;
+; KNOWN RISK, NOT RESOLVED — embedded NUL bytes. [EKI]: "The
+; EKI_GetString() access function must be used to read a binary data
+; record out of a memory. Binary data records are read out of the memory
+; as strings." A 16-byte frame carrying small coordinates is dense with
+; 0x00: MOVE_TO(200, 150, 80) has zeros at offsets 2, 3, 6, 7 and more.
+; If KRL string handling terminates the copy at the first 0x00 [FORUM;
+; no KUKA statement either way was found], EKI_GetString would deliver
+; two usable bytes. This file cannot resolve that without a controller.
+; It is mitigated only in the sense that the failure is loud rather than
+; silent: rx[] is zeroed before every read, so a truncated record fails
+; the CRC check and answers CRC_ERROR instead of executing a corrupt
+; motion. If every frame on real hardware answers CRC_ERROR, this is the
+; first thing to test.
+; ===========================================================================
+
+
+DEF laptop_comm()
+
+   ; ---- declarations. KRL forbids initialising a variable in the
+   ; ---- declaration section of an SRC file, so the constants are
+   ; ---- assigned below with the rest of the setup.
+   ;
+   ; The five subprograms below live in routines.src and carry GLOBAL, so
+   ; they are visible from this file [EXP §6]. EXT/EXTFCT declares their
+   ; signatures to this compilation unit; the form is the one KUKA's own
+   ; template uses for the basis package, EXT BAS(BAS_COMMAND :IN,
+   ; REAL :IN) — data TYPES in the parameter list, not names.
+   EXT InitMotion()
+   EXT TargetFromXYZ(E6POS :OUT, REAL :IN, REAL :IN, REAL :IN)
+   EXT SimpleMove(E6POS :IN, INT :IN, INT :IN, REAL :IN)
+   EXT VacuumControl(INT :IN, INT :IN, BOOL :IN, INT :IN)
+   EXTFCT INT PickAndPlace(E6POS :IN, E6POS :IN, INT :IN)
+
+   DECL EKI_STATUS ret
+
+   DECL CHAR rx[16]
+   DECL CHAR tx[16]
+
+   DECL INT i
+   DECL INT version
+   DECL INT op
+   DECL INT aux
+   DECL INT x_mm
+   DECL INT y_mm
+   DECL INT z_mm
+   DECL INT crc_rx
+   DECL INT crc_calc
+   DECL INT status
+   DECL INT cycle_ms
+
+   ; The wire fields are whole millimetres; E6POS components are REAL.
+   ; The commanded values are widened once, here, so that no :IN
+   ; parameter is asked to convert INT to REAL across a call boundary.
+   DECL REAL cmd_x
+   DECL REAL cmd_y
+   DECL REAL cmd_z
+
+   DECL REAL place_x
+   DECL REAL place_y
+   DECL REAL insert_z_mm
+   DECL INT ptp_vel_pct
+   DECL INT ptp_acc_pct
+
+   DECL E6POS target
+   DECL E6POS pick_pos
+   DECL E6POS place_pos
+
+   DECL BOOL running
+
+   ; ---- cell constants -------------------------------------------------
+   ; The insert depth is controller-side because the frame has one Z field
+   ; and the pick needs it (see KukaClient.pick_and_place). 2 mm matches
+   ; execution/mock_kuka_server._INSERT_Z_MM so the simulator and this
+   ; file describe the same cycle. It is a placeholder for a taught value.
+   insert_z_mm = 2.0
+   ; PTP velocity and acceleration as a percentage of the machine-data
+   ; maxima, which is the unit $VEL_AXIS[]/$ACC_AXIS[] take [EXP]. The
+   ; wire carries no speed field, so these are the cell defaults and
+   ; nothing the host sends can change them. Deliberately low.
+   ptp_vel_pct = 30
+   ptp_acc_pct = 30
+
+   ; ---- motion initialisation ------------------------------------------
+   ; Programs $VEL_AXIS[]/$ACC_AXIS[] and selects tool and base. Without
+   ; it the first PTP is a documented runtime error [EXP].
+   InitMotion()
+
+   ; ---- open the channel ------------------------------------------------
+   ; [EKI] BinaryFixed sample: RET=EKI_Init("BinaryFixed") followed by
+   ; RET=EKI_Open("BinaryFixed"), argument = XML file name without
+   ; extension. A production program also calls EKI_CHECK(RET, #Quit,
+   ; "laptop-comm") after each of these; it is left out because its exact
+   ; argument list could not be confirmed from the pages obtained, and a
+   ; guessed error handler is worse than a named gap. THIS FILE DOES NOT
+   ; CHECK THAT THE CHANNEL OPENED.
+   ret = EKI_Init("laptop-comm")
+   ret = EKI_Open("laptop-comm")
+
+   $FLAG[1] = FALSE
+   running = TRUE
+
+   ; ---- receive loop ----------------------------------------------------
+   ; $FLAG[1] is raised by Set_Flag="1" on the RECEIVE element in
+   ; laptop-comm.xml; "WAIT FOR $FLAG[1]" is the arrival mechanism used in
+   ; [EKI]'s own BinaryFixed sample. This blocks until a frame arrives,
+   ; which is what a command server should do; it means the program can
+   ; only be stopped from the smartPAD or by a host ESTOP.
+   ;
+   ; NOTE: KRL's CONTINUE is the advance-run-stop suppression instruction,
+   ; not a loop-continue [EXP]. Every early exit below is therefore an
+   ; IF/ELSE, never a CONTINUE.
+   LOOP
+      WAIT FOR $FLAG[1]
+      $FLAG[1] = FALSE
+
+      ; EKI_CheckBuffer reports how many records are waiting, in the Buff
+      ; component of EKI_STATUS [EKI; the structure's components are
+      ; Buff, Read, Msg_no and Connected]. UNCONFIRMED: the exact
+      ; parameter list of EKI_CheckBuffer. It is written here as
+      ; (channel, element tag), matching every vendor example seen, but
+      ; the manual's function-reference page for it was not obtained.
+      ret = EKI_CheckBuffer("laptop-comm", "Buffer")
+
+      WHILE ret.Buff > 0
+         ; Zero the destination first so a short or truncated record
+         ; fails the CRC rather than presenting stale bytes as a frame.
+         FOR i = 1 TO 16
+            rx[i] = 0
+         ENDFOR
+
+         ret = EKI_GetString("laptop-comm", "Buffer", rx[])
+
+         ; ---- integrity ------------------------------------------------
+         ; CRC first, before any field is interpreted — the same order
+         ; unpack_command() uses on the host. crc16 is little endian in
+         ; the frame, so byte 15 is the low half.
+         crc_rx = ByteAt(rx[], 16) * 256 + ByteAt(rx[], 15)
+         crc_calc = Crc16Modbus(rx[], 14)
+
+         version = ByteAt(rx[], 1)
+         op = ByteAt(rx[], 2)
+         x_mm = Int32At(rx[], 3)
+         y_mm = Int32At(rx[], 7)
+         z_mm = Int16At(rx[], 11)
+         aux = Uint16At(rx[], 13)
+
+         $TIMER_STOP[1] = TRUE
+         $TIMER[1] = 0
+         $TIMER_STOP[1] = FALSE
+
+         IF crc_rx <> crc_calc THEN
+            ; A line fault, and the only failure that is honestly a CRC
+            ; error. The host retries this one and does not retry the
+            ; other two.
+            status = 5                          ; CRC_ERROR
+         ELSE
+            IF version <> 1 THEN
+               status = 8                       ; VERSION_MISMATCH
+            ELSE
+               ; ---- dispatch --------------------------------------------
+               cmd_x = x_mm
+               cmd_y = y_mm
+               cmd_z = z_mm
+
+               SWITCH op
+
+               CASE 0                           ; NOOP
+                  status = 0                    ; OK
+
+               CASE 1                           ; MOVE_TO
+                  TargetFromXYZ(target, cmd_x, cmd_y, cmd_z)
+                  SimpleMove(target, ptp_vel_pct, ptp_acc_pct, 0.0)
+                  status = 1                    ; SUCCESS
+
+               CASE 2                           ; VACUUM_ON
+                  VacuumControl(1, 1, TRUE, aux)
+                  status = 1                    ; SUCCESS
+
+               CASE 3                           ; VACUUM_OFF
+                  VacuumControl(1, 1, FALSE, 0)
+                  status = 1                    ; SUCCESS
+
+               CASE 4                           ; PICK_AND_PLACE
+                  ; The frame carries one coordinate triple, the pick
+                  ; target. The place XY is whatever the arm is standing
+                  ; over, latched by the MOVE_TO the host sends first
+                  ; (FDR §7.3). Reading it here rather than storing it
+                  ; from the previous frame is deliberate: it is the
+                  ; convention the host documents, and it means a missing
+                  ; MOVE_TO places where the arm happens to be instead of
+                  ; where a stale variable says.
+                  place_x = $POS_ACT.X
+                  place_y = $POS_ACT.Y
+                  TargetFromXYZ(pick_pos, cmd_x, cmd_y, cmd_z)
+                  TargetFromXYZ(place_pos, place_x, place_y, insert_z_mm)
+                  status = PickAndPlace(pick_pos, place_pos, aux)
+
+               CASE 5                           ; HEARTBEAT
+                  status = 0                    ; OK
+
+               CASE 6                           ; ESTOP
+                  ; A KRL statement is NOT a Category-0 stop. IEC 60204
+                  ; Category 0 is the safety controller's job, wired to
+                  ; the KRC's safety interface; no instruction in this
+                  ; language can command one. What this branch does is
+                  ; stop the interpreter, drop the vacuum so a held cell
+                  ; is not carried through an unattended stop, answer the
+                  ; host, and refuse to continue without operator action
+                  ; at the smartPAD. A real integration MUST route the
+                  ; host E-stop into the safety circuit as well; treating
+                  ; this branch as the stop would be the dangerous
+                  ; reading of it.
+                  VacuumControl(1, 1, FALSE, 0)
+                  status = 6                    ; ESTOP
+                  running = FALSE
+
+               CASE 7                           ; HANDSHAKE
+                  status = 0                    ; OK
+
+               DEFAULT
+                  ; A well-formed frame this end cannot execute. Reported
+                  ; separately from CRC_ERROR because the host must not
+                  ; retry the line for a build mismatch.
+                  status = 7                    ; UNSUPPORTED_COMMAND
+               ENDSWITCH
+            ENDIF
+         ENDIF
+
+         ; ---- reply ---------------------------------------------------
+         ; [SYSVAR] $TIMER[No] counts in milliseconds and $TIMER_STOP[No]
+         ; = FALSE runs it. Timer 1 is claimed by this program; a cell
+         ; using it elsewhere will report nonsense cycle times.
+         $TIMER_STOP[1] = TRUE
+         cycle_ms = $TIMER[1]
+         IF cycle_ms < 0 THEN
+            cycle_ms = 0
+         ENDIF
+         IF cycle_ms > 65535 THEN
+            cycle_ms = 65535
+         ENDIF
+
+         BuildStatus(tx[], status, cycle_ms)
+         ret = EKI_Send("laptop-comm", tx[])
+
+         ; Stop draining the queue after an E-stop: nothing queued behind
+         ; it should execute. EXIT leaves the innermost loop [EXP].
+         IF running == FALSE THEN
+            EXIT
+         ENDIF
+         ret = EKI_CheckBuffer("laptop-comm", "Buffer")
+      ENDWHILE
+
+      IF running == FALSE THEN
+         EXIT
+      ENDIF
+   ENDLOOP
+
+   ; [EKI] BinaryFixed sample closes then clears.
+   ret = EKI_Close("laptop-comm")
+   ret = EKI_Clear("laptop-comm")
+
+   ; [EXP] HALT stops the program; it can only be resumed with the start
+   ; key. That is the strongest refusal-to-continue available in KRL, and
+   ; it is not a safety function.
+   HALT
+END
+
+
+; ===========================================================================
+; Frame codecs. Every one of them walks bytes explicitly, so none depends
+; on the controller's native byte order.
+;
+; KRL array indices start at 1, so wire offset k is element k+1: the
+; version byte at wire offset 0 is rx[1].
+; ===========================================================================
+
+
+; ---------------------------------------------------------------------------
+; ByteAt — one byte of the buffer as an integer 0..255.
+;
+; UNCONFIRMED, and this is the single construct in this file most in need
+; of a controller. The CHAR-to-INT assignment is documented on Robot-
+; Forum ("to cast value between INT and CHAR it is enough to do
+; assignment"; assigning an INT to a CHAR performs the ASCII translation)
+; [FORUM], and KUKA's own EthernetKRL BinaryFixed sample does the INT-to-
+; CHAR direction (Bytes[i]=0) [EKI]. The CHAR-to-INT direction was not
+; found stated in any KUKA manual obtained here. Every numeric field and
+; the whole CRC pass through this function, so if the assignment does not
+; compile, this file does not compile — which is exactly why the
+; conversion is in one place rather than spread across the decoders.
+;
+; Arrays are transferred to subprograms by reference with :OUT [EXP;
+; CHAR arrays in particular may only be passed that way]. :OUT here means
+; "by reference", not "modified": ByteAt writes nothing.
+; ---------------------------------------------------------------------------
+DEFFCT INT ByteAt(buf[] :OUT, idx :IN)
+   DECL CHAR buf[]
+   DECL INT idx
+   DECL INT b
+
+   b = buf[idx]
+   ; Masked rather than trusted: if the CHAR carried a sign, the mask
+   ; makes the result 0..255 either way. Every RETURN in this file hands
+   ; back a plain variable, because KUKA's only documented example of a
+   ; function return is `RETURN Sample` and an expression there was not
+   ; established.
+   b = b B_AND 'HFF'
+   RETURN b
+ENDFCT
+
+
+; ---------------------------------------------------------------------------
+; PutByte — write the low 8 bits of val into the buffer.
+; ---------------------------------------------------------------------------
+DEF PutByte(buf[] :OUT, idx :IN, val :IN)
+   DECL CHAR buf[]
+   DECL INT idx
+   DECL INT val
+   DECL INT b
+
+   ; Masked into a temporary first, so the CHAR assignment is always
+   ; given a plain 0..255 variable — the same INT-to-CHAR conversion
+   ; KUKA's BinaryFixed sample uses when it writes Bytes[i]=0.
+   b = val B_AND 'HFF'
+   buf[idx] = b
+END
+
+
+; ---------------------------------------------------------------------------
+; Int32At — signed 32-bit big-endian integer starting at element idx.
+;
+; The top byte is sign-extended before it is scaled, so the arithmetic
+; never leaves the signed 32-bit range that KRL's INT provides.
+; ---------------------------------------------------------------------------
+DEFFCT INT Int32At(buf[] :OUT, idx :IN)
+   DECL CHAR buf[]
+   DECL INT idx
+   DECL INT hi
+   DECL INT v
+
+   hi = ByteAt(buf[], idx)
+   IF hi > 127 THEN
+      hi = hi - 256
+   ENDIF
+   v = hi * 16777216
+   v = v + (ByteAt(buf[], idx + 1) * 65536)
+   v = v + (ByteAt(buf[], idx + 2) * 256)
+   v = v + ByteAt(buf[], idx + 3)
+   RETURN v
+ENDFCT
+
+
+; ---------------------------------------------------------------------------
+; Int16At — signed 16-bit big-endian integer starting at element idx.
+; ---------------------------------------------------------------------------
+DEFFCT INT Int16At(buf[] :OUT, idx :IN)
+   DECL CHAR buf[]
+   DECL INT idx
+   DECL INT hi
+   DECL INT v
+
+   hi = ByteAt(buf[], idx)
+   IF hi > 127 THEN
+      hi = hi - 256
+   ENDIF
+   v = (hi * 256) + ByteAt(buf[], idx + 1)
+   RETURN v
+ENDFCT
+
+
+; ---------------------------------------------------------------------------
+; Uint16At — unsigned 16-bit big-endian integer starting at element idx.
+; ---------------------------------------------------------------------------
+DEFFCT INT Uint16At(buf[] :OUT, idx :IN)
+   DECL CHAR buf[]
+   DECL INT idx
+   DECL INT v
+
+   v = (ByteAt(buf[], idx) * 256) + ByteAt(buf[], idx + 1)
+   RETURN v
+ENDFCT
+
+
+; ---------------------------------------------------------------------------
+; PutInt32 / PutInt16 — big-endian, signed, written from the low end.
+;
+; The low byte is masked off and subtracted before dividing, so the
+; division is exact and truncation toward zero cannot corrupt a negative
+; value. That matters: KRL's INT division truncates, and the workspace is
+; centred on the robot, so roughly half the coordinates this sends are
+; negative.
+; ---------------------------------------------------------------------------
+DEF PutInt32(buf[] :OUT, idx :IN, val :IN)
+   DECL CHAR buf[]
+   DECL INT idx
+   DECL INT val
+   DECL INT t
+   DECL INT b
+   DECL INT k
+
+   t = val
+   FOR k = 3 TO 0 STEP -1
+      b = t B_AND 'HFF'
+      PutByte(buf[], idx + k, b)
+      t = (t - b) / 256
+   ENDFOR
+END
+
+
+DEF PutInt16(buf[] :OUT, idx :IN, val :IN)
+   DECL CHAR buf[]
+   DECL INT idx
+   DECL INT val
+   DECL INT t
+   DECL INT b
+   DECL INT k
+
+   t = val
+   FOR k = 1 TO 0 STEP -1
+      b = t B_AND 'HFF'
+      PutByte(buf[], idx + k, b)
+      t = (t - b) / 256
+   ENDFOR
+END
+
+
+; ---------------------------------------------------------------------------
+; Crc16Modbus — CRC-16/MODBUS over the first n bytes of buf.
+;
+; Poly 0xA001 (reflected 0x8005), init 0xFFFF, reflected in and out, no
+; output XOR. Bit-serial and table-free, the same shape as
+; execution.protocol.crc16_modbus, because KRL has no CRC primitive and
+; nothing in this project had ever written one.
+;
+; KRL has no shift operator, so ">> 1" is integer division by 2; crc is
+; held in 0..65535 throughout, so it is never negative and the truncation
+; that KRL's INT division performs is the arithmetic that is wanted.
+; Bit operators are infix and hexadecimal literals are written 'HA001'
+; [EXP §"Bit operators"], where B_AND binds tighter than B_EXOR, which
+; binds tighter than the comparisons.
+;
+; NOT VERIFIED on a controller. The host-side implementation this mirrors
+; is checked against the published CRC-16/MODBUS check value in
+; tests/test_protocol.py; this one is checked against nothing.
+; ---------------------------------------------------------------------------
+DEFFCT INT Crc16Modbus(buf[] :OUT, n :IN)
+   DECL CHAR buf[]
+   DECL INT n
+   DECL INT crc
+   DECL INT i
+   DECL INT k
+   DECL INT b
+
+   crc = 'HFFFF'
+   FOR i = 1 TO n
+      b = ByteAt(buf[], i)
+      crc = crc B_EXOR b
+      FOR k = 1 TO 8
+         IF (crc B_AND 'H0001') == 1 THEN
+            crc = (crc / 2) B_EXOR 'HA001'
+         ELSE
+            crc = crc / 2
+         ENDIF
+      ENDFOR
+   ENDFOR
+   crc = crc B_AND 'HFFFF'
+   RETURN crc
+ENDFCT
+
+
+; ---------------------------------------------------------------------------
+; BuildStatus — assemble the 16-byte reply.
+;
+; Status replies reuse the command layout: byte 1 is the status code and
+; aux carries the cycle time in milliseconds. The coordinates are the
+; arm's current position, so the host's RobotStatus.current_pose is a
+; measurement rather than an echo of what it asked for.
+;
+; REAL-to-INT assignment rounds [EXP §"Variables and declarations", type
+; conversion; corroborated FORUM: below .5 down, .5 and above up]. The
+; wire carries whole millimetres and the arm's position is a REAL, so the
+; rounding is deliberate and is the only place this file loses precision.
+; ---------------------------------------------------------------------------
+DEF BuildStatus(buf[] :OUT, code :IN, cycle_ms :IN)
+   DECL CHAR buf[]
+   DECL INT code
+   DECL INT cycle_ms
+   DECL E6POS here
+   DECL INT x_mm
+   DECL INT y_mm
+   DECL INT z_mm
+   DECL INT crc
+   DECL INT crc_lo
+   DECL INT crc_hi
+   DECL INT i
+
+   FOR i = 1 TO 16
+      buf[i] = 0
+   ENDFOR
+
+   here = $POS_ACT
+   x_mm = here.X
+   y_mm = here.Y
+   z_mm = here.Z
+
+   PutByte(buf[], 1, 1)             ; PROTOCOL_VERSION
+   PutByte(buf[], 2, code)
+   PutInt32(buf[], 3, x_mm)
+   PutInt32(buf[], 7, y_mm)
+   PutInt16(buf[], 11, z_mm)
+   PutInt16(buf[], 13, cycle_ms)
+
+   ; CRC-16 trailer, little endian, over bytes 0..13 of the wire frame.
+   crc = Crc16Modbus(buf[], 14)
+   crc_lo = crc B_AND 'HFF'
+   crc_hi = (crc - crc_lo) / 256
+   PutByte(buf[], 15, crc_lo)
+   PutByte(buf[], 16, crc_hi)
+END

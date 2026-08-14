@@ -433,7 +433,10 @@ def run(config_path: str, receipt_path: Optional[str] = None) -> Dict[str, int]:
     # Candidates the arm declined to serve because they lie outside
     # `planning.camera.workspace_bounds_mm`. A fixed-mount camera images
     # more table than the arm can reach - `configs/demo_seg.yaml`'s
-    # frames span up to 1338 x 752 mm against a 700 mm envelope - so
+    # frames span up to 1338 x 752 mm against a +/-350 mm square, itself
+    # a conservative placeholder inscribed in the KR 6 R700's 706.7 mm
+    # reach and not the reachable envelope (see the three limitations
+    # named at `camera.workspace_bounds_mm` in configs/planning.yaml) - so
     # these are ordinary scene conditions, not errors, and the planner
     # skips them instead of aborting the run. They are reported because
     # the alternative is a demo that serves 3 of 14 cartridges while

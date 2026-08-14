@@ -625,6 +625,16 @@ class WorkspaceBounds:
     It used to be parsed, stored and compared against nothing (audit E,
     finding 5): a declared safety envelope that enforced nothing, which
     is worse than no envelope at all because it reads like an interlock.
+
+    **This is an axis-aligned rectangle, and the arm's envelope is not.**
+    The shipped ±350 mm square is a conservative placeholder inscribed in
+    the KR 6 R700 sixx's 706.7 mm reach; it does not model the inner dead
+    zone around the base, the ~20° notch behind the robot that A1's ±170°
+    travel leaves, or the fact that usable radius shrinks with Z. The
+    three limitations are spelled out at the value itself, in
+    ``configs/planning.yaml`` under ``camera.workspace_bounds_mm``.
+    Everything inside the square is within reach *on radius*; not
+    everything inside it is reachable.
     """
 
     x_min_mm: float

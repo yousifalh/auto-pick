@@ -1,70 +1,295 @@
-; KUKA KRL 3.1 routines for the pick-and-place pipeline.
-; Invoked via EthernetKRL commands described in ../protocol.py.
+; ===========================================================================
+; routines.src — motion subprograms for the pick-and-place cell.
 ;
-; All commands are packetised (16 bytes binary + CRC-16) and received
-; on the TCP channel configured in laptop-comm.xml.
+; *** NOT VERIFIED AGAINST HARDWARE. ***
+; This project has no KUKA controller, no KRL compiler and no
+; OrangeEdit/WorkVisual instance. Nothing in this file has been compiled,
+; loaded or executed. It is written against KUKA's published manuals and
+; every construct that is not plain arithmetic carries the citation it
+; rests on; a citation is evidence that the manual says so, not evidence
+; that the controller accepted it. Read it as a design artefact.
+;
+; Sources cited below:
+;   [EXP]    KUKA, Expert Programming — KSS 5.2, ProgExperteBHR5.2
+;   [SYSVAR] KUKA, System Variables — KSS, SysVar 08.02.03
+; Both are older KSS releases than KSS 8.x; every construct cited is core
+; KRL that is unchanged in 8.x. See
+; docs/superpowers/audit/2026-08-14-T-kuka-conformance.md for the
+; provenance of each quotation.
+;
+; The receive loop that calls these subprograms is laptop_comm.src.
+; Commands arrive as 16-byte binary frames (../protocol.py) on the
+; EthernetKRL channel configured in laptop-comm.xml.
+;
+; Two structural rules this file used to break, both fixed 2026-08-14:
+;
+;   File naming [EXP §"Programs and files"]: "The object name without an
+;   extension is also the name of the file and is therefore prefixed by
+;   DEF." The first DEF in this file must therefore be routines(). It
+;   used to be DEF MoveBetweenPositions(...), which the editor rejects on
+;   load.
+;
+;   GLOBAL [EXP §6]: "Local subprograms/functions can only be called from
+;   within the SRC file in which they were programmed. ... Alternatively,
+;   a local subprogram can be preceded by the keyword GLOBAL."
+;   laptop_comm.src is a different SRC file, so everything it calls here
+;   is GLOBAL. None of these carried GLOBAL before, so none was reachable.
+;
+; A file taken off a real controller also carries &ACCESS / &REL / &PARAM
+; attribute lines written by the editor. They are omitted deliberately:
+; this file has never been on a controller and should not look as if it
+; had.
+; ===========================================================================
 
-DEF MoveBetweenPositions(pos1 :IN, pos2 :IN)
+
+DEF routines()
+   ; Entry point that exists to satisfy the file-naming rule. The cell's
+   ; real entry point is laptop_comm.src. Selecting this file by accident
+   ; therefore initialises motion and returns rather than moving the arm.
+   InitMotion()
+END
+
+
+; ---------------------------------------------------------------------------
+; InitMotion — must run before the first PTP of any program in this cell.
+;
+; [EXP §"PTP motions"]: "$VEL_AXIS[axis number]: to program maximum
+; axis-specific velocities, and $ACC_AXIS[axis number]: to program
+; maximum axis-specific acceleration rates. All entries are given as
+; percentages of the maximum value defined in the machine data. If these
+; two system variables have not been programmed for all axes, execution
+; of the program will cause a corresponding error message to be
+; generated."
+;
+; Nothing in this file used to program them, so the first PTP would have
+; faulted at run time. BAS(#INITMOV,0) is the KUKA basis-package call
+; that programs $VEL_AXIS[], $ACC_AXIS[], $VEL and $ACC from the machine
+; data; it is the call the controller's own program template places in
+; its BASISTECH INI fold, and it appears in KUKA's EthernetKRL manual in
+; the BinaryFixed sample program. BAS is declared globally in
+; $CONFIG.DAT on every KRC, so no EXT declaration is needed here.
+;
+; NOT VERIFIED, and not verifiable here: TOOL_DATA[1] and BASE_DATA[1]
+; are the taught tool and base of a cell that does not exist. Selecting
+; index 1 is a convention this file states; it is not a measurement.
+; A production INI fold additionally arms the standard stop-message
+; interrupt (GLOBAL INTERRUPT DECL 3 WHEN $STOPMESS==TRUE DO IR_STOPM()).
+; It is left out because nothing here can test it, not because a real
+; cell should omit it.
+; ---------------------------------------------------------------------------
+GLOBAL DEF InitMotion()
+   BAS(#INITMOV, 0)
+
+   $TOOL = TOOL_DATA[1]
+   $BASE = BASE_DATA[1]
+   $IPO_MODE = #BASE
+END
+
+
+; ---------------------------------------------------------------------------
+; TargetFromXYZ — build a fully-defined E6POS from three wire coordinates.
+;
+; THE ORIENTATION DECISION. The 16-byte frame carries X, Y and Z and
+; nothing else (../protocol.py). A, B, C, the configuration bits S and T,
+; and the external-axis components E1..E6 are not commanded and cannot
+; be: there are no fields for them. Something must supply them. Until
+; 2026-08-14 nothing did — SimpleMove's comment claimed "we copy the
+; current orientation" and no line of code copied anything, so every
+; PTP and LIN in this file was issued to an E6POS whose orientation and
+; configuration were never assigned.
+;
+; Decided: DERIVE FROM THE CURRENT POSE. The target starts as a whole-
+; structure copy of $POS_ACT — "current robot position" of type E6POS
+; [SYSVAR] — and only X, Y and Z are overwritten. Copying the whole
+; structure rather than five named components is deliberate: it leaves no
+; component of the E6POS unassigned, including E1..E6.
+;
+; What that buys and what it costs, stated rather than left to be found:
+;   * The wire commands translation only. Orientation is whatever the arm
+;     already holds, so the cell's start-up procedure — not this program
+;     — establishes the tool attitude. There is no fixed tool-down A/B/C
+;     constant here because it would have to be invented; this repository
+;     holds no taught cell data.
+;   * Carrying S and T forward holds the arm configuration constant
+;     across a PTP, which is what a fixed-tool pick-and-place wants: the
+;     arm will not flip elbow or wrist mid-cycle. A target reachable only
+;     in a different configuration is then refused rather than silently
+;     reconfigured, and a refusal is the correct outcome.
+;   * Reading a $-variable stops the advance run [EXP §5.1: "all
+;     input/output instructions and access to inputs/outputs via system
+;     variables trigger an advance run stop"], so this costs
+;     continuous-path smoothness at every target built. For a
+;     point-to-point cycle that is an acceptable price; for a contouring
+;     application it would not be.
+;
+; The alternative — a fixed tool-down orientation — is the better choice
+; on a commissioned cell, and it needs exactly one measurement that this
+; project does not have.
+; ---------------------------------------------------------------------------
+GLOBAL DEF TargetFromXYZ(target :OUT, x_mm :IN, y_mm :IN, z_mm :IN)
+   DECL E6POS target
+   DECL REAL x_mm
+   DECL REAL y_mm
+   DECL REAL z_mm
+
+   target = $POS_ACT
+   target.X = x_mm
+   target.Y = y_mm
+   target.Z = z_mm
+END
+
+
+; ---------------------------------------------------------------------------
+; MoveBetweenPositions — a two-point shuttle.
+;
+; DEAD CODE, and labelled as such rather than quietly kept: no opcode in
+; execution/protocol.py's OpCode enum maps to it and laptop_comm.src
+; never calls it. It is retained only because it is the smallest readable
+; example of the calling convention this file uses, and it is corrected
+; alongside the rest so that it does not sit here as the one subprogram
+; that would still fail to load.
+; ---------------------------------------------------------------------------
+GLOBAL DEF MoveBetweenPositions(pos1 :IN, pos2 :IN)
    DECL E6POS pos1
    DECL E6POS pos2
 
-   ; Move to first position
    PTP pos1
    WAIT SEC 1
 
-   ; Move to second position
    PTP pos2
    WAIT SEC 1
 END
 
 
-; Simple PTP move used by OpCode.MOVE_TO. pos is the commanded Cartesian
-; pose (we copy the current orientation).
-DEF SimpleMove(pos :IN, vel :IN, acc :IN, wait_time :IN)
+; ---------------------------------------------------------------------------
+; SimpleMove — the motion behind OpCode.MOVE_TO.
+;
+;   pos          : commanded Cartesian target. Only X/Y/Z are commanded;
+;                  the caller is expected to have built it with
+;                  TargetFromXYZ, which supplies the rest.
+;   ptp_vel_pct  : PTP velocity, PER CENT of the machine-data maximum
+;   ptp_acc_pct  : PTP acceleration, PER CENT of the machine-data maximum
+;   wait_time    : dwell after the move, seconds
+;
+; The velocity parameters used to be written to $VEL.CP and $ACC.CP and
+; then handed to a PTP, where they govern nothing: [EXP §"PTP motions"]
+; names $VEL_AXIS[] and $ACC_AXIS[] as the variables a PTP obeys, and
+; [SYSVAR] gives $VEL.CP as the CP velocity in m/s, which applies to LIN
+; and CIRC. The parameters were therefore inert — the entire purpose of
+; the subprogram. They now carry percentages and are written to the
+; arrays the motion actually reads, so the unit of the parameter changed
+; with its meaning. Nothing on the wire sets them; laptop_comm.src passes
+; the cell defaults.
+;
+; Six axes, because the KR 6 R700 sixx has six and this cell has no
+; external axes. A cell with external axes must also program
+; $VEL_EXTAX[] / $ACC_EXTAX[].
+; ---------------------------------------------------------------------------
+GLOBAL DEF SimpleMove(pos :IN, ptp_vel_pct :IN, ptp_acc_pct :IN, wait_time :IN)
    DECL E6POS pos
-   DECL REAL vel
-   DECL REAL acc
+   DECL INT ptp_vel_pct
+   DECL INT ptp_acc_pct
    DECL REAL wait_time
+   DECL INT i
 
-   $VEL.CP = vel
-   $ACC.CP = acc
+   FOR i = 1 TO 6
+      $VEL_AXIS[i] = ptp_vel_pct
+      $ACC_AXIS[i] = ptp_acc_pct
+   ENDFOR
 
    PTP pos
    WAIT SEC wait_time
 END
 
 
-; Vacuum gripper control — maps directly from OpCode.VACUUM_ON/OFF.
+; ---------------------------------------------------------------------------
+; VacuumControl — vacuum gripper, driven by OpCode.VACUUM_ON / VACUUM_OFF.
 ;   digital_out  : digital channel for on/off
-;   analog_out   : analog channel for vacuum level (0-100 %)
-;   vacuum_on    : 0 = off, 1 = on
+;   analog_out   : analog channel for the vacuum level, index 1..16
+;   vacuum_on    : FALSE = off, TRUE = on
 ;   vacuum_level : 0..100 percentage
-DEF VacuumControl(digital_out :IN, analog_out :IN, vacuum_on :IN, vacuum_level :IN)
+;
+; THE SCALING. [SYSVAR] gives $ANOUT[n] as: data type REAL, minimum
+; -1.0, maximum +1.0, unit V, "[n] = [1] ... [16]", "-1.0 -> -10 V",
+; "+1.0 -> +10 V". This subprogram used to assign the 0..100 percentage
+; straight into it. That compiles — KRL widens INT to REAL — and then
+; silently collapses the whole scale: every value from 1 to 100 is out of
+; range, is clamped to full scale, and raises a controller message, so a
+; vacuum_pct of 40 and one of 95 are the same +10 V at the gripper. The
+; percentage the Python side threads through aux_u16 did nothing.
+;
+; Divided by 100.0 the percentage maps onto 0.0..1.0, i.e. 0..+10 V. The
+; clamp is here so that a host-side bug cannot reach the annunciated
+; out-of-range path at all: a percentage outside 0..100 is a fault in the
+; caller, and saturating it here is the conservative reading — it cannot
+; command more suction than full scale, and it cannot command negative
+; voltage on a channel that means suction.
+;
+; NOT VERIFIED: that 0..10 V linearly means 0..100 % vacuum is a property
+; of the ejector, not of the controller. No datasheet for the gripper
+; exists in this repository.
+; ---------------------------------------------------------------------------
+GLOBAL DEF VacuumControl(digital_out :IN, analog_out :IN, vacuum_on :IN, vacuum_level :IN)
    DECL INT digital_out
    DECL INT analog_out
    DECL BOOL vacuum_on
    DECL INT vacuum_level
+   DECL INT pct
+
+   pct = vacuum_level
+   IF pct < 0 THEN
+      pct = 0
+   ENDIF
+   IF pct > 100 THEN
+      pct = 100
+   ENDIF
 
    $OUT[digital_out] = vacuum_on
-   $ANOUT[analog_out] = vacuum_level
+   $ANOUT[analog_out] = pct / 100.0
 END
 
 
-; Canonical PICK_AND_PLACE subroutine — OpCode.PICK_AND_PLACE.
+; ---------------------------------------------------------------------------
+; PickAndPlace — the canonical cycle, OpCode.PICK_AND_PLACE.
 ;   pick_pos   : Cartesian pose of the battery to grasp
 ;   place_pos  : Cartesian pose of the cell to place into
-;   vacuum_pct : gripper vacuum level (0..100)
+;   vacuum_pct : gripper vacuum level, 0..100
+;
+; Returns a common.types.RobotStatusCode value. tests/test_execution.py
+; pins every `RETURN n ; NAME` line below against that enum.
+;
+; DEFFCT, not DEF. [EXP §6]: "Unlike a subprogram, a function sends back
+; a return value. A function begins with the keyword DEFFCT. The data
+; type of the return value is specified directly after the keyword
+; DEFFCT. The return value itself is transferred via RETURN. The function
+; is terminated using the keyword ENDFCT." This was `DEF PickAndPlace(...)
+; ... RETURN 2 ... END`: in a subprogram RETURN takes no operand, it only
+; exits, so supplying one is an inadmissible instruction and the file
+; would not compile. The caller must now consume the value —
+; laptop_comm.src does, as `status = PickAndPlace(...)`.
 ;
 ; Sequence (PPR §5.4):
-;   approach ▸ grasp ▸ transport ▸ insert ▸ retract
+;   approach > grasp > transport > insert > release > retract
 ;
-DEF PickAndPlace(pick_pos :IN, place_pos :IN, vacuum_pct :IN)
+; The insert depth is the Z of place_pos, which laptop_comm.src takes
+; from the latched place pose, not from the wire: the frame has one Z
+; field and the pick needs it. See KukaClient.pick_and_place.
+; ---------------------------------------------------------------------------
+GLOBAL DEFFCT INT PickAndPlace(pick_pos :IN, place_pos :IN, vacuum_pct :IN)
    DECL E6POS pick_pos
    DECL E6POS place_pos
    DECL INT vacuum_pct
    DECL E6POS approach_pos
    DECL E6POS transport_pos
 
+   ; [SYSVAR] $VEL: "Velocities in the advance run. CP = m/s"; $ACC:
+   ; "Accelerations in the advance run. CP = m/s^2". So 0.150 genuinely
+   ; is 150 mm/s, comfortably under the 250 mm/s reduced-velocity limit
+   ; that applies in T1, and 0.500 m/s^2 reaches it in 0.3 s over 22 mm.
+   ; These govern the LIN segments below. They do NOT govern the two PTP
+   ; segments — those obey $VEL_AXIS[]/$ACC_AXIS[], programmed by
+   ; InitMotion via BAS(#INITMOV,0) — which is why the FDR's "the only
+   ; real cap is $VEL.CP" needed narrowing.
    $VEL.CP = 0.150        ; 150 mm/s default — within the R5 safety cap
    $ACC.CP = 0.500
 
@@ -77,6 +302,9 @@ DEF PickAndPlace(pick_pos :IN, place_pos :IN, vacuum_pct :IN)
    ; 2. Grasp
    VacuumControl(1, 1, TRUE, vacuum_pct)
    WAIT SEC 0.05
+   ; [EXP §5.1] "all input/output instructions and access to inputs/
+   ; outputs via system variables trigger an advance run stop", so this
+   ; reads the sensor in the main run and needs no CONTINUE.
    IF $IN[10] == FALSE THEN    ; vacuum pressure sensor
       RETURN 2                 ; PICK_FAILED
    ENDIF
@@ -97,5 +325,9 @@ DEF PickAndPlace(pick_pos :IN, place_pos :IN, vacuum_pct :IN)
    ; 6. Retract
    LIN transport_pos
 
+   ; There is no PLACE_FAILED branch here and there is no sensor that
+   ; could produce one: nothing on this arm reports that a cell seated.
+   ; execution/mock_kuka_server.py does emit PLACE_FAILED (3), which is a
+   ; simulator behaviour with no controller-side counterpart.
    RETURN 1                    ; SUCCESS
-END
+ENDFCT

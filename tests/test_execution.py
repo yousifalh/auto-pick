@@ -549,9 +549,128 @@ def _krl_returns() -> list:
         return [(int(v), name) for v, name in _KRL_RETURN.findall(fh.read())]
 
 
+# `GLOBAL DEFFCT INT PickAndPlace(...)` / `DEF routines()`
+_KRL_DECL = re.compile(
+    r"^\s*(GLOBAL\s+)?(DEFFCT|DEF)\s+(?:(\w+)\s+)?(\w+)\s*\(")
+_KRL_END = re.compile(r"^\s*(ENDFCT|END)\s*$")
+
+
+def _krl_routines() -> list:
+    """Parse routines.src into ``(name, keyword, ret_type, is_global,
+    terminator, has_valued_return)`` tuples, in file order.
+
+    A hand-rolled two-token scan, not a KRL parser: it reads the
+    declaration line, the matching terminator, and whether any
+    ``RETURN <int>`` appears between them. That is exactly as much
+    structure as the assertions below need and no more.
+    """
+    routines = []
+    cur = None
+    with open(_KRL_SRC, encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            decl = _KRL_DECL.match(line)
+            if decl and cur is None:
+                is_global, kw, ret_type, name = decl.groups()
+                cur = [name, kw, ret_type, bool(is_global), None, False]
+                continue
+            if cur is None:
+                continue
+            if re.match(r"^\s*RETURN\s+-?\d+", line):
+                cur[5] = True
+            end = _KRL_END.match(line)
+            if end:
+                cur[4] = end.group(1)
+                routines.append(tuple(cur))
+                cur = None
+    return routines
+
+
+def test_krl_valued_returns_are_inside_a_deffct_not_a_def():
+    """`RETURN <value>` is only admissible in a KRL *function*.
+
+    KUKA's Expert Programming manual: "Unlike a subprogram, a function
+    sends back a return value. A function begins with the keyword
+    DEFFCT. ... The return value itself is transferred via RETURN. The
+    function is terminated using the keyword ENDFCT." In a subprogram
+    RETURN takes no operand — it only exits — so `DEF PickAndPlace(...)
+    ... RETURN 1 ... END`, which is what this file held until
+    2026-08-14, is an inadmissible instruction and would not compile.
+
+    The test above pins the *numbers*; it was perfectly happy with them
+    inside a construct that could never run, which is how a defect
+    carried a green tick for months (audit T §3). This one pins the
+    *construct*: any routine that returns a value must be declared
+    DEFFCT with a return type and terminated ENDFCT.
+    """
+    routines = _krl_routines()
+    assert routines, f"parsed no routines out of {_KRL_SRC}"
+
+    valued = [r for r in routines if r[5]]
+    assert valued, (
+        f"no `RETURN <int>` found in {_KRL_SRC}; if the status codes "
+        f"moved, move this assertion with them")
+
+    for name, kw, ret_type, _is_global, terminator, _ in valued:
+        assert kw == "DEFFCT", (
+            f"{name} returns a value but is declared {kw}. RETURN takes "
+            f"no operand in a KRL subprogram; this does not compile.")
+        assert ret_type, (
+            f"DEFFCT {name} declares no return type. The type goes "
+            f"directly after the keyword.")
+        assert terminator == "ENDFCT", (
+            f"DEFFCT {name} is terminated with {terminator}, not ENDFCT.")
+
+    by_name = {r[0]: r for r in routines}
+    assert "PickAndPlace" in by_name, (
+        "PickAndPlace is gone from routines.src; execution/protocol.py's "
+        "PICK_AND_PLACE opcode has nothing to dispatch to.")
+    assert by_name["PickAndPlace"][1:3] == ("DEFFCT", "INT")
+
+
+def test_krl_first_def_matches_the_file_name():
+    """"The object name without an extension is also the name of the
+    file and is therefore prefixed by DEF" — Expert Programming.
+
+    routines.src used to begin `DEF MoveBetweenPositions(...)`, which
+    declares an object named MoveBetweenPositions inside a file named
+    routines: the first thing a KRL editor rejects on load.
+    """
+    first = _krl_routines()[0]
+    stem = os.path.splitext(os.path.basename(_KRL_SRC))[0]
+    assert first[0] == stem, (
+        f"{_KRL_SRC} leads with `{first[1]} {first[0]}` but the file is "
+        f"named {stem}.src. The leading declaration must match the file "
+        f"name.")
+
+
+def test_krl_subroutines_reachable_from_another_src_are_global():
+    """Only the leading declaration may be local.
+
+    "Local subprograms/functions can only be called from within the SRC
+    file in which they were programmed. ... Alternatively, a local
+    subprogram can be preceded by the keyword GLOBAL" — Expert
+    Programming. The receive loop lives in `laptop_comm.src`, a
+    different SRC, so every routine it calls needs GLOBAL. None of them
+    carried it, so none was reachable and the KRL half of the system
+    could not have been wired together at all.
+    """
+    routines = _krl_routines()
+    not_global = [r[0] for r in routines[1:] if not r[3]]
+    assert not not_global, (
+        f"{not_global} in {_KRL_SRC} are local subprograms. Nothing "
+        f"outside routines.src can call them.")
+
+
 def test_krl_subroutine_returns_the_numbers_this_enum_declares():
     """Every `RETURN n ; NAME` in routines.src must equal
-    RobotStatusCode[NAME].value."""
+    RobotStatusCode[NAME].value.
+
+    Scope, because a green tick here has been misread before: this
+    couples the enum to the KRL *labels*. It does not compile, parse or
+    execute KRL, and no test in this repository does — there is no
+    controller. `test_krl_valued_returns_are_inside_a_deffct_not_a_def`
+    checks the one construct that had actually broken.
+    """
     returns = _krl_returns()
     for value, name in returns:
         assert name in RobotStatusCode.__members__, (

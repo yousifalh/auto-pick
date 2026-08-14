@@ -63,6 +63,33 @@ camera:
   mm_per_px_y: 0.38
   origin_offset_x_mm: 0.0
   origin_offset_y_mm: 0.0
+  # PLACEHOLDER, and deliberately conservative: a +/-350 mm square
+  # inscribed in the KR 6 R700 sixx's reachable envelope. The datasheet
+  # (0000-210-361 / V23.1) gives maximum reach 706.7 mm, so the worst
+  # case here — the corner, at 350*sqrt(2) = 495 mm — is comfortably
+  # inside it on radius alone. `plan.scene.WorkspaceBounds.require`
+  # enforces it on every pick and place pose.
+  #
+  # It is NOT the reachable workspace, in three named ways:
+  #   1. It contains the base. The square includes (0, 0); a 6-axis arm
+  #      cannot reach its own base column. The true envelope is an
+  #      annulus with an inner dead zone, and every point within roughly
+  #      a couple of hundred mm of the origin is claimed here and is not
+  #      reachable. The dead-zone radius is not stated because the
+  #      datasheet's working-range diagram is a raster image that could
+  #      not be measured.
+  #   2. A1 travels +/-170 deg, not +/-180. There is a ~20 deg
+  #      unreachable wedge directly behind the robot; a square centred on
+  #      the base spans every azimuth and so claims reach into it.
+  #   3. Reach is a shell, not a prism. 706.7 mm is a radius, so the
+  #      usable horizontal radius shrinks as Z approaches the table. A
+  #      square valid at Z = 300 mm is not valid at Z = 0.
+  # (Reach is also quoted to the wrist reference point, not to a TCP with
+  # a vacuum tool fitted, which moves the envelope in both directions.)
+  #
+  # Modelling any of that needs the working-range diagram and a taught
+  # tool, i.e. the real cell. Until then this is an outer bound that is
+  # safe in the direction that matters and wrong in the middle.
   workspace_bounds_mm: {x_min: -350, x_max: 350, y_min: -350, y_max: 350}
 
 # NO `arbitration:` BLOCK. It carried a single key, `tau: 0.7492`, which

@@ -18,15 +18,29 @@ Status replies reuse the same layout: byte 1 is the status code
 the cycle time in milliseconds so the host can log control-loop
 latency.
 
-This framing is **modelled on** the KUKA EthernetKRL 3.1 specification
-and **augmented with** a CRC-16/MODBUS trailer (polynomial 0xA001,
-initial 0xFFFF, no output XOR) — the phrasing FDR §7.1 uses, and the
-accurate one. EthernetKRL's own transport is XML, and this project's own
-``krl_prog/laptop-comm.xml`` declares an XML payload schema with **no
-checksum element**, so the CRC here is not "the standard integrity check
-on the XML transport": it is a binary framing this repository defines,
-and the CRC is part of that definition rather than of anything KUKA
-publishes.
+This framing targets EthernetKRL's **fixed-length binary mode**
+(``BinaryFixed``) and **augments it with** a CRC-16/MODBUS trailer
+(polynomial 0xA001, initial 0xFFFF, no output XOR).
+
+**Correction, 2026-08-14.** This docstring used to assert that
+"EthernetKRL's own transport is XML". That is false, and it undersold
+the design. KUKA's EthernetKRL manual documents three connection data
+types — XML, binary of fixed length, and a variable binary stream — and
+says of the second that "Binary data records are not interpreted by the
+EKI and stored together in a memory", read back with ``EKI_GetString``
+and split into KRL variables with ``CAST_FROM``. A 16-byte fixed-length
+binary record is therefore a **native EKI capability**, configured with
+a ``<RAW><ELEMENT Tag="Buffer" Type="BYTE" Size="16" …/></RAW>`` block,
+not a departure from EKI. ``krl_prog/laptop-comm.xml`` now declares
+exactly that, and ``krl_prog/laptop_comm.src`` is the controller-side
+loop that reads it — neither has ever been loaded on a controller, and
+both say so in their own headers.
+
+What remains true is the part that matters here: **EKI supplies no
+checksum in any of its three modes.** The CRC-16 trailer in bytes 14–15
+is this repository's addition, not "the standard integrity check on the
+EthernetKRL transport". The conclusion was always right; the reason
+given for it was not.
 
 What the CRC does and does not protect, since a checksum invites
 assumptions:
@@ -118,9 +132,11 @@ def crc16_modbus(data: bytes) -> int:
     The standard MODBUS variant — poly 0xA001 (reflected 0x8005), init
     0xFFFF, reflected in and out, no output XOR — chosen for this
     project's binary framing because it is ubiquitous and independently
-    checkable, NOT because EthernetKRL's XML transport uses it (it
-    carries no checksum; see the module docstring).
+    checkable, NOT because EthernetKRL prescribes it: EKI carries no
+    checksum in any of its three modes (see the module docstring).
     ``tests/test_protocol.py`` pins it to the published check value.
+    ``krl_prog/laptop_comm.src`` mirrors this loop in KRL, bit-serial
+    and table-free; that mirror has never been compiled or run.
     """
     crc = 0xFFFF
     for b in data:
