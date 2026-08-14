@@ -45,6 +45,18 @@ looped**, and the looped path breaches the 50 ms end-to-end budget on its own
 (`docs/receipts/seg_eval_anchored_on_cad_test.txt`, latency table). Crop size
 256 is at or above native crop resolution, so it is not a resample upward.
 
+**Why the README gives different milliseconds for this same claim.** It quotes
+**16.6 ms batched against 57.1 ms looped**, from `docs/receipts/seg_eval.txt`.
+Neither figure is wrong and neither supersedes the other: they are two
+different models on two different splits, and that latency row is wall-clock,
+re-taken every time either receipt is regenerated — the spread across five
+clean runs on this hardware is 16.6–21.2 ms batched (FDR §13.2.1). What both
+receipts establish is the load-bearing part, identically: batched fits the
+50 ms end-to-end budget and looped breaches it on its own. Cite the receipt
+you are quoting and do not mix the two. *Note added 2026-08-14: the two
+documents had carried two numbers for one architectural claim with nothing
+saying why.*
+
 There are **nine segmenter checkpoints**, not one. Eight are experiments
 answering a single question — *does procedurally generated tray geometry
 substitute for CAD?* — and one is what `configs/demo_seg.yaml` loads. They
@@ -60,11 +72,24 @@ exist to support an argument about measurement, not to be run on anything.
 
 **Out of scope, explicitly.**
 
-* **Any real image.** See the banner above. The one measurement in this
-  repository taken on photographs is a detector *input-resolution* ablation
+* **Any real image.** See the banner above. There are now **two** measurements
+  in this repository taken on photographs, and neither supports an accuracy
+  claim made here. The first is a detector *input-resolution* ablation
   (`configs/recognition.yaml`: `inference_min_size` 500 → mAP@0.50 0.614 /
   @0.75 0.404, against 800 → 0.457 / 0.023, on the real-photo set), and it
-  measures a preprocessing choice, not the accuracy claimed anywhere here.
+  measures a preprocessing choice, not accuracy — **and it has no receipt**:
+  those figures are an undated comment in the config that names no checkpoint,
+  and they do not reconcile with the receipted run below taken at that same
+  `min_size: 500`. Read them as a direction, not as numbers. The second is a
+  held-out detector evaluation on the same phone photographs
+  (`docs/receipts/real_photo_eval.txt`, 2026-08-13, generator
+  `recog/eval_real.py`): shipped `best.pt` at confidence 0.70, **6 of the 7
+  images scored** — one excluded for carrying no ground-truth boxes at all —
+  **mAP@0.50 0.8484 / @0.75 0.8044** over 80 ground-truth boxes. Six
+  photographs is not a sim-to-real validation and is not offered as one
+  (FDR §13.2.2). *Corrected 2026-08-14: this bullet said "the one measurement
+  in this repository taken on photographs" and named only the ablation; the
+  second landed at `9b38de9`.*
 * **Any safety-relevant decision about a lithium-ion cell.** The segmenter's
   characteristic error is *optimistic* — it labels tray wall as placeable
   floor — which is the direction that puts a cell on a PCB rather than the
@@ -300,12 +325,41 @@ anchor set (`anchor_ratios: [0.28, 0.5, 1.0, 2.0, 3.5]`,
 `anchor_scales: [40, 64, 96, 144]`) re-tuned against the Blender render corpus
 that replaced the April one, trained on `recog/dataset3d` with COCO
 pretraining for 35 epochs (FDR §5.7 and ADR-005, both corrected 2026-08-12).
-**No committed receipt scores that model**, and its in-training metric is
-uninformative by the config's own admission: the full-set synthetic metric
-"saturates at mAP 1.0 within 0–5 epochs", which is why `hard_val_fraction`
-exists at all. So the honest statement is that **the detector that ships has
-no published held-out mAP**, and the two numbers above must not be quoted as
-though it does.
+Its *in-training* metric is uninformative by the config's own admission: the
+full-set synthetic metric "saturates at mAP 1.0 within 0–5 epochs", which is
+why `hard_val_fraction` exists at all. But it **is** scored on a held-out
+split, by a committed receipt with a committed generator.
+
+**`docs/receipts/detector_bench.txt`, arm 3** — the shipped
+`recog/checkpoints/best.pt` at the production configuration (confidence 0.70,
+NMS IoU 0.40, inference resize 500/900) over the **`recog/dataset3d`
+validation split, 150 frames / 1 205 ground-truth boxes** — reports
+**mAP@0.50 = 0.9053** (AP_battery 0.9046, AP_cartridge 0.9061), mAP@0.75
+0.7607, precision 0.9488, recall 0.9544. Generator: `scripts/detector_bench.py`.
+FDR §10.5 and Appendix G cite this same row. **Scope: in-domain** — a held-out
+split of the same Blender corpus, same generator, same catalogue. Out of
+domain, the same checkpoint scores mAP@0.50 0.8484 on six phone photographs
+(`docs/receipts/real_photo_eval.txt`), which does not clear the 0.90 bar and
+does not sample enough to settle it.
+
+**Corrected 2026-08-14: this paragraph said "No committed receipt scores that
+model" and that "the detector that ships has no published held-out mAP".**
+Both were contradicted by `detector_bench.txt` arm 3, which is committed,
+regenerable, and cited for exactly this purpose elsewhere in the FDR. What
+remains true is the narrower point the passage was reaching for: the two
+anchor-ablation columns above are April-corpus numbers on a different
+checkpoint and still must not be quoted as the shipping detector's score.
+
+**Quote the 0.9053 with its arm attached.** The same receipt's **arm 2** — the
+torchvision-default-anchor checkpoint `default_anchors_best.pt`, on the
+15-frame `recog/dataset` val split at a 0.05 score threshold — reports
+`AP_battery@0.50` = **0.9053** as well. That collision is a coincidence of
+rounding, not one measurement quoted twice: different arm, different quantity
+(a single-class AP against a mAP), different checkpoint, different split, and
+arm 2's precision column is explicitly not quotable at that threshold. Arm 3's
+**mAP@0.50** is the shipping detector's held-out figure; arm 2's `AP_battery`
+is not. (Nor should either be paired with the 0.8647 in earlier audit prose —
+that is `last.pt`, a third network.)
 
 The anchor set that *does* ship is the best-documented hyperparameter in the
 repository: chosen on 2,434 boxes from 300 freshly generated scenes at two
@@ -435,7 +489,7 @@ Four things on this page, named so they are not mistaken for the rest.
    verify them against anything. What they buy is stated in
    [`datasets/README.md`](datasets/README.md) and it is narrower than it looks.
 
-Sixteen of the repository's thirty-seven committed receipts are inherited from
+Sixteen of the repository's thirty-nine committed receipts are inherited from
 before this repository's history and have **no surviving generator**; FDR
 Appendix C enumerates them.
 

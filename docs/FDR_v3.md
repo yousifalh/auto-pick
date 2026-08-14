@@ -148,7 +148,7 @@ the workspace folder; ~~every measurement quoted in the body can be
 re-generated from a single named script in `docs/receipts/`.~~ **Most
 measurements quoted in the body can be re-generated from a named script;
 the exceptions are enumerated rather than glossed — sixteen of
-thirty-seven receipts have no surviving generator (Appendix C.3), O3's
+thirty-nine receipts have no surviving generator (Appendix C.3), O3's
 `bench_cycles.py` and O1.a's `pr_curves.py` were never committed
 (§10.4, Appendix E), and no dataset or checkpoint is tracked by git.**
 
@@ -484,8 +484,17 @@ label maps through the shipping extractor and the shipping packer at
 each frame's **true** scale — perfect segmentation, perfect detector
 boxes, perfect calibration — `AnkerPowerCore10000` places zero cells in
 **10 of 10** instances at the production 4.25 mm wall inset, and the
-whole 30-instance set reaches **10 of 30**, rising to at most **12 of
-30** with the wall inset taken to 0.0 mm. Tolerance is not the lever
+whole 30-instance set reaches **10 of 30**, rising to at most ~~**12 of
+30**~~ **11 of 30 (and 25 cells)** with the wall inset taken to 0.0 mm.
+**Corrected 2026-08-14: the 12 was measured at `ce1d9cd`, when a grid
+cell counted as free if its *centre pixel* was free.** `b93bbd3` made a
+cell free only if all of it is, and re-running the oracle under that
+rule costs it one cartridge and two cells (12 / 27 → 11 / 25); the
+4.25 mm row is unaffected at 10 / 24. Both sides of §13's
+oracle-vs-shipping comparison are therefore on the same code state, and
+11 is the figure the README, `PORTFOLIO.md` and the source spec already
+carry (`docs/superpowers/specs/2026-08-11-placement-feasibility.md`, §5
+Result table). Tolerance is not the lever
 either: 18.5 → 18.3 mm recovers **0** instances at any calibration, and
 the wall inset recovers **0** all the way down to 0.0 mm — both of those
 rows measured on the real predicted masks and real detector boxes the
@@ -3267,7 +3276,7 @@ for the wrong reason). Every label geometry therefore moved: the module
 and bay proxy now sit on the tray's measured cavity floor instead of
 the assembly's outer top face, seated cells now render below the rim,
 and the tray walls are real standing geometry rather than a flat
-decal. The dataset (502 scenes / 841 crops, same scale as before) and
+decal. The dataset (502 scenes / 840 crops, same scale as before) and
 the checkpoint trained on it were both regenerated from scratch —
 `recog/dataset3d_seg` deleted and re-rendered, not resumed, since
 resuming would have silently mixed the old and new label conventions
@@ -3316,9 +3325,17 @@ published from the start. Against an 18.3 mm cell diameter, the coarse
 axis is a third of a cell — and "does the last cell fit" is exactly
 the decision at stake. Measured mean boundary displacement of the
 per-ROI segmenter, against synthetic ground truth on the 126-crop
-validation split (unchanged in size — 502 scenes / 841 crops — but
-every scene re-rendered with the tray right-side up, and the model
+validation split (unchanged in size — 502 scenes / ~~841~~ **840** crops
+— but every scene re-rendered with the tray right-side up, and the model
 retrained from scratch since these figures were first published), is:
+
+**Corrected 2026-08-14: the crop count is 840, not 841, here and at the
+two other places this document states it.** `docs/datasets/dataset3d_seg.manifest.json`
+records 840 kept `cartridge` instances, `docs/MODEL_CARD.md`'s generated
+training-data table says 840, and 0.15 × 840 = 126 — exactly the
+validation-crop count the receipt above reports, which 841 does not
+divide to. No figure in this subsection depends on the difference; the
+number was simply carried forward one high.
 
 | Class | Boundary displacement | Crops | mm/px | Mask head, same crops | Clears by | Class IoU |
 |-------------|---------------:|------:|------:|---------------:|------:|----------:|
@@ -3839,9 +3856,19 @@ committed. It was swept on that corpus rather than argued about:
 **The decision is to keep 0.0 mm and change no code.** 3.0 mm is
 strictly dominated — twelve fewer cells for the same two overlaps — and
 1.5 mm is worse on both axes at once, giving up four cells while
-*creating* a third overlap; 1.0 and 2.0 mm were measured too and move
-nothing. No setting of this margin buys safety, and the count never
-reaches zero at any of them. That is not a tuning failure but the wrong
+*creating* a third overlap; 1.0 and 2.0 mm were measured too and ~~move
+nothing~~ **move the count without moving the decision**. No setting of
+this margin buys safety, and the count never reaches zero at any of them.
+
+**Corrected 2026-08-14: "move nothing" was wrong about both rows, and
+the table above omits them.** 1.0 mm costs one instance and two cells
+(12 / 25 → **11 / 23**) while leaving the two overlaps and the 8.3 %
+worst case exactly where they were; 2.0 mm is identical to 1.5 mm
+(**10 / 21**, worst 7.8 %) and so *creates* the third overlap too. Both
+rows are in `docs/superpowers/specs/2026-08-11-placement-safety.md` §4,
+and the 1.0 mm row is carried in the README's copy of this table. The
+conclusion is untouched — no row reaches zero overlaps, and every row
+below 0.0 mm pays cells for it — but the rows are not inert. That is not a tuning failure but the wrong
 instrument. A clearance margin assumes the boundary is known and
 *tight*; here the predicted bay boundary sits 1–2 px **over** the wall,
 so the boundary is in the wrong *place*, and insetting uniformly from a
@@ -3885,7 +3912,7 @@ concentrated in the two classes the inset shrank (electronics
 0.923 → 0.843, obstruction 0.625 → 0.554) while `bay` barely moved
 (0.899 → 0.894). The lower figure was the honest one at the time, on
 the 220-scene / 361-crop dataset this correction was measured against;
-the dataset has since been scaled to 502 scenes / 841 crops, and then —
+the dataset has since been scaled to 502 scenes / 840 crops, and then —
 this task — re-rendered at the same scale with the tray the right way
 up and the model retrained from scratch on the corrected labels (the
 boundary-displacement table and IoU figures earlier in this subsection
@@ -4544,12 +4571,16 @@ conclusion it supports survives ~~at 89 %~~ **at 93 %, on a scope that
 now includes the packer and the segmenter it used to omit
 (re-scoped 2026-08-13)**.
 
-**3. Sixteen of the thirty-seven committed receipts have no surviving
+**3. Sixteen of the thirty-nine committed receipts have no surviving
 tool.** (Thirty-four when this appendix was written; `detector_bench.txt`,
-`seed_reproducibility.txt` and `main_run.txt` have been added since, each
+`seed_reproducibility.txt`, `main_run.txt`, `real_photo_eval.txt` and
+`real_photo_eval_include_empty.txt` have been added since, each
 with a committed generator — `scripts/detector_bench.py`,
-`scripts/seed_check.py` and `main.py --receipt` — so the numerator below
-is unchanged at sixteen.) `ffdh_ablation.{csv,txt}`, `frcnn_map{,_default}.txt`,
+`scripts/seed_check.py`, `main.py --receipt` and `recog/eval_real.py` —
+so the numerator below is unchanged at sixteen. **The denominator read
+thirty-seven until 2026-08-14**, which was the 34 + 3 arithmetic written
+before the two real-photo receipts landed at `9b38de9`;
+`git ls-files docs/receipts` counts 39.) `ffdh_ablation.{csv,txt}`, `frcnn_map{,_default}.txt`,
 `frcnn_latency.txt`, `heuristic_ablation.txt`, the two
 `heuristic_failure_*.json`, `pr_summary.txt`, `train{,_default}.log`,
 `train_curve{,_default}.csv`, `train_eval.txt`,
@@ -4794,7 +4825,7 @@ re-running the named script against the committed source tree.~~
 
 **Corrected 2026-08-12: that closing sentence was contradicted by
 Appendix C.3 in this same document, which records that sixteen of the
-thirty-seven committed receipts have no surviving generator.** The
+thirty-nine committed receipts have no surviving generator.** The
 accurate statement is narrower and is given per cell rather than in
 general. Nine of the eleven project-requirement cells can be
 re-verified from committed tooling. **O3** named `bench_cycles.py`,
