@@ -1436,6 +1436,22 @@ subroutine begins.
 
 ### 7.2 KukaClient lifecycle
 
+**Restructured 2026-08-14
+(`docs/superpowers/specs/2026-08-14-robot-driver-abstraction.md`).** The
+lifecycle and every safety behaviour described below now live in
+`execution/driver.py::RobotDriver`, a template-method base that seals
+them against subclass override; `execution/execution.py` supplies only
+this protocol's encode/decode/recv. The behaviour is unchanged and is
+now pinned by a driver-independent conformance suite
+(`tests/conformance.py`) that a second driver over a second encoding
+passes unmodified. Two renamings in that work are legible rather than
+silent: `OpCode.ESTOP` (0x06) is now `OpCode.HALT`, because no robot
+surveyed accepts a safety-rated stop over its application protocol —
+`RobotStatusCode.ESTOP` keeps its name because that is the controller
+reporting a real Category-0 state — and the pick-and-place choreography
+moved to `execution/task.py`, where its two-frame stateful sequence is
+visible instead of concealed behind a one-pose signature.
+
 `execution/execution.py` implements a blocking client with a linear
 lifecycle: construct, connect, handshake, then repeat (command, wait-for-
 status), disconnect. Handshake negotiates protocol version and confirms
@@ -2633,8 +2649,9 @@ returns nothing. `execution/krl_prog/routines.src::PickAndPlace` turns
 the vacuum on at step 2 and off at step 5 with no timer between them —
 `WAIT SEC 0.05` and `WAIT SEC 0.03` are settle waits either side, not
 bounds — and the interval between them is an approach, a transport and
-an insert of unbounded duration. `execution/execution.py` has no dwell
-timer, and `_emergency_stop`'s own docstring states the opposite case
+an insert of unbounded duration. the execution layer has no dwell
+timer, and `RobotDriver._request_halt`'s own docstring states the
+opposite case
 in as many words: "the arm may be holding a cell with the vacuum on and
 nothing can tell it to let go." The nearest 5 s in the system is
 `kuka.command_timeout_ms: 5000`, which bounds how long the *host* waits
@@ -2650,8 +2667,8 @@ control this project has had to assess and the two fail differently.
 The deleted `safety_max_velocity_mm_s` was impossible because the
 16-byte frame carries **no velocity field** (Appendix B): the host had
 no way to express the quantity at all. Dwell is not blocked there — the
-host owns `OpCode.VACUUM_OFF` (0x03) and `OpCode.ESTOP` (0x06), so it
-has an actuator. It is blocked one level up, by *who runs the grasp*.
+host owns `OpCode.VACUUM_OFF` (0x03) and `OpCode.HALT` (0x06, renamed
+from `ESTOP` on 2026-08-14 — see below), so it has an actuator. It is blocked one level up, by *who runs the grasp*.
 A pick is issued as a single `PICK_AND_PLACE` (0x04) and the whole
 on–transport–off sequence executes inside `PickAndPlace` on the
 controller; the client sends one command and blocks on one status
