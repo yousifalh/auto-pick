@@ -53,6 +53,7 @@ from common.logging import get_logger
 from common.types import ClassLabel, PickPlacePose, RobotStatusCode
 from execution.execution import (ExecutionConfig, KukaClient, RobotEstop,
                                  RobotFault)
+from execution.task import PickPlaceTask, TaskConfig
 from plan.placement_area import (HeuristicPlacementAreaExtractor,
                                  SegmentationPlacementAreaExtractor)
 from plan.planner import Planner, PlannerConfig
@@ -386,9 +387,16 @@ def run(config_path: str, receipt_path: Optional[str] = None) -> Dict[str, int]:
 
     try:
         with KukaClient(exec_conf) as kuka:
+            # The driver moves the arm; the TASK knows what a cartridge
+            # cycle is. On this protocol that is two frames whose order
+            # latches the place XY, and the split is what keeps the
+            # choreography, the transport height and the vacuum level out
+            # of an interface that other arms would have to implement.
+            task = PickPlaceTask(
+                kuka, TaskConfig.from_execution_config(exec_conf))
             for cycle_idx in range(max_cycles):
                 if not _run_one_cycle(
-                    cycle_idx, img_iter, detector, planner, kuka, stats,
+                    cycle_idx, img_iter, detector, planner, task, stats,
                     stop_on_empty,
                 ):
                     break
@@ -518,7 +526,7 @@ def _run_one_cycle(
     img_iter,
     detector,
     planner: Planner,
-    kuka: KukaClient,
+    task: PickPlaceTask,
     stats: Dict[str, int],
     stop_on_empty: bool = True,
 ) -> bool:
@@ -597,7 +605,7 @@ def _run_one_cycle(
     # CRC_ERROR, TIMEOUT or an unrecognised code; `run` catches those
     # and ends the run. What reaches the branches below is therefore
     # only an ordinary placement OUTCOME.
-    status = kuka.pick_and_place(pose)
+    status = task.run(pose)
 
     if status.code == RobotStatusCode.SUCCESS:
         planner.confirm_placement(
@@ -622,9 +630,9 @@ def _run_one_cycle(
         # being counted as a placement failure.
         raise RuntimeError(
             f"cycle {cycle_idx}: the controller returned "
-            f"{status.code.name}, which execution.KukaClient should have "
-            "classified as retryable or fatal before returning. Refusing "
-            "to command further motion.")
+            f"{status.code.name}, which execution.driver.RobotDriver "
+            "should have classified as actionable, retryable or fatal "
+            "before returning. Refusing to command further motion.")
 
     stats["cycles"] += 1
     return True

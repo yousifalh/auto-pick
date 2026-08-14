@@ -21,10 +21,13 @@ move:
 * a **workspace envelope** — the KR 6 R700's 706 mm reach and the table
   it stands on. An out-of-envelope target is a software-limit fault and
   latches the stop, as it would on the real machine;
-* a **latching E-stop** — once stopped, every command including
+* a **latching stop** — once stopped, every command including
   ``HANDSHAKE`` answers ``ESTOP``, the vacuum is dropped, and no
   reconnect clears it. Clearing a Category-0 stop is a deliberate act at
-  the controller, and this simulator offers no way to do it;
+  the controller, and this simulator offers no way to do it. Note the
+  asymmetry the names now carry: the host sends ``OpCode.HALT``, an
+  in-band request to stop moving, and what latches here and comes back
+  as ``RobotStatusCode.ESTOP`` is the *controller's* safety state;
 * **socket timeouts** — a half frame no longer pins a handler thread
   forever;
 * **distinct fault codes** — an unknown opcode and a bad protocol
@@ -49,6 +52,7 @@ import time
 from typing import Optional, Tuple
 
 from common.logging import get_logger
+from .execution import KUKA_CONTROLLER_INSERT_Z_MM
 from .protocol import (
     COMMAND_LEN,
     OpCode,
@@ -82,11 +86,17 @@ REACH_MM = 706.0
 Z_MIN_MM = -20.0          # the table the cartridges sit on
 Z_MAX_MM = 706.0
 
-# The place descent depth. The 16-byte frame has no place-Z field (see
-# KukaClient.pick_and_place), so the insert depth is controller-side —
-# exactly as krl_prog/routines.src treats it, descending LIN onto
-# place_pos and deriving its transport height from it.
-_INSERT_Z_MM = 2
+# The place descent depth. The 16-byte frame has no place-Z field, so
+# the insert depth is controller-side — exactly as krl_prog/routines.src
+# treats it, descending LIN onto place_pos and deriving its transport
+# height from it.
+#
+# It is imported rather than repeated. The depth used to be written out
+# in three places that could not be checked against each other: this
+# constant, routines.src's `LIN place_pos`, and the planner's
+# `place_insert_height_mm`. Two of the three are now one value, and
+# execution.task.PickPlaceTask compares the third against it out loud.
+_INSERT_Z_MM = int(KUKA_CONTROLLER_INSERT_Z_MM)
 
 # A grasp happens near the table. `routines.src` derives its approach as
 # pick_pos.Z + 60, so the Z on the wire is the GRASP pose, not the
@@ -273,8 +283,8 @@ class _Handler(socketserver.BaseRequestHandler):
 
                 code, cycle_ms = self._dispatch(cmd, robot)
 
-                # ESTOP short-circuits: send the status, then disconnect.
-                if cmd.op == OpCode.ESTOP:
+                # HALT short-circuits: send the status, then disconnect.
+                if cmd.op == OpCode.HALT:
                     self._send_status(code, cycle_ms, robot)
                     return
 
@@ -296,8 +306,8 @@ class _Handler(socketserver.BaseRequestHandler):
             # escalation and command motion immediately.
             return _ESTOP, 0
 
-        if cmd.op == OpCode.ESTOP:
-            robot.latch_estop("commanded by the host")
+        if cmd.op == OpCode.HALT:
+            robot.latch_estop("halt requested by the host")
             return _ESTOP, 0
 
         if cmd.op == OpCode.HANDSHAKE:

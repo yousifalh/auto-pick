@@ -130,7 +130,7 @@ def test_the_envelope_admits_the_whole_planned_workspace(server):
 # ------------------------------------------------- latching E-stop ------
 
 def test_estop_latches_across_reconnects(server):
-    """After an ESTOP the simulator used to drop the connection and then
+    """After a halt the simulator used to drop the connection and then
     accept a fresh one, answering MOVE_TO(300,300,300) with SUCCESS.
     The safety mechanism the FDR leads with was a no-op in the only
     implementation that exists."""
@@ -138,14 +138,17 @@ def test_estop_latches_across_reconnects(server):
         w.command(OpCode.HANDSHAKE)
         w.command(OpCode.VACUUM_ON, aux=80)
         assert server.robot.vacuum_on
-        assert w.command(OpCode.ESTOP)["code"] == ESTOP
+        assert w.command(OpCode.HALT)["code"] == ESTOP
 
     assert server.robot.estopped
     assert not server.robot.vacuum_on, "a Cat-0 stop removes power"
 
     with _Wire(_port(server)) as w2:
-        # Even the handshake is refused now — this is the case
-        # KukaClient.connect()'s ESTOP branch exists for.
+        # Even the handshake is refused now — this is the case the
+        # driver's connect() ESTOP branch exists for. Note the two
+        # names: the host sent OpCode.HALT, an in-band request to stop
+        # moving; what comes back is RobotStatusCode.ESTOP, the
+        # controller reporting its own Category-0 state.
         assert w2.command(OpCode.HANDSHAKE)["code"] == ESTOP
         before = (server.robot.x, server.robot.y, server.robot.z)
         assert w2.command(OpCode.MOVE_TO, 300, 300, 300)["code"] == ESTOP

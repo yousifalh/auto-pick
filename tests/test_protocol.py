@@ -106,7 +106,7 @@ def test_status_roundtrip():
     assert len(pkt) == STATUS_LEN
     s = unpack_status(pkt)
     assert s == {"code": 1, "x_mm": 12, "y_mm": -5, "z_mm": 80,
-                 "cycle_ms": 123}
+                 "cycle_ms": 123, "cycle_ms_saturated": False}
 
 
 def test_status_bad_crc_rejected():

@@ -1,110 +1,102 @@
-"""KUKA Ethernet KRL 3.1 client.
+"""KUKA Ethernet KRL 3.1 driver.
 
-Consumes the planner's :class:`PickPlacePose` queue, serialises each
-step into binary packets (see :mod:`execution.protocol`), and drives
+Encodes the vendor-neutral requests defined in :mod:`execution.driver`
+into the 16-byte binary frames of :mod:`execution.protocol` and drives
 the KUKA controller over a blocking TCP socket.
 
-**The safety contract, stated exactly.** Every route out of a command —
-including the handshake, including an exception the author did not
-anticipate — either returns a status the caller can act on, or attempts
-a Category-0 stop and raises :class:`RobotFault`. There are three kinds
-of failure and they are handled differently on purpose:
+**Where the safety contract now lives.** It is not in this file. Every
+route out of a command — including the handshake, including an exception
+the author did not anticipate — either returns a status the caller can
+act on or attempts a halt and raises :class:`RobotFault`, and that is
+owned by :class:`execution.driver.RobotDriver`, which seals the methods
+that implement it. This class cannot weaken it, because the base class
+refuses to define a subclass that rebinds any of those names. What this
+class supplies is four things:
 
-* *transient* — a socket timeout, a CRC failure, a controller-reported
-  ``CRC_ERROR`` or ``TIMEOUT``. Retried up to ``cfg.max_retries``; when
-  retries are exhausted the client sends one E-stop packet and raises.
-* *fatal* — anything else the socket or the packer throws
-  (``struct.error`` from an out-of-range coordinate, ``ConnectionError``
-  from a mid-frame close, ``ConnectionResetError``), plus a controller
-  reporting ``VERSION_MISMATCH`` or ``UNSUPPORTED_COMMAND``. Retrying
-  cannot help, so the E-stop is attempted immediately and the client
-  raises. The E-stop is best-effort: on a dead socket it cannot be
-  transmitted, and that is logged as CRITICAL rather than silently
-  replacing the original error.
-* *the controller says it is stopped* — a status of ``ESTOP``. The
-  client latches: it closes the socket, refuses to reconnect, and
-  raises :class:`RobotEstop`. A controller reporting a Category-0 stop
-  must stop the host, not be counted as a failed placement.
+* ``encode`` — a neutral :class:`~execution.driver.Request` to 16 bytes;
+* ``decode`` — 16 bytes to a :class:`~common.types.RobotStatus`;
+* ``send`` — inherited from :class:`~execution.driver.TcpFrameDriver`;
+* ``recv`` — read exactly ``STATUS_LEN`` bytes inside the deadline.
 
-What this module does **not** do, so nothing downstream assumes it:
+**What is genuinely KUKA here** is smaller than it looks: a default IP,
+the opcode table, the CRC, and the fact that frames are 16 bytes long.
+The retry policy, the latch, the escalation and the deadline are not
+KUKA and never were.
+
+**What this driver does not do**, so nothing downstream assumes it:
 there is no heartbeat and no watchdog (nothing ever sends
-``OpCode.HEARTBEAT``), there is no sequence number, so a *late* reply is
-mis-paired with the next command, and the retry loop re-sends motion
-opcodes, which is not idempotent for ``PICK_AND_PLACE``. The retry
-pause is a constant ``heartbeat_interval_ms``, not exponential backoff.
+``OpCode.HEARTBEAT``), there is **no sequence number**, so a late reply
+is mis-paired with the next command, and the base's retry loop re-sends
+requests, which is not idempotent for ``PICK_AND_PLACE``. It performs
+**no workspace check** beyond asking whether a coordinate fits in the
+wire's fields — reachability is enforced by the planner and by the
+controller's software limits, neither of which this class can see, so
+:meth:`KukaClient.validate` answers ``UNKNOWN`` for everything the frame
+can carry.
 
-The high-level surface is three methods — :meth:`KukaClient.move_to`,
-:meth:`KukaClient.vacuum`, and :meth:`KukaClient.pick_and_place` —
-which return the :class:`RobotStatus` reported by the controller.
+**The application is not here either.** The pick-and-place choreography,
+the transport height, the vacuum level and the insert depth belong to
+:class:`execution.task.PickPlaceTask`. A suction cup with a percentage
+level is this cell's tooling, not a property of KUKA controllers, and a
+driver that carried it would be exporting one gripper to every future
+arm.
 """
 from __future__ import annotations
 
-import socket
-import time
 from dataclasses import dataclass
 from typing import Optional
 
-from common.logging import get_logger
-from common.types import (
-    PickPlacePose,
-    RobotStatus,
-    RobotStatusCode,
-    WorkspacePoint,
+from common.types import RobotStatus, RobotStatusCode, WorkspacePoint
+from .driver import (
+    Capabilities,
+    DriverPolicy,
+    Gripper,
+    MotionKind,
+    Pose,
+    Reachability,
+    Request,
+    RequestKind,
+    RobotEstop,
+    RobotFault,
+    TcpFrameDriver,
 )
 from .protocol import (
-    COMMAND_LEN,
     STATUS_LEN,
+    X_MM_MAX,
+    X_MM_MIN,
+    Y_MM_MAX,
+    Y_MM_MIN,
+    Z_MM_MAX,
+    Z_MM_MIN,
     OpCode,
     pack_command,
     unpack_status,
 )
 
-log = get_logger("execution.kuka")
-
-# The CRC-16/MODBUS polynomial this module's `crc16_modbus` implements.
-# `configs/execution.yaml` states it too; the two are cross-checked in
-# ExecutionConfig.from_dict rather than left to agree by luck.
+# The CRC-16/MODBUS polynomial `execution.protocol.crc16_modbus`
+# implements. `configs/execution.yaml` states it too; the two are
+# cross-checked in ExecutionConfig.from_dict rather than left to agree
+# by luck.
 _CRC_POLYNOMIAL = 0xA001
 
-
-class RobotFault(RuntimeError):
-    """A command ended with the arm in an unknown state.
-
-    Subclasses :class:`RuntimeError` so callers written against the
-    original ``RuntimeError`` contract keep working.
-    """
-
-
-class RobotEstop(RobotFault):
-    """The robot is in a Category-0 stop.
-
-    Raised when the controller reports ``ESTOP`` — including when it
-    refuses the handshake because it is *already* stopped — and when a
-    latched client is asked to command motion again. The client is
-    single-use after this: clearing a Category-0 stop is a deliberate
-    act at the controller, not something a host reconnect may do.
-    """
-
-
-# Controller-reported codes that mean "try that again": an integrity
-# failure at the far end, or a controller-side timeout. Symmetric with
-# the locally-detected CRC failures the client has always retried.
-_RETRYABLE_STATUS = (RobotStatusCode.CRC_ERROR, RobotStatusCode.TIMEOUT)
-
-# Controller-reported codes that mean "this build cannot talk to that
-# build". Retrying re-sends the same unparseable frame.
-_FATAL_STATUS = (
-    RobotStatusCode.VERSION_MISMATCH,
-    RobotStatusCode.UNSUPPORTED_COMMAND,
-)
-
-# Locally-detected failures worth another attempt. `socket.timeout` is
-# `TimeoutError`; every ProtocolError is a ValueError. Note the ordering
-# in the handlers below: this tuple is caught FIRST, and everything else
-# — struct.error, ConnectionError, ConnectionResetError — falls through
-# to the fatal path. struct.error is not a ValueError subclass, which is
-# how an out-of-range coordinate used to escape without an E-stop.
-_TRANSIENT = (socket.timeout, ValueError)
+#: The depth the controller descends to when inserting a cell, in
+#: millimetres.
+#:
+#: This constant exists because the insert depth used to live in three
+#: places that could not be checked against each other: ``routines.src``
+#: descending ``LIN place_pos``, ``mock_kuka_server._INSERT_Z_MM``, and
+#: the planner's ``PlannerConfig.place_insert_height_mm``. The 16-byte
+#: frame has one Z field and the pick needs it, so ``pose.place.z_mm`` is
+#: computed by the planner, validated, and then **not transmitted** —
+#: there is nowhere on the wire to put it.
+#:
+#: Two of the three are now one: the simulator imports this value. The
+#: third is the planner's, and it cannot be merged because it is a
+#: different thing (what the planner *wants*) from this one (what the
+#: controller *does*). :class:`execution.task.PickPlaceTask` compares
+#: them on every cycle and says so when they disagree, which is the most
+#: a host with no place-Z field on the wire can honestly do.
+KUKA_CONTROLLER_INSERT_Z_MM = 2.0
 
 
 def wire_mm(v: float) -> int:
@@ -128,12 +120,25 @@ def wire_mm(v: float) -> int:
     values where the two differ from round-half-up, and no planner
     output is a half-integer by construction.
 
-    Nothing clamps here on purpose. A coordinate outside int32 raises
-    ``struct.error`` in :func:`execution.protocol.pack_command`, which
-    the caller turns into an E-stop; silently saturating a pose to
-    2**31-1 would command a motion nobody asked for.
+    The nanometre snap first is not decoration. The interface pose is in
+    metres (SI is the only honest choice when one backend counts
+    millimetres and another counts metres), so a millimetre value makes a
+    round trip through ``/1000`` and ``*1000`` before it arrives here and
+    can land one ulp off an exact half. Snapping at 1e-9 m — a thousand
+    times finer than the best repeatability in the KR 6 R700 datasheet —
+    puts the tie back where the planner put it, and changes nothing else.
+
+    Nothing clamps here on purpose. A coordinate outside the field the
+    wire has for that axis raises
+    :class:`execution.protocol.CoordinateOutOfRange` in
+    :func:`execution.protocol.pack_command`, which the driver turns into
+    a halt; silently saturating a pose to 2**31-1 would command a motion
+    nobody asked for. **The three axes do not have the same field**: x
+    and y are int32 and z is int16, so z is rejected at +/-32 767 mm and
+    x and y are not. This docstring used to say "outside int32" for all
+    three, which was wrong for the one axis that points at the table.
     """
-    return int(round(v))
+    return int(round(round(v, 6)))
 
 
 # ---------------------------------------------------- configuration ---
@@ -142,13 +147,21 @@ def wire_mm(v: float) -> int:
 class ExecutionConfig:
     """Execution-layer knobs loaded from ``configs/execution.yaml``.
 
-    Only fields something actually reads live here. ``approach_height_mm``
-    and ``insert_height_mm`` used to be parsed, stored, unit-tested and
-    read by nothing — editing them changed no behaviour anywhere in the
-    system. Both are gone; the approach and insert depths are
-    controller-side, hardcoded in ``krl_prog/routines.src`` (+60 mm
-    approach, ``LIN place_pos`` insert), because the 16-byte frame has no
-    field that could carry them. See :meth:`KukaClient.pick_and_place`.
+    Three different things live here and they are separated by
+    :meth:`driver_policy` and by :class:`execution.task.TaskConfig`:
+    the transport (``host``, ``port``), the driver's policy (the three
+    timeouts and ``max_retries``), and the *application's* choreography
+    (``transport_height_mm``, ``vacuum_level_percent``). Only the middle
+    group is vendor-neutral; the last group is this cell's tooling and
+    this cell's task.
+
+    ``approach_height_mm`` and ``insert_height_mm`` used to be parsed,
+    stored, unit-tested and read by nothing — editing them changed no
+    behaviour anywhere in the system. Both are gone; the approach and
+    insert depths are controller-side, hardcoded in
+    ``krl_prog/routines.src`` (+60 mm approach, ``LIN place_pos``
+    insert), because the 16-byte frame has no field that could carry
+    them. See :data:`KUKA_CONTROLLER_INSERT_Z_MM`.
     """
 
     host: str = "172.31.1.147"
@@ -160,6 +173,15 @@ class ExecutionConfig:
     transport_height_mm: float = 80.0
     vacuum_level_percent: int = 80
 
+    def driver_policy(self) -> DriverPolicy:
+        """The vendor-neutral half of this config."""
+        return DriverPolicy(
+            handshake_timeout_ms=self.handshake_timeout_ms,
+            command_timeout_ms=self.command_timeout_ms,
+            retry_pause_ms=self.heartbeat_interval_ms,
+            max_retries=self.max_retries,
+        )
+
     @classmethod
     def from_dict(cls, cfg: dict) -> "ExecutionConfig":
         kuka = cfg.get("kuka", {}) or {}
@@ -169,6 +191,8 @@ class ExecutionConfig:
         # A config file that states a 16-byte frame or polynomial 0xA001
         # is making a claim about this module, and a claim nothing reads
         # is a claim nothing keeps true.
+        from .protocol import COMMAND_LEN
+
         declared_len = kuka.get("command_length_bytes")
         if declared_len is not None and int(declared_len) != COMMAND_LEN:
             raise ValueError(
@@ -208,341 +232,258 @@ class ExecutionConfig:
         )
 
 
-# ------------------------------------------------------------ client ---
+# -------------------------------------------------------- the tool ---
 
-class KukaClient:
-    """Blocking TCP client speaking the 16-byte command/status protocol."""
+class VacuumGripper(Gripper):
+    """This cell's suction cup, behind the neutral gripper capability.
+
+    It is in band — ``VACUUM_ON`` and ``VACUUM_OFF`` are opcodes on the
+    same channel as motion, with the level in ``aux_u16`` — and it is
+    the only surveyed system that does that. It works here only because
+    vacuum is one bit; :attr:`Gripper.holding` answers ``None`` because
+    this tooling has no grasp sensor the host can read (on real
+    hardware ``$IN[10]`` tells the *controller*, and the controller
+    folds the answer into ``PICK_FAILED``).
+
+    ``width_m`` and ``force_n`` are accepted and ignored, loudly: a
+    caller asking a suction cup for 30 newtons at 40 mm has the wrong
+    tool, and silence would let that reach the arm.
+    """
+
+    def __init__(self, driver: "KukaClient", level_percent: int) -> None:
+        self._driver = driver
+        self.level_percent = int(level_percent)
+
+    def grasp(self, width_m: Optional[float] = None,
+              force_n: Optional[float] = None) -> RobotStatus:
+        if width_m is not None or force_n is not None:
+            self._driver.log.warning(
+                "VacuumGripper.grasp ignores width_m=%r and force_n=%r: a "
+                "suction cup has neither. The vacuum level is a percentage "
+                "and comes from the task's config.", width_m, force_n)
+        return self._driver.execute(Request(
+            RequestKind.GRIPPER, "VACUUM_ON",
+            payload={"on": True, "level_percent": self.level_percent}))
+
+    def release(self) -> RobotStatus:
+        return self._driver.execute(Request(
+            RequestKind.GRIPPER, "VACUUM_OFF", payload={"on": False}))
+
+
+# ------------------------------------------------------------ driver ---
+
+class KukaClient(TcpFrameDriver):
+    """Blocking TCP driver speaking the 16-byte command/status protocol."""
 
     def __init__(self, cfg: ExecutionConfig) -> None:
+        super().__init__(cfg.host, cfg.port, cfg.driver_policy(),
+                         logger_name="execution.kuka")
         self.cfg = cfg
-        self._sock: Optional[socket.socket] = None
-        self._estopped = False
+
+    # ---- capability ------------------------------------------------------
 
     @property
-    def estopped(self) -> bool:
-        """True once this client has stopped, or been told the robot is."""
-        return self._estopped
-
-    # ---- connection lifecycle -------------------------------------------
-
-    def connect(self) -> None:
-        """Open the channel and complete the handshake.
-
-        Every failure route closes the socket before raising, so the
-        canonical ``with KukaClient(cfg) as k:`` form cannot leak the
-        descriptor — a refused handshake used to raise with the socket
-        still open and ``__exit__`` never reached.
-        """
-        if self._estopped:
-            raise RobotEstop(
-                "this client is latched in E-stop and will not reconnect; "
-                "clear the stop at the controller and build a new client")
-
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(self.cfg.handshake_timeout_ms / 1000)
-        try:
-            sock.connect((self.cfg.host, self.cfg.port))
-        except OSError as exc:
-            sock.close()
-            # Nothing has been commanded, so there is nothing to stop —
-            # and no channel to stop it over.
-            raise RobotFault(
-                f"could not open the EthernetKRL channel to "
-                f"{self.cfg.host}:{self.cfg.port}: {exc}") from exc
-        self._sock = sock
-
-        try:
-            self._handshake()
-        except BaseException:
-            self.close()
-            raise
-
-    def _handshake(self) -> None:
-        """Send HANDSHAKE and read the ack, with the same retry policy
-        as every other command.
-
-        ``handshake_timeout_ms`` bounds the wait for the ack here, which
-        is what its name says and what it did not do: ``_recv_status``
-        used to re-arm ``command_timeout_ms`` before reading a byte, so
-        the knob bounded only the TCP connect.
-        """
-        timeout_s = self.cfg.handshake_timeout_ms / 1000
-        last_err: Optional[Exception] = None
-
-        for attempt in range(self.cfg.max_retries):
-            try:
-                self._send(pack_command(OpCode.HANDSHAKE))
-                ack = self._recv_status(timeout_s=timeout_s)
-            except _TRANSIENT as exc:
-                last_err = exc
-                log.warning(
-                    "EthernetKRL handshake error (attempt %d/%d): %s",
-                    attempt + 1, self.cfg.max_retries, exc,
-                )
-                time.sleep(self.cfg.heartbeat_interval_ms / 1000)
-                continue
-            except Exception as exc:
-                self._fatal(f"handshake failed: {exc!r}", exc)
-
-            if ack.code in (RobotStatusCode.OK, RobotStatusCode.SUCCESS):
-                log.info(
-                    "KUKA handshake OK; at %.1f,%.1f,%.1f",
-                    ack.current_pose.x_mm,
-                    ack.current_pose.y_mm,
-                    ack.current_pose.z_mm,
-                )
-                return
-
-            if ack.code is RobotStatusCode.ESTOP:
-                # The commonest refusal, and the one that used to raise a
-                # bare string with the socket left open: the controller is
-                # telling us it is ALREADY in a Category-0 stop.
-                self._estopped = True
-                raise RobotEstop(
-                    "the controller refused the handshake because it is in "
-                    "a Category-0 stop; clear it at the controller before "
-                    "reconnecting")
-
-            # Any other refusal: we do not have a channel we trust, and
-            # we do not know what state the arm is in. The socket is
-            # alive, so the stop can actually be transmitted.
-            self._fatal(f"handshake refused (status={ack.code.name})")
-
-        self._fatal(
-            f"handshake did not complete in {self.cfg.max_retries} "
-            f"attempts: {last_err}", last_err)
-
-    def close(self) -> None:
-        if self._sock is None:
-            return
-        try:
-            self._sock.close()
-        finally:
-            self._sock = None
-
-    def __enter__(self) -> "KukaClient":
-        self.connect()
-        return self
-
-    def __exit__(self, *exc) -> None:
-        self.close()
-
-    # ---- high-level commands --------------------------------------------
-
-    def move_to(self, target: WorkspacePoint) -> RobotStatus:
-        return self._cmd_and_wait(
-            OpCode.MOVE_TO,
-            wire_mm(target.x_mm), wire_mm(target.y_mm), wire_mm(target.z_mm),
+    def capabilities(self) -> Capabilities:
+        return Capabilities(
+            name="kuka-ethernetkrl-16b",
+            accepts_cartesian=True,
+            accepts_joint=False,
+            carries_orientation=False,
+            carries_redundancy=False,
+            position_resolution_m=0.001,
+            validate_is_real=False,
+            gripper_shares_motion_channel=True,
+            frames=("base",),
+            tools=("vacuum",),
+            lossy_notes=(
+                "orientation is dropped: the frame carries x/y/z only, and "
+                "krl_prog/routines.src fills A/B/C from $POS_ACT",
+                "the redundancy token is dropped: KUKA's S/T status and turn "
+                "bits have no field, so the controller resolves the "
+                "configuration itself",
+                "position quantises to whole millimetres, +/-0.5 mm",
+                "z is int16 while x and y are int32, so z is rejected at "
+                "+/-32 767 mm and x/y are not",
+                "no place-Z field: the insert depth is controller-side, "
+                "KUKA_CONTROLLER_INSERT_Z_MM",
+            ),
         )
 
-    def vacuum(self, on: bool) -> RobotStatus:
-        op = OpCode.VACUUM_ON if on else OpCode.VACUUM_OFF
-        aux = self.cfg.vacuum_level_percent if on else 0
-        return self._cmd_and_wait(op, aux=aux)
+    @property
+    def gripper(self) -> VacuumGripper:
+        return VacuumGripper(self, self.cfg.vacuum_level_percent)
 
-    def pick_and_place(self, pose: PickPlacePose) -> RobotStatus:
-        """Run one full pick-and-place cycle on the robot.
+    def validate(self, target: Pose) -> Reachability:
+        """Only what this driver can honestly answer.
 
-        The PICK_AND_PLACE opcode carries **one** coordinate triple, the
-        pick target. The place *XY* is latched by the preceding MOVE_TO
-        at transport height — the controller uses whatever (x, y) it was
-        in when the subroutine begins.
-
-        ``pose.place.z_mm`` is **not transmitted, and cannot be**: the
-        16-byte frame has one Z field and the pick needs it. The insert
-        depth is therefore a controller-side constant
-        (``krl_prog/routines.src`` descends ``LIN place_pos`` and derives
-        its transport height from it; the simulator uses
-        ``mock_kuka_server._INSERT_Z_MM``). This is stated rather than
-        papered over because the planner *does* compute a place Z
-        (``PlannerConfig.place_insert_height_mm``) and a reader is
-        entitled to know it stops here. Making it reach the wire needs a
-        second Z field, i.e. a frame-layout change and a protocol
-        version bump — deliberately not done, see
-        docs/superpowers/specs/2026-08-12-fix-execution-safety.md.
+        ``UNREACHABLE`` when a coordinate does not fit the field the wire
+        has for it — a real check nothing else in the system performs,
+        and the only one that belongs here. ``UNKNOWN`` otherwise: this
+        client holds no kinematic model, no envelope and no software
+        limits. The +/-350 mm square lives in ``configs/planning.yaml``
+        and is enforced by ``plan.scene.WorkspaceBounds``; the KR 6
+        R700's 706 mm reach is modelled only by the simulator; on real
+        hardware the KRC's software limits decide. A driver claiming
+        ``REACHABLE`` here would be reporting a guess as a fact.
         """
-        self._cmd_and_wait(
-            OpCode.MOVE_TO,
-            wire_mm(pose.place.x_mm),
-            wire_mm(pose.place.y_mm),
-            wire_mm(self.cfg.transport_height_mm),
-        )
-        return self._cmd_and_wait(
-            OpCode.PICK_AND_PLACE,
-            wire_mm(pose.pick.x_mm),
-            wire_mm(pose.pick.y_mm),
-            wire_mm(pose.pick.z_mm),
-            aux=self.cfg.vacuum_level_percent,
-        )
+        x_mm, y_mm, z_mm = target.xyz_mm
+        for value, lo, hi in ((wire_mm(x_mm), X_MM_MIN, X_MM_MAX),
+                              (wire_mm(y_mm), Y_MM_MIN, Y_MM_MAX),
+                              (wire_mm(z_mm), Z_MM_MIN, Z_MM_MAX)):
+            if not lo <= value <= hi:
+                return Reachability.UNREACHABLE
+        return Reachability.UNKNOWN
 
-    def estop(self) -> None:
-        """IEC 60204 Category-0 stop — fire and forget, then disconnect.
+    # ---- the four hooks --------------------------------------------------
 
-        Latches: the client will not reconnect afterwards. Raises if the
-        packet could not be transmitted; callers inside this module go
-        through :meth:`_emergency_stop`, which swallows that.
-        """
-        self._estopped = True
-        try:
-            self._send(pack_command(OpCode.ESTOP))
-        finally:
-            self.close()
+    def encode(self, request: Request) -> bytes:
+        op, x, y, z, aux = self._frame_fields(request)
+        return pack_command(op, x, y, z, aux)
 
-    # ---- low-level plumbing ---------------------------------------------
-
-    def _emergency_stop(self, reason: str) -> None:
-        """Best-effort Category-0 stop. Never raises.
-
-        An E-stop that cannot be transmitted must not replace the error
-        that prompted it — that swap is how the original cause used to
-        get lost — but it must not be silent either, because "the link
-        died mid-``PICK_AND_PLACE``" means the arm may be holding a cell
-        with the vacuum on and nothing can tell it to let go.
-        """
-        log.critical("E-STOP: %s", reason)
-        self._estopped = True
-        try:
-            self.estop()
-        except Exception as exc:
-            log.critical(
-                "E-stop could NOT be transmitted (%s). The link is down "
-                "and the arm's state is UNKNOWN — it may be mid-motion "
-                "with the vacuum on.", exc,
-            )
-            self.close()
-
-    def _fatal(self, reason: str, cause: Optional[BaseException] = None):
-        """Stop the robot and raise. Never returns."""
-        self._emergency_stop(reason)
-        raise RobotFault(f"EthernetKRL failure: {reason}") from cause
-
-    def _cmd_and_wait(
-        self,
-        op: OpCode,
-        x: int = 0,
-        y: int = 0,
-        z: int = 0,
-        aux: int = 0,
-    ) -> RobotStatus:
-        """Send one command and wait for the corresponding status packet.
-
-        Retries transient failures up to ``cfg.max_retries``, then fires
-        the E-stop and raises. Fatal failures skip the retries — see the
-        module docstring for which is which. Returns only codes a caller
-        can act on: OK, SUCCESS, PICK_FAILED, PLACE_FAILED.
-        """
-        if self._estopped:
-            raise RobotEstop(
-                f"refusing to send {op.name}: this client is latched in "
-                "E-stop")
-
-        last_err: Optional[Exception] = None
-        for attempt in range(self.cfg.max_retries):
-            try:
-                self._send(pack_command(op, x, y, z, aux))
-                status = self._recv_status()
-            except _TRANSIENT as exc:
-                last_err = exc
-                log.warning(
-                    "EthernetKRL error (attempt %d/%d): %s",
-                    attempt + 1, self.cfg.max_retries, exc,
-                )
-                time.sleep(self.cfg.heartbeat_interval_ms / 1000)
-                continue
-            except Exception as exc:
-                # struct.error (coordinate out of int32/int16 range),
-                # ConnectionError, ConnectionResetError, and anything
-                # else unforeseen. Retrying cannot help; the socket may
-                # still be alive, in which case the E-stop DOES go out.
-                self._fatal(f"{op.name} failed: {exc!r}", exc)
-
-            if status.code is RobotStatusCode.ESTOP:
-                # The controller is stopped. So is this client, now.
-                self._estopped = True
-                self.close()
-                raise RobotEstop(
-                    f"the controller reported a Category-0 stop in reply to "
-                    f"{op.name}; no further motion will be commanded")
-
-            if status.code in _FATAL_STATUS:
-                self._fatal(
-                    f"the controller rejected {op.name} as "
-                    f"{status.code.name}")
-
-            if status.code in _RETRYABLE_STATUS:
-                last_err = RobotFault(
-                    f"controller reported {status.code.name}")
-                log.warning(
-                    "EthernetKRL error (attempt %d/%d): %s",
-                    attempt + 1, self.cfg.max_retries, last_err,
-                )
-                time.sleep(self.cfg.heartbeat_interval_ms / 1000)
-                continue
-
-            return status
-
-        log.error(
-            "EthernetKRL giving up after %d retries", self.cfg.max_retries,
-        )
-        self._fatal(f"{op.name}: {last_err}", last_err)
-
-    def _send(self, packet: bytes) -> None:
-        if self._sock is None:
-            raise RobotFault("Socket not connected")
-        self._sock.sendall(packet)
-
-    def _recv_status(self, timeout_s: Optional[float] = None) -> RobotStatus:
-        """Read exactly one 16-byte status frame.
-
-        ``timeout_s`` is a **deadline for the whole frame**, not a
-        per-``recv`` timeout: a controller that trickles one byte at a
-        time used to be accepted after 3 s at a 250 ms setting, which
-        left the command deadline — the thing the whole bounded-response
-        argument rests on — unenforced.
-        """
-        if self._sock is None:
-            raise RobotFault("Socket not connected")
-
-        if timeout_s is None:
-            timeout_s = self.cfg.command_timeout_ms / 1000
-        deadline = time.monotonic() + timeout_s
-
-        buf = b""
-        while len(buf) < STATUS_LEN:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise socket.timeout(
-                    f"status frame incomplete after {timeout_s * 1000:.0f} "
-                    f"ms ({len(buf)}/{STATUS_LEN} bytes)")
-            self._sock.settimeout(remaining)
-            chunk = self._sock.recv(STATUS_LEN - len(buf))
-            if not chunk:
-                raise ConnectionError(
-                    f"Robot closed connection ({len(buf)}/{STATUS_LEN} "
-                    "bytes of a status frame received)")
-            buf += chunk
-
-        s = unpack_status(buf)
+    def decode(self, frame: bytes) -> RobotStatus:
+        s = unpack_status(frame)
         try:
             code = RobotStatusCode(s["code"])
         except ValueError as exc:
             # Substituting TIMEOUT here made an unknown code from a
             # future firmware indistinguishable from an ordinary
-            # placement failure. Raise instead: it is a transient
-            # ValueError, so it retries and then escalates.
-            raise ValueError(
-                f"unknown status code {s['code']}") from exc
+            # placement failure. Raise instead: it is a ValueError, so
+            # the base retries and then escalates.
+            raise ValueError(f"unknown status code {s['code']}") from exc
+
+        message = ""
+        if s["cycle_ms_saturated"]:
+            # aux_u16 inbound is the cycle time and it stops counting at
+            # 65 535 ms. Saying so beats feeding a censored sample into a
+            # mean as though it were measured.
+            message = ("cycle time saturated at the wire's 65535 ms "
+                       "ceiling; the real cycle was at least that long")
+            self.log.warning("mock/controller reported %s", message)
+
         return RobotStatus(
             code=code,
-            # Integral by construction: the wire carries int32
+            # Integral by construction: the wire carries integer
             # millimetres, so a reported pose has whole-millimetre
             # resolution even though the field is typed float. Nothing
             # here can distinguish "the arm is at exactly 10 mm" from
             # "it is at 10.4 mm and the controller reported 10".
             current_pose=WorkspacePoint(s["x_mm"], s["y_mm"], s["z_mm"]),
             cycle_time_ms=float(s["cycle_ms"]),
+            message=message,
         )
 
+    def recv(self, deadline: float) -> bytes:
+        """One fixed-length status frame, inside the whole-frame deadline."""
+        return self.read_exactly(STATUS_LEN, deadline)
 
-__all__ = ["ExecutionConfig", "KukaClient", "RobotEstop", "RobotFault",
-           "wire_mm"]
+    def _frame_fields(self, request: Request):
+        """Map a neutral request onto (opcode, x, y, z, aux).
+
+        This method is the whole of the KUKA command model. Note what it
+        cannot express: a motion type (the frame has no field, so
+        ``MotionKind`` is dropped and ``routines.src`` decides PTP versus
+        LIN), a velocity (likewise; the cap is ``$VEL.CP`` controller-
+        side), and an orientation.
+        """
+        target = request.target
+        if target is None:
+            x = y = z = 0
+        else:
+            x_mm, y_mm, z_mm = target.xyz_mm
+            x, y, z = wire_mm(x_mm), wire_mm(y_mm), wire_mm(z_mm)
+            if target.has_orientation:
+                self.log.warning(
+                    "%s carries an orientation this wire cannot send; the "
+                    "controller will use $POS_ACT's A/B/C. See "
+                    "KukaClient.capabilities.lossy_notes.", request.name)
+            if target.redundancy is not None:
+                self.log.warning(
+                    "%s carries a redundancy token this wire cannot send; "
+                    "the controller resolves the configuration itself.",
+                    request.name)
+
+        if request.kind is RequestKind.HANDSHAKE:
+            return OpCode.HANDSHAKE, 0, 0, 0, 0
+        if request.kind is RequestKind.HALT:
+            return OpCode.HALT, 0, 0, 0, 0
+        if request.kind is RequestKind.MOVE:
+            return OpCode.MOVE_TO, x, y, z, 0
+        if request.kind is RequestKind.GRIPPER:
+            on = bool(request.payload.get("on"))
+            return (
+                OpCode.VACUUM_ON if on else OpCode.VACUUM_OFF,
+                0, 0, 0,
+                int(request.payload.get("level_percent", 0)) if on else 0,
+            )
+        # VENDOR: the request names its own opcode.
+        op = request.payload.get("op")
+        if not isinstance(op, OpCode):
+            raise ValueError(
+                f"vendor request {request.name!r} must carry an OpCode in "
+                f"payload['op'], got {op!r}")
+        return op, x, y, z, int(request.payload.get("aux", 0))
+
+    # ---- KUKA-shaped conveniences ---------------------------------------
+    #
+    # Not part of the driver interface. They exist because this
+    # protocol's command model is not the interface's: PICK_AND_PLACE is
+    # a two-frame stateful exchange and nothing about that generalises.
+
+    #: The depth this backend's controller actually inserts at. The task
+    #: compares the planner's intent against it; see
+    #: :data:`KUKA_CONTROLLER_INSERT_Z_MM`.
+    declared_insert_depth_mm = KUKA_CONTROLLER_INSERT_Z_MM
+
+    def move_to(self, target: WorkspacePoint) -> RobotStatus:
+        return self.move(Pose.from_point(target), MotionKind.UNSPECIFIED)
+
+    def pick_place_requests(
+        self,
+        pick: WorkspacePoint,
+        place: WorkspacePoint,
+        transport_height_mm: float,
+        vacuum_level_percent: int,
+    ) -> tuple:
+        """The request sequence one pick-and-place cycle takes here.
+
+        **Two requests, and the order is load-bearing.** The
+        ``PICK_AND_PLACE`` opcode carries one coordinate triple, the
+        pick; the place XY is whatever (x, y) the arm was in when the
+        subroutine begins (``routines.src``; ``mock_kuka_server`` reads
+        ``self.x, self.y`` at entry). Nothing in the frame says so.
+
+        Returning the sequence rather than executing it is the fix for
+        the leak that most threatened this abstraction. The old
+        ``pick_and_place(pose) -> RobotStatus`` signature said *one pose
+        in, one status out*, which is precisely what the protocol is
+        not; a second driver implementing that signature as one message
+        would have placed correctly by accident or not at all, silently.
+        A driver whose protocol carries both poses in one frame returns
+        one request here, and the difference is visible to the caller
+        instead of hidden behind a shared signature.
+
+        ``place.z_mm`` does not appear below, because there is nowhere to
+        put it. See :data:`KUKA_CONTROLLER_INSERT_Z_MM`.
+        """
+        return (
+            Request(
+                RequestKind.MOVE, "MOVE_TO (latches the place XY)",
+                target=Pose.from_mm(place.x_mm, place.y_mm,
+                                    transport_height_mm),
+            ),
+            Request(
+                RequestKind.VENDOR, "PICK_AND_PLACE",
+                target=Pose.from_point(pick),
+                payload={"op": OpCode.PICK_AND_PLACE,
+                         "aux": int(vacuum_level_percent)},
+            ),
+        )
+
+    def vacuum(self, on: bool) -> RobotStatus:
+        """Shim onto :attr:`gripper`, kept for the tests that predate it."""
+        g = self.gripper
+        return g.grasp() if on else g.release()
+
+
+__all__ = ["KUKA_CONTROLLER_INSERT_Z_MM", "ExecutionConfig", "KukaClient",
+           "RobotEstop", "RobotFault", "VacuumGripper", "wire_mm"]

@@ -1,36 +1,38 @@
-"""Round-trip execution tests using the mock KUKA simulator.
+"""What is left of the KUKA execution tests once the neutral half moved.
 
-Asserts that the full command pipeline (pack → TCP → mock robot →
-status → unpack) works for every high-level command the planner emits,
-and — the half that did not exist before 2026-08-12 — that every failure
-route out of a command either returns an actionable status or attempts a
-Category-0 stop and raises.
+Every assertion here is about **this encoding** or **this cell's task**:
+the millimetre quantiser, the 16-byte frame's two asymmetric fields, the
+descriptive config keys, the KRL coupling, and the two-frame
+pick-and-place sequence.
 
-The escalation tests use purpose-built adversarial servers rather than
-the mock, because the mock is (correctly) well-behaved: to observe what
-the client does when a reply never arrives, or arrives half-written, you
-need a server that does those things on purpose. Each one records the
-opcodes it received, so "the E-stop was sent" is asserted against the
-bytes on the wire rather than against a log line.
+The vendor-neutral half — the three E-stop escape routes, the retry and
+escalation policy, the latch, the deadlines, the closed status set — is
+in ``tests/conformance.py`` and runs from ``tests/test_kuka_conformance.py``
+and ``tests/test_json_conformance.py``. It moved because those
+assertions were about a robot driver and were written against sixteen
+bytes: roughly half of them checked ``OpCode.ESTOP`` on the wire, which
+no second encoding can satisfy however correct its behaviour.
 """
 from __future__ import annotations
 
-import logging
 import os
 import re
-import socket
-import struct
-import threading
-import time
 
 import pytest
 
-from common.types import PickPlacePose, RobotStatusCode, WorkspacePoint
-from execution.execution import (ExecutionConfig, KukaClient, RobotEstop,
-                                 RobotFault)
+from common.types import (PickPlacePose, RobotStatus, RobotStatusCode,
+                          WorkspacePoint)
+from execution.driver import Pose, Reachability, RequestKind
+from execution.execution import (KUKA_CONTROLLER_INSERT_Z_MM, ExecutionConfig,
+                                 KukaClient, wire_mm)
 from execution.mock_kuka_server import run_in_thread
-from execution.protocol import (COMMAND_LEN, STATUS_LEN, OpCode, pack_status,
-                                unpack_command)
+from execution.protocol import (COMMAND_LEN, CYCLE_MS_MAX, STATUS_LEN,
+                                CoordinateOutOfRange, OpCode, Z_MM_MAX,
+                                pack_command, pack_status, unpack_command,
+                                unpack_status)
+from execution.task import PickPlaceTask, TaskConfig
+from tests.conformance import ScriptedEndpoint
+from tests.test_kuka_conformance import KukaHarness
 
 
 @pytest.fixture
@@ -42,135 +44,8 @@ def mock_server():
     srv.shutdown()
 
 
-# ------------------------------------------------ adversarial servers ----
-
-class _ScriptedServer:
-    """A TCP server that records opcodes and replies however you say.
-
-    ``reply(op, n)`` is called with the opcode and its 0-based index and
-    returns the bytes to send back — or ``None`` to send nothing, or
-    ``b""`` after setting ``close_after`` to hang up.
-    """
-
-    def __init__(self, reply):
-        self._reply = reply
-        self.ops: list = []
-        # The whole parsed command, not just the opcode: the coordinate
-        # quantisation tests below assert what actually reached the wire.
-        self.cmds: list = []
-        self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._sock.bind(("127.0.0.1", 0))
-        self._sock.listen(4)
-        self.port = self._sock.getsockname()[1]
-        self._stop = threading.Event()
-        self._t = threading.Thread(target=self._serve, daemon=True)
-        self._t.start()
-
-    def _serve(self):
-        while not self._stop.is_set():
-            try:
-                conn, _ = self._sock.accept()
-            except OSError:
-                return
-            threading.Thread(
-                target=self._handle, args=(conn,), daemon=True).start()
-
-    def _handle(self, conn):
-        n = 0
-        with conn:
-            conn.settimeout(5.0)
-            while True:
-                buf = b""
-                while len(buf) < COMMAND_LEN:
-                    try:
-                        chunk = conn.recv(COMMAND_LEN - len(buf))
-                    except OSError:
-                        return
-                    if not chunk:
-                        return
-                    buf += chunk
-                try:
-                    cmd = unpack_command(buf)
-                except ValueError:
-                    return
-                op = cmd.op
-                self.cmds.append(cmd)
-                self.ops.append(op)
-                out = self._reply(op, n)
-                n += 1
-                if out is None:
-                    continue          # deliberate silence
-                if out == b"__reset__":
-                    # SO_LINGER{on, 0} makes close() send an RST.
-                    conn.setsockopt(
-                        socket.SOL_SOCKET, socket.SO_LINGER,
-                        struct.pack("ii", 1, 0))
-                    return
-                try:
-                    conn.sendall(out)
-                except OSError:
-                    return
-                if len(out) < STATUS_LEN:
-                    return            # truncated frame, then hang up
-
-    def wait_for_op(self, op, timeout: float = 3.0):
-        """Block until ``op`` has been recorded, or ``timeout`` elapses.
-
-        The client sends its E-stop and closes the socket in a
-        ``finally``, so ``KukaClient.__exit__`` can return before this
-        server's reader thread has appended the opcode. Asserting on
-        ``ops`` the instant the client returns is therefore a race:
-        measured at HEAD, ``test_out_of_range_coordinate_fires_the_estop``
-        failed roughly 1 run in 15 for that reason and for no other —
-        the E-stop had gone out, and the CRITICAL log line proved it.
-        Waiting does not weaken any assertion below; the opcode still has
-        to arrive, it is just given a bounded chance to.
-        """
-        deadline = time.monotonic() + timeout
-        while op not in self.ops and time.monotonic() < deadline:
-            time.sleep(0.005)
-        return self.ops
-
-    def close(self):
-        self._stop.set()
-        try:
-            self._sock.close()
-        except OSError:
-            pass
-
-
-def _ok(code=RobotStatusCode.OK):
-    return pack_status(code=int(code), x_mm=0, y_mm=0, z_mm=0, cycle_ms=0)
-
-
-def _fast_cfg(port, **kw):
-    kw.setdefault("handshake_timeout_ms", 300)
-    kw.setdefault("command_timeout_ms", 300)
-    kw.setdefault("heartbeat_interval_ms", 1)
-    return ExecutionConfig(host="127.0.0.1", port=port, **kw)
-
-
-class _CapturedLog(logging.Handler):
-    """`common.logging` sets ``propagate = False``, so pytest's caplog
-    never sees these records; attach to the client's own logger."""
-
-    def __init__(self):
-        super().__init__(level=logging.CRITICAL)
-        self.messages: list = []
-
-    def emit(self, record):
-        self.messages.append(record.getMessage())
-
-    def __enter__(self):
-        logging.getLogger("execution.kuka").addHandler(self)
-        return self
-
-    def __exit__(self, *exc):
-        logging.getLogger("execution.kuka").removeHandler(self)
-
-    def text(self) -> str:
-        return "\n".join(self.messages)
+def _task(driver: KukaClient, cfg: ExecutionConfig) -> PickPlaceTask:
+    return PickPlaceTask(driver, TaskConfig.from_execution_config(cfg))
 
 
 # ----------------------------------------------------- happy path -------
@@ -190,12 +65,14 @@ def test_move_to_returns_success(mock_server):
 
 
 def test_vacuum_on_off(mock_server):
+    """The vacuum is the gripper capability now, not an interface method."""
     cfg = ExecutionConfig(host="127.0.0.1", port=mock_server)
     with KukaClient(cfg) as k:
-        s = k.vacuum(True)
-        assert s.code == RobotStatusCode.SUCCESS
-        s = k.vacuum(False)
-        assert s.code == RobotStatusCode.SUCCESS
+        assert k.gripper.grasp().code == RobotStatusCode.SUCCESS
+        assert k.gripper.release().code == RobotStatusCode.SUCCESS
+        # This tooling has no grasp sensor the host can read, and says so
+        # rather than guessing.
+        assert k.gripper.holding is None
 
 
 def test_pick_and_place_succeeds(mock_server):
@@ -206,7 +83,7 @@ def test_pick_and_place_succeeds(mock_server):
         cartridge_id=0, grid_row=1, grid_col=2,
     )
     with KukaClient(cfg) as k:
-        status = k.pick_and_place(pose)
+        status = _task(k, cfg).run(pose)
         assert status.code == RobotStatusCode.SUCCESS
         assert status.cycle_time_ms >= 0
         # Robot should have ended near the place target
@@ -227,302 +104,211 @@ def test_pick_failure_reported():
             cartridge_id=0, grid_row=0, grid_col=0,
         )
         with KukaClient(cfg) as k:
-            status = k.pick_and_place(pose)
+            status = _task(k, cfg).run(pose)
             assert status.code == RobotStatusCode.PICK_FAILED
     finally:
         srv.shutdown()
 
 
-# --------------------------------------- the three E-stop escape routes --
+# -------------------------- the two-frame pick-and-place, made honest ----
 
-def test_out_of_range_coordinate_fires_the_estop():
-    """struct.error is NOT a ValueError subclass, so an out-of-int32
-    coordinate used to leave `_cmd_and_wait` uncaught: no retry, no
-    E-stop, and — uniquely among the escapes — a perfectly healthy
-    socket over which the stop could have been sent."""
-    srv = _ScriptedServer(lambda op, n: _ok())
+def test_a_cycle_is_two_frames_and_the_first_one_latches():
+    """``PICK_AND_PLACE`` carries ONE coordinate triple.
+
+    The place XY is whatever the arm was at when the subroutine began,
+    and nothing in the frame says so. The old ``pick_and_place(pose) ->
+    RobotStatus`` signature said *one pose in, one status out*, which is
+    precisely what this protocol is not — and it was the leak that most
+    threatened the abstraction, because the signature an interface would
+    naturally adopt is the one that conceals it.
+
+    The sequence is now returned, named, and countable.
+    """
+    driver = KukaClient(ExecutionConfig(port=1))
+    requests = driver.pick_place_requests(
+        pick=WorkspacePoint(100.0, 50.0, 5.0),
+        place=WorkspacePoint(-50.0, 100.0, 2.0),
+        transport_height_mm=80.0,
+        vacuum_level_percent=80,
+    )
+    assert len(requests) == 2, "this protocol needs two frames per cycle"
+    latch, cycle = requests
+    assert "latch" in latch.name.lower(), (
+        "the first frame's name must say what it does, or the next reader "
+        "reads it as an ordinary approach move")
+    assert latch.kind is RequestKind.MOVE
+    assert latch.target.xyz_mm == pytest.approx((-50.0, 100.0, 80.0))
+    assert cycle.payload["op"] is OpCode.PICK_AND_PLACE
+    assert cycle.target.xyz_mm == pytest.approx((100.0, 50.0, 5.0))
+
+
+def test_the_place_z_is_not_on_the_wire_and_the_task_says_so(caplog):
+    """``pose.place.z_mm`` is computed by the planner, validated by
+    ``WorkspaceBounds``, and then dropped: the frame has one Z field and
+    the pick needs it.
+
+    That cannot be fixed without a frame-layout change and a version
+    bump, which is deliberately not done. What is fixed is the silence:
+    two of the three unreconcilable insert depths are now one constant,
+    and the third — the planner's — is compared against it out loud.
+    """
+    import logging
+
+    driver = KukaClient(ExecutionConfig(port=1))
+    assert driver.declared_insert_depth_mm == KUKA_CONTROLLER_INSERT_Z_MM
+
+    requests = driver.pick_place_requests(
+        pick=WorkspacePoint(1.0, 2.0, 3.0),
+        place=WorkspacePoint(4.0, 5.0, 60.0),      # a place Z of 60 mm
+        transport_height_mm=80.0, vacuum_level_percent=80)
+    z_values = [r.target.xyz_mm[2] for r in requests if r.target]
+    assert 60.0 not in z_values, "the place Z has nowhere to go on this wire"
+
+    handler_records = []
+
+    class _Grab(logging.Handler):
+        def emit(self, record):
+            handler_records.append(record.getMessage())
+
+    grab = _Grab(level=logging.WARNING)
+    logging.getLogger("execution.task").addHandler(grab)
     try:
-        with KukaClient(_fast_cfg(srv.port)) as k:
-            with pytest.raises(RobotFault):
-                k.move_to(WorkspacePoint(2 ** 31, 0, 0))
-        assert OpCode.ESTOP in srv.wait_for_op(OpCode.ESTOP), (
-            "the socket was alive; the E-stop had to go out")
-        # Not retried: a coordinate that does not fit in the frame will
-        # not fit on the second attempt either.
-        assert srv.ops.count(OpCode.MOVE_TO) == 0
+        task = PickPlaceTask(driver, TaskConfig())
+        task._check_insert_depth(PickPlacePose(
+            pick=WorkspacePoint(1, 2, 3), place=WorkspacePoint(4, 5, 60.0),
+            cartridge_id=0, grid_row=0, grid_col=0))
     finally:
-        srv.close()
+        logging.getLogger("execution.task").removeHandler(grab)
+
+    assert any("not reaching the robot" in m for m in handler_records), (
+        "a planner value that stops at the client must be announced, not "
+        "discovered at the tray")
 
 
-def test_mid_frame_close_is_fatal_and_the_stop_is_attempted():
-    """A controller that closes after 7 of 16 status bytes raised a bare
-    ConnectionError past every handler: no retry, no E-stop, no close,
-    and a socket traceback rather than a statement about a robot that
-    may be mid-PICK_AND_PLACE with the vacuum on."""
-    def reply(op, n):
-        if op is OpCode.HANDSHAKE:
-            return _ok()
-        return _ok(RobotStatusCode.SUCCESS)[:7]   # half a frame, then close
+def test_the_simulator_and_the_client_agree_on_the_insert_depth():
+    """One value, imported, not two literals that happen to match."""
+    from execution import mock_kuka_server
 
-    srv = _ScriptedServer(reply)
+    assert mock_kuka_server._INSERT_Z_MM == int(KUKA_CONTROLLER_INSERT_Z_MM)
+
+
+# ------------------------------------------- the two asymmetric fields ---
+
+def test_z_is_int16_while_x_and_y_are_int32():
+    """The frame's least visible hazard, and it points at the table.
+
+    ``_BODY_FMT`` is ``">BBiihH"``: ``i``, ``i``, ``h``. A coordinate
+    between 32 767 and 2**31 is accepted on two axes and rejected on the
+    third, and ``wire_mm``'s docstring used to say "outside int32" for
+    all three — a documentation lie about a safety-relevant range.
+    """
+    assert Z_MM_MAX == 2 ** 15 - 1
+
+    # x and y take it; z does not.
+    pack_command(OpCode.MOVE_TO, 100_000, 100_000, 0)
+    with pytest.raises(CoordinateOutOfRange) as err:
+        pack_command(OpCode.MOVE_TO, 0, 0, 100_000)
+    assert "z" in str(err.value) and "int16" in str(err.value)
+    assert "int32" in str(err.value), (
+        "the message must name the asymmetry, because that is the part "
+        "nobody expects")
+
+
+def test_an_out_of_range_z_is_fatal_not_retryable():
+    """``CoordinateOutOfRange`` subclasses ``struct.error``, so it falls
+    past the driver's transient tuple to the fatal path. Making it a
+    ``ValueError`` would demote it to "retry the same impossible frame
+    three times and then stop", which is slower and no safer."""
+    import struct as _struct
+
+    assert issubclass(CoordinateOutOfRange, _struct.error)
+    assert not issubclass(CoordinateOutOfRange, ValueError)
+
+
+def test_the_cycle_time_field_saturates_rather_than_wrapping():
+    """``aux_u16`` is vacuum percent outbound and cycle milliseconds
+    inbound — one field, two meanings, one direction each. The inbound
+    meaning does not fit: it used to mask with ``& 0xFFFF``, so a
+    70-second cycle was reported as 4.5 seconds and went straight into
+    the latency statistics ``main.py`` prints."""
+    wrapped_before = 70_000 & 0xFFFF
+    assert wrapped_before == 4464, "the defect, for the record"
+
+    frame = pack_status(code=1, x_mm=0, y_mm=0, z_mm=0, cycle_ms=70_000)
+    s = unpack_status(frame)
+    assert s["cycle_ms"] == CYCLE_MS_MAX
+    assert s["cycle_ms_saturated"] is True
+
+    ordinary = unpack_status(
+        pack_status(code=1, x_mm=0, y_mm=0, z_mm=0, cycle_ms=1234))
+    assert ordinary["cycle_ms"] == 1234
+    assert ordinary["cycle_ms_saturated"] is False
+
+
+def test_a_saturated_cycle_time_is_flagged_on_the_status():
+    """A censored sample must not enter a mean as though measured."""
+    driver = KukaClient(ExecutionConfig(port=1))
+    status = driver.decode(
+        pack_status(code=1, x_mm=0, y_mm=0, z_mm=0, cycle_ms=70_000))
+    assert isinstance(status, RobotStatus)
+    assert "saturated" in status.message
+    assert driver.decode(
+        pack_status(code=1, x_mm=0, y_mm=0, z_mm=0, cycle_ms=10)).message == ""
+
+
+# ------------------------------------------------- what validate knows ---
+
+def test_validate_answers_unknown_for_anything_the_frame_can_carry():
+    """This client holds no envelope, and must not pretend otherwise.
+
+    The +/-350 mm square is in ``configs/planning.yaml`` and enforced by
+    ``plan.scene.WorkspaceBounds``; the 706 mm reach is modelled only by
+    the simulator; on hardware the KRC's software limits decide. Three
+    components guarantee reachability and none of them is this one.
+    """
+    driver = KukaClient(ExecutionConfig(port=1))
+    assert driver.validate(Pose.from_mm(100, 100, 50)) is Reachability.UNKNOWN
+    assert driver.validate(
+        Pose.from_mm(2.0 ** 31, 0, 0)) is Reachability.UNREACHABLE
+    # ...and the int16 axis is caught where the int32 ones are not.
+    assert driver.validate(Pose.from_mm(0, 0, 100_000)) is (
+        Reachability.UNREACHABLE)
+    assert driver.validate(
+        Pose.from_mm(100_000, 0, 0)) is Reachability.UNKNOWN
+    assert driver.capabilities.validate_is_real is False
+
+
+def test_the_capability_descriptor_admits_what_this_wire_drops():
+    caps = KukaClient(ExecutionConfig(port=1)).capabilities
+    assert caps.carries_orientation is False
+    assert caps.carries_redundancy is False
+    assert caps.position_resolution_m == 0.001
+    joined = " ".join(caps.lossy_notes)
+    for expected in ("orientation", "redundancy", "int16", "place-Z"):
+        assert expected in joined, expected
+
+
+# ------------------------------------------------- the handshake ack -----
+
+def test_the_simulator_acks_the_handshake_with_the_one_accepted_code(
+        mock_server):
+    """The client used to accept ``OK`` *or* ``SUCCESS`` while nothing on
+    either side of the wire emitted ``SUCCESS`` for a handshake — an
+    accepted set wider than every implementation, which a conformance
+    suite cannot pin and a second controller author would read as
+    permission. It accepts only ``OK`` now, so what the simulator sends
+    has to be pinned somewhere."""
+    import socket as _socket
+
+    sock = _socket.create_connection(("127.0.0.1", mock_server), timeout=5)
     try:
-        with _CapturedLog() as logged:
-            with KukaClient(_fast_cfg(srv.port)) as k:
-                with pytest.raises(RobotFault) as err:
-                    k.move_to(WorkspacePoint(10, 10, 10))
-                assert k.estopped
-                assert k._sock is None, "the socket must be closed"
-        assert "7/16" in str(err.value), (
-            "the fault must say the frame was truncated, not just 'closed'")
-        assert "E-STOP" in logged.text()
+        sock.sendall(pack_command(OpCode.HANDSHAKE))
+        buf = b""
+        while len(buf) < STATUS_LEN:
+            buf += sock.recv(STATUS_LEN - len(buf))
+        assert unpack_status(buf)["code"] == RobotStatusCode.OK.value
     finally:
-        srv.close()
-
-
-def test_connection_reset_is_fatal_not_a_bare_traceback():
-    """RST mid-command. ConnectionResetError is an OSError, not a
-    ValueError, so it escaped the retry loop entirely."""
-    def reply(op, n):
-        if op is OpCode.HANDSHAKE:
-            return _ok()
-        return b"__reset__"
-
-    srv = _ScriptedServer(reply)
-    try:
-        with KukaClient(_fast_cfg(srv.port)) as k:
-            with pytest.raises(RobotFault):
-                k.move_to(WorkspacePoint(10, 10, 10))
-            assert k.estopped
-            assert k._sock is None
-    finally:
-        srv.close()
-
-
-def test_an_undeliverable_estop_is_logged_critical_not_swallowed():
-    """When the link is already gone the client cannot do what the
-    docstring promises. It must say so — and the failed stop must not
-    replace the error that prompted it, which is how the original cause
-    used to get lost."""
-    srv = _ScriptedServer(lambda op, n: _ok())
-    try:
-        k = KukaClient(_fast_cfg(srv.port))
-        k.connect()
-        k._sock.close()          # dead descriptor, still installed
-        with _CapturedLog() as logged:
-            with pytest.raises(RobotFault) as err:
-                k.move_to(WorkspacePoint(10, 10, 10))
-        assert "could NOT be transmitted" in logged.text()
-        assert "state is UNKNOWN" in logged.text()
-        assert "MOVE_TO failed" in str(err.value), (
-            "the original cause must survive the failed E-stop")
-        assert k.estopped
-    finally:
-        srv.close()
-
-
-def test_retry_exhaustion_sends_the_estop():
-    """The headline safety promise, asserted against the wire for the
-    first time: three MOVE_TOs then one ESTOP. FDR_v2's traceability
-    matrix cited `drop_probability=1.0` as evidence for this; that test
-    asserts PICK_FAILED and never reaches the escalation at all."""
-    srv = _ScriptedServer(
-        lambda op, n: _ok() if op is OpCode.HANDSHAKE else None)
-    try:
-        with KukaClient(_fast_cfg(srv.port, max_retries=3)) as k:
-            with pytest.raises(RobotFault):
-                k.move_to(WorkspacePoint(10, 10, 10))
-        assert srv.ops == [OpCode.HANDSHAKE, OpCode.MOVE_TO, OpCode.MOVE_TO,
-                           OpCode.MOVE_TO, OpCode.ESTOP]
-    finally:
-        srv.close()
-
-
-def test_corrupt_status_frames_retry_then_escalate():
-    """A locally-detected CRC failure is transient: retried, then
-    escalated."""
-    def reply(op, n):
-        if op is OpCode.HANDSHAKE:
-            return _ok()
-        pkt = bytearray(_ok(RobotStatusCode.SUCCESS))
-        pkt[14] ^= 0xFF
-        return bytes(pkt)
-
-    srv = _ScriptedServer(reply)
-    try:
-        with KukaClient(_fast_cfg(srv.port, max_retries=3)) as k:
-            with pytest.raises(RobotFault):
-                k.move_to(WorkspacePoint(10, 10, 10))
-        assert srv.ops.count(OpCode.MOVE_TO) == 3
-        assert srv.wait_for_op(OpCode.ESTOP)[-1] is OpCode.ESTOP
-    finally:
-        srv.close()
-
-
-# ------------------------------------ a controller that says it stopped --
-
-def test_controller_estop_stops_the_client():
-    """The highest-consequence item: a status of ESTOP used to parse
-    cleanly, return as an ordinary result, and be counted by main.py as
-    a failed place before it commanded the next motion."""
-    srv = _ScriptedServer(
-        lambda op, n: _ok() if op is OpCode.HANDSHAKE
-        else _ok(RobotStatusCode.ESTOP))
-    try:
-        k = KukaClient(_fast_cfg(srv.port))
-        k.connect()
-        with pytest.raises(RobotEstop):
-            k.move_to(WorkspacePoint(10, 10, 10))
-
-        assert k.estopped
-        assert k._sock is None, "a stopped controller closes the channel"
-
-        # Latched. No further motion is sent — not even onto the wire.
-        before = list(srv.ops)
-        with pytest.raises(RobotEstop):
-            k.move_to(WorkspacePoint(20, 20, 20))
-        assert srv.ops == before
-
-        # And it will not reconnect its way out of the stop.
-        with pytest.raises(RobotEstop):
-            k.connect()
-    finally:
-        srv.close()
-
-
-def test_controller_crc_error_is_retried_then_escalates():
-    """A controller-reported CRC_ERROR means IT could not parse US. That
-    is the same class of fault as a locally-detected one and was the one
-    case never retried."""
-    srv = _ScriptedServer(
-        lambda op, n: _ok() if op is OpCode.HANDSHAKE
-        else _ok(RobotStatusCode.CRC_ERROR))
-    try:
-        with KukaClient(_fast_cfg(srv.port, max_retries=3)) as k:
-            with pytest.raises(RobotFault) as err:
-                k.move_to(WorkspacePoint(10, 10, 10))
-        assert "CRC_ERROR" in str(err.value)
-        assert srv.ops.count(OpCode.MOVE_TO) == 3
-        assert srv.wait_for_op(OpCode.ESTOP)[-1] is OpCode.ESTOP
-    finally:
-        srv.close()
-
-
-@pytest.mark.parametrize("code", [RobotStatusCode.VERSION_MISMATCH,
-                                  RobotStatusCode.UNSUPPORTED_COMMAND])
-def test_protocol_mismatch_is_fatal_without_retrying(code):
-    """Re-sending a frame the far end cannot parse cannot help. Stop."""
-    srv = _ScriptedServer(
-        lambda op, n: _ok() if op is OpCode.HANDSHAKE else _ok(code))
-    try:
-        with KukaClient(_fast_cfg(srv.port, max_retries=3)) as k:
-            with pytest.raises(RobotFault) as err:
-                k.move_to(WorkspacePoint(10, 10, 10))
-        assert code.name in str(err.value)
-        assert srv.ops.count(OpCode.MOVE_TO) == 1, "must not be retried"
-        assert srv.wait_for_op(OpCode.ESTOP)[-1] is OpCode.ESTOP
-    finally:
-        srv.close()
-
-
-def test_unknown_status_code_is_not_silently_a_timeout():
-    """An unrecognised code used to be rewritten as TIMEOUT, making a
-    future firmware's status indistinguishable from a placement
-    failure."""
-    srv = _ScriptedServer(
-        lambda op, n: _ok() if op is OpCode.HANDSHAKE
-        else pack_status(code=99, x_mm=0, y_mm=0, z_mm=0, cycle_ms=0))
-    try:
-        with KukaClient(_fast_cfg(srv.port, max_retries=2)) as k:
-            with pytest.raises(RobotFault) as err:
-                k.move_to(WorkspacePoint(10, 10, 10))
-        assert "unknown status code 99" in str(err.value)
-        assert srv.wait_for_op(OpCode.ESTOP)[-1] is OpCode.ESTOP
-    finally:
-        srv.close()
-
-
-# ------------------------------------------------- the handshake path ----
-
-def test_handshake_refused_with_estop_raises_and_closes_the_socket():
-    """The refusal is very often the controller reporting it is ALREADY
-    stopped. It used to raise a bare string with the socket still open,
-    so `with KukaClient(...)` leaked the descriptor on every refusal —
-    __exit__ never runs when __enter__ raises."""
-    srv = _ScriptedServer(lambda op, n: _ok(RobotStatusCode.ESTOP))
-    try:
-        k = KukaClient(_fast_cfg(srv.port))
-        with pytest.raises(RobotEstop):
-            k.connect()
-        assert k._sock is None, "the descriptor must not leak"
-        assert k.estopped
-
-        # The context-manager form must not leak either.
-        k2 = KukaClient(_fast_cfg(srv.port))
-        with pytest.raises(RobotEstop):
-            with k2:
-                pass
-        assert k2._sock is None
-    finally:
-        srv.close()
-
-
-def test_handshake_timeout_retries_then_escalates():
-    """`connect()` was outside the retry machinery entirely: an ack that
-    never arrived propagated a bare TimeoutError with no retry and no
-    stop."""
-    srv = _ScriptedServer(lambda op, n: None)
-    try:
-        k = KukaClient(_fast_cfg(srv.port, max_retries=3))
-        with pytest.raises(RobotFault):
-            k.connect()
-        assert srv.ops.count(OpCode.HANDSHAKE) == 3, "no retry at all before"
-        assert srv.wait_for_op(OpCode.ESTOP)[-1] is OpCode.ESTOP, (
-            "the socket is alive at handshake time, so the stop goes out")
-        assert k._sock is None
-    finally:
-        srv.close()
-
-
-def test_handshake_timeout_ms_actually_times_the_handshake():
-    """`_recv_status` re-armed command_timeout_ms before reading a byte,
-    so the knob bounded only the TCP connect. With handshake=200 ms and
-    command=4000 ms, one attempt must take ~200 ms, not ~4 s."""
-    srv = _ScriptedServer(lambda op, n: None)
-    try:
-        k = KukaClient(ExecutionConfig(
-            host="127.0.0.1", port=srv.port, max_retries=1,
-            handshake_timeout_ms=200, command_timeout_ms=4000,
-            heartbeat_interval_ms=1))
-        t0 = time.perf_counter()
-        with pytest.raises(RobotFault):
-            k.connect()
-        elapsed = time.perf_counter() - t0
-        assert elapsed < 1.5, (
-            f"handshake took {elapsed:.2f}s; handshake_timeout_ms=200 must "
-            "bound the wait for the ack, not just connect()")
-    finally:
-        srv.close()
-
-
-def test_command_timeout_is_a_whole_frame_deadline():
-    """A controller that trickles bytes used to be accepted after 3 s at
-    a 250 ms setting, because every recv got a fresh timeout."""
-    def reply(op, n):
-        if op is OpCode.HANDSHAKE:
-            return _ok()
-        return None
-
-    srv = _ScriptedServer(reply)
-    try:
-        k = KukaClient(_fast_cfg(srv.port, max_retries=1,
-                                 command_timeout_ms=200))
-        k.connect()
-        t0 = time.perf_counter()
-        with pytest.raises(RobotFault):
-            k.move_to(WorkspacePoint(1, 1, 1))
-        assert time.perf_counter() - t0 < 1.5
-    finally:
-        srv.close()
+        sock.close()
 
 
 # -------------------- RobotStatusCode <-> the KRL subroutine -------------
@@ -596,7 +382,7 @@ def test_krl_valued_returns_are_inside_a_deffct_not_a_def():
     ... RETURN 1 ... END`, which is what this file held until
     2026-08-14, is an inadmissible instruction and would not compile.
 
-    The test above pins the *numbers*; it was perfectly happy with them
+    The test below pins the *numbers*; it was perfectly happy with them
     inside a construct that could never run, which is how a defect
     carried a green tick for months (audit T §3). This one pins the
     *construct*: any routine that returns a value must be declared
@@ -706,7 +492,7 @@ def test_codes_the_real_controller_never_emits_are_named_as_such():
     """7 and 8 are simulator-only, and that is worth pinning.
 
     `UNSUPPORTED_COMMAND` and `VERSION_MISMATCH` exist so a controller
-    that cannot parse a frame can say WHY, and `KukaClient` treats them
+    that cannot parse a frame can say WHY, and the driver treats them
     as fatal rather than retryable. The KRL subroutine does not
     participate: it returns neither. The reasoning is sound and the gap
     is real, so it is asserted rather than left to be rediscovered.
@@ -719,30 +505,36 @@ def test_codes_the_real_controller_never_emits_are_named_as_such():
 # ------------------------------- millimetre -> wire quantisation ---------
 #
 # `WorkspacePoint` carries floats; the 16-byte frame carries signed
-# int32 millimetres. That conversion used to be `int()`, which truncates
-# TOWARD ZERO: every commanded coordinate lost up to 0.999 mm, always
-# toward the workspace origin, and the bias REVERSED SIGN at 0 - two
-# cartridges either side of the origin were both pulled inward, toward
-# each other. On a 4.25 mm shipping-wall inset that is 23 % of the
-# margin. It is also applied AFTER `WorkspaceBounds.require` has
+# integer millimetres. That conversion used to be `int()`, which
+# truncates TOWARD ZERO: every commanded coordinate lost up to 0.999 mm,
+# always toward the workspace origin, and the bias REVERSED SIGN at 0 -
+# two cartridges either side of the origin were both pulled inward,
+# toward each other. On a 4.25 mm shipping-wall inset that is 23 % of
+# the margin. It is also applied AFTER `WorkspaceBounds.require` has
 # validated the float, so the value that was checked was not the value
 # that was commanded.
 
 def _record(fn) -> list:
-    """Run ``fn(client)`` against a server that records every command."""
-    srv = _ScriptedServer(lambda op, n: _ok(RobotStatusCode.SUCCESS))
+    """Run ``fn(driver)`` against a server that records every command."""
+    harness = KukaHarness()
+
+    def reply(observed, n):
+        return harness.status_frame(
+            RobotStatusCode.OK if observed.kind is RequestKind.HANDSHAKE
+            else RobotStatusCode.SUCCESS)
+
+    endpoint = ScriptedEndpoint(harness.read_frame, harness.describe, reply)
     try:
-        with KukaClient(_fast_cfg(srv.port)) as k:
+        with harness.make_driver(endpoint.port) as k:
             fn(k)
-        return [c for c in srv.cmds if c.op is not OpCode.HANDSHAKE]
+        cmds = [unpack_command(r.raw) for r in endpoint.requests]
+        return [c for c in cmds if c.op is not OpCode.HANDSHAKE]
     finally:
-        srv.close()
+        endpoint.close()
 
 
 def test_wire_mm_rounds_and_is_symmetric_about_zero():
     """The unit test of the quantiser itself, both signs and the tie."""
-    from execution.execution import wire_mm
-
     # The measured defect: int() gave 12 and -12 for these two.
     assert wire_mm(12.9) == 13
     assert wire_mm(-12.9) == -13
@@ -775,6 +567,22 @@ def test_wire_mm_rounds_and_is_symmetric_about_zero():
         assert wire_mm(v) == int(v)
 
 
+def test_wire_mm_survives_the_metre_round_trip():
+    """The interface pose is in SI metres; the wire is in millimetres.
+
+    So every coordinate now makes a ``/1000`` and ``*1000`` round trip
+    before it is quantised, and a value that was an exact half in
+    millimetres can arrive one ulp above or below it. Without the
+    nanometre snap in ``wire_mm`` a tie would then break in whichever
+    direction the floating-point noise happened to fall, which is a
+    silent, magnitude-dependent reintroduction of the bias the round
+    was chosen to remove.
+    """
+    for i in range(-8000, 8001):
+        mm = i / 8.0
+        assert wire_mm(Pose.from_mm(mm, 0, 0).xyz_mm[0]) == wire_mm(mm), mm
+
+
 def test_move_to_rounds_the_commanded_coordinate():
     cmds = _record(lambda k: k.move_to(WorkspacePoint(12.9, -12.9, 0.6)))
     assert len(cmds) == 1
@@ -791,7 +599,7 @@ def test_pick_and_place_rounds_every_coordinate_it_sends():
         place=WorkspacePoint(-49.6, 100.5, 5.0),
         cartridge_id=0, grid_row=1, grid_col=2,
     )
-    cmds = _record(lambda k: k.pick_and_place(pose))
+    cmds = _record(lambda k: _task(k, ExecutionConfig()).run(pose))
     assert [c.op for c in cmds] == [OpCode.MOVE_TO, OpCode.PICK_AND_PLACE]
 
     transport, pick = cmds
@@ -811,8 +619,6 @@ def test_no_commanded_coordinate_is_displaced_by_more_than_half_a_mm():
     bounded symmetrically - which is asserted here against the bytes on
     the wire rather than against the helper in isolation.
     """
-    from execution.execution import wire_mm
-
     poses = [(x / 7.0, -x / 7.0, x / 11.0) for x in range(-40, 41)]
     cmds = _record(
         lambda k: [k.move_to(WorkspacePoint(*p)) for p in poses])
@@ -822,18 +628,6 @@ def test_no_commanded_coordinate_is_displaced_by_more_than_half_a_mm():
         assert abs(c.z_mm - z) <= 0.5
         assert (c.x_mm, c.y_mm, c.z_mm) == (
             wire_mm(x), wire_mm(y), wire_mm(z))
-
-
-def test_connect_to_a_closed_port_raises_robotfault():
-    """Nothing has been commanded and there is no channel to stop over —
-    but the failure must still arrive as this module's own exception
-    type rather than a raw socket error."""
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    port = s.getsockname()[1]
-    s.close()
-    with pytest.raises(RobotFault, match="could not open"):
-        KukaClient(_fast_cfg(port)).connect()
 
 
 # ------------------------------------------------------- configuration ---
@@ -855,6 +649,24 @@ def test_execution_config_defaults():
     assert cfg.host == "172.31.1.147"
     assert cfg.port == 54600
     assert cfg.transport_height_mm == 80.0
+
+
+def test_the_config_splits_into_a_driver_policy_and_a_task_config():
+    """Three different things used to share one dataclass: the transport,
+    the driver's policy, and this cell's choreography. Only the middle
+    one is vendor-neutral, and the split is what let the task move out of
+    the driver."""
+    cfg = ExecutionConfig(handshake_timeout_ms=11, command_timeout_ms=22,
+                          heartbeat_interval_ms=33, max_retries=4,
+                          transport_height_mm=44.0, vacuum_level_percent=55)
+    policy = cfg.driver_policy()
+    assert (policy.handshake_timeout_ms, policy.command_timeout_ms,
+            policy.retry_pause_ms, policy.max_retries) == (11, 22, 33, 4)
+    task = TaskConfig.from_execution_config(cfg)
+    assert (task.transport_height_mm, task.vacuum_level_percent) == (44.0, 55)
+    for tooling in ("transport_height_mm", "vacuum_level_percent"):
+        assert not hasattr(policy, tooling), (
+            f"{tooling} is this cell's tooling, not a robot policy")
 
 
 def test_inert_motion_keys_are_gone():
@@ -905,3 +717,26 @@ def test_descriptive_kuka_keys_are_checked_not_ignored(bad, msg):
 
 def test_status_frame_length_is_what_the_client_reads():
     assert STATUS_LEN == COMMAND_LEN == 16
+
+
+def test_the_driver_exposes_a_supported_observation_hook():
+    """A test that wants to see the bytes must not monkeypatch a private.
+
+    ``tests/test_main_integration.py`` used to patch ``KukaClient._send``
+    and parse what it caught, which pinned a private method and a wire
+    format at once: a driver satisfying every public contract broke it.
+    """
+    seen = []
+
+    def watch(driver):
+        driver.add_frame_observer(lambda request, frame: seen.append(
+            (request.kind, unpack_command(frame).op)))
+        driver.move_to(WorkspacePoint(1, 2, 3))
+        driver.halt()
+
+    _record(watch)
+
+    # Both halves of every send are visible: the neutral request the
+    # caller made, and the sixteen bytes it became.
+    assert (RequestKind.MOVE, OpCode.MOVE_TO) in seen
+    assert (RequestKind.HALT, OpCode.HALT) in seen

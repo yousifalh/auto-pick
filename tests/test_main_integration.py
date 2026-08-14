@@ -306,12 +306,21 @@ def test_no_coordinate_outside_the_envelope_reaches_the_wire(
         tight_envelope_config: Path, monkeypatch):
     """THE safety property, asserted on the BYTES, not on the queue.
 
-    Every command is intercepted at `KukaClient._send` - the last call
-    before `socket.sendall` - and parsed back with the protocol's own
-    `unpack_command`, so what is checked is the int32 millimetres the
-    controller would actually receive, not the float the planner
-    computed. Asserting on `planner.cycle`'s return value instead would
-    re-ask the module that does the filtering whether it filtered.
+    Every command is captured through `RobotDriver.add_frame_observer` -
+    the supported hook, called with the neutral request and the encoded
+    frame just before it goes to the transport - and parsed back with
+    the protocol's own `unpack_command`, so what is checked is the
+    integer millimetres the controller would actually receive, not the
+    float the planner computed. Asserting on `planner.cycle`'s return
+    value instead would re-ask the module that does the filtering
+    whether it filtered.
+
+    It used to monkeypatch `KukaClient._send`, a private method, which
+    pinned an implementation detail and a wire format at once: a driver
+    satisfying every public contract broke this test. The observer is
+    public and survives that; the `unpack_command` below is KUKA-specific
+    on purpose, because `main.py` runs the KUKA driver and the assertion
+    is about what those bytes carry.
 
     This is the test that must survive any future change to how
     unreachable candidates are handled. Skipping them is a planning
@@ -322,13 +331,14 @@ def test_no_coordinate_outside_the_envelope_reaches_the_wire(
     from execution.protocol import OpCode, unpack_command
 
     sent: list[bytes] = []
-    real_send = KukaClient._send
+    real_init = KukaClient.__init__
 
-    def _recording_send(self, packet):
-        sent.append(bytes(packet))
-        return real_send(self, packet)
+    def _observing_init(self, cfg):
+        real_init(self, cfg)
+        self.add_frame_observer(
+            lambda request, frame: sent.append(bytes(frame)))
 
-    monkeypatch.setattr(KukaClient, "_send", _recording_send)
+    monkeypatch.setattr(KukaClient, "__init__", _observing_init)
 
     stats = main_run(str(tight_envelope_config))
 
