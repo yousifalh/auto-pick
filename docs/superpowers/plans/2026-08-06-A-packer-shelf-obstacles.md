@@ -1,5 +1,7 @@
 # Forbidden-mask FFDH shelf-advance Implementation Plan
 
+*What this is: the task-by-task implementation plan a design spec was executed from, kept as part of this project's working record rather than written as documentation for a reader. The note that follows is tooling direction for the coding agent that executed the plan. For what these documents are, how they were used and what came of them, see [`../specs/README.md`](../specs/README.md).*
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make the forbidden-mask FFDH packer advance past an obstacle on a shelf instead of abandoning the shelf, so pixel-precise placement masks improve packing instead of destroying it.

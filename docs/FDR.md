@@ -3,10 +3,16 @@
 **Final Design Report — MEng Individual Project**
 
 Yousif Al-Haidary
-Supervisor: Dr Svetan Ratchev
+Supervisor: Professor Svetan Ratchev FREng
 Department of Mechanical, Materials and Manufacturing Engineering
 University of Nottingham
 Spring 2026
+
+> **Editorial correction, 2026-08-14.** The supervisor line above read *"Dr
+> Svetan Ratchev"*. He is **Professor Svetan Ratchev FREng** — Cripps Professor
+> of Production Engineering, elected to the Royal Academy of Engineering in
+> 2025. The title is corrected here and at §12.2, and nowhere else: this
+> revision is superseded and kept as history. Read [`FDR_v3.md`](FDR_v3.md).
 
 ---
 
@@ -1216,7 +1222,7 @@ the schedule per the departmental guideline.
 
 ### 12.2 Supervisor meetings
 
-Supervision meetings with Dr Ratchev were held on a three-week cadence
+Supervision meetings with Professor Ratchev were held on a three-week cadence
 throughout the project, with additional ad-hoc contact over email at
 decision points. Nine meetings were recorded in total, exceeding the
 departmental minimum of six, and all meeting minutes together with the

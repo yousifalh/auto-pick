@@ -29,7 +29,7 @@ These six are the most self-contained, and are the ones cited from the README. E
 | `2026-08-11-scale-calibration.md` | Move scale onto the per-frame data contract. | 7 → 13 productive instances, 17 → 26 cells. **Its own acceptance criterion is not met**, and §4 says so before any result is quoted. |
 | `2026-08-11-placement-safety.md` | Can the residual unsafe placements be caught inside the planner? | Two guards ship (5 of 26 → 2 of 25 overlaps, worst 100 % → 8.3 %). Two more were measured and **rejected**: one rejects nothing, the other costs up to 12 cells and creates a third overlap. |
 
-Two supporting records from the same week: `2026-08-11-segmenter-integration.md` (the retired confidence gate that was still live in code, and wiring the segmenter into the end-to-end loop), `2026-08-11-scale-figures.md` (correcting every published millimetre figure that had been converted at a nominal scale no frame was rendered at), and `2026-08-11-doc-reconciliation.md` (six things that had become true in the code while remaining wrong in the documentation).
+Three supporting records from the same week: `2026-08-11-segmenter-integration.md` (the retired confidence gate that was still live in code, and wiring the segmenter into the end-to-end loop), `2026-08-11-scale-figures.md` (correcting every published millimetre figure that had been converted at a nominal scale no frame was rendered at), and `2026-08-11-doc-reconciliation.md` (six things that had become true in the code while remaining wrong in the documentation).
 
 ### Earlier design specs
 
@@ -45,7 +45,7 @@ Written before the work they describe, and kept as the record of what was decide
 
 ### The 2026-08-12 audit round, and what it changed
 
-Six adversarial reviews were run on 2026-08-12, one per area, each with a brief to invalidate rather than confirm. They are in [`../audit/`](../audit/) — A measurement tools, B security, C methodology, D reproducibility, E silent failures, F execution and configuration. **Two areas came back clean and that is a result, not an absence of one**: the CRC and the 16-byte frame layout were verified against three implementations sharing no code (20 000 vectors, zero mismatches), and a leak hunt on the generalisation measurement found no shared asset, no shared render across 4 536 images, and no training exposure. The rest is here.
+Sixteen adversarial reviews were run on 2026-08-12, one per area, each with a brief to invalidate rather than confirm. They are in [`../audit/`](../audit/) — A measurement tools, B security, C methodology, D reproducibility, E silent failures, F execution and configuration, G detector, H digital twin, I data pipeline, J claim verification, K complexity, L reachability, M real-photo unlock, N objective closure, O ML maturity, P stranger experience. **Two areas came back clean and that is a result, not an absence of one**: the CRC and the 16-byte frame layout were verified against three implementations sharing no code (20 000 vectors, zero mismatches), and a leak hunt on the generalisation measurement found no shared asset, no shared render across 4 536 images, and no training exposure. The rest is here.
 
 | Fix spec | What it corrected |
 |---|---|
@@ -57,9 +57,34 @@ Six adversarial reviews were run on 2026-08-12, one per area, each with a brief 
 | `2026-08-12-fix-demo-workspace.md` | The envelope was enforced at the wrong **altitude**, conflating two conditions. A cartridge slot or loose cell *lying* outside the arm's reach is a normal scene condition — a fixed-mount camera images more table than a 706 mm arm can serve, and `demo_seg.yaml`'s frames span 1338 mm against a 700 mm envelope, which no origin offset can fix — so those are now **skipped and counted**, while an out-of-envelope *commanded pose* still raises, unchanged, as the invariant on the pipeline's only producer of one. Both demos run again; `main_seg_run.txt` regenerated. `demo.yaml`'s 62 queue poses were **41**: the other 21 were commanded outside ±350 mm back when the envelope compared against nothing. |
 | `2026-08-12-fix-first-impression.md` | Audit P, run by cloning the repository clean and following the README literally. The first command a reader runs contradicted the README: `demo.yaml` was documented at 37 cartridges / 77 batteries / 41 queue poses over 10 cycles and produces **3 / 5 / 3 over 1**. The figures were real but were measured in a tree holding a gitignored 147 MB detector checkpoint, so `load_detector` returned the trained Faster R-CNN instead of the heuristic fallback every clone gets — **the torch-free path was documented with numbers only the torch path produces**. Documentation corrected to the command, `docs/receipts/main_run.txt` added, and CI now diffs that receipt rather than asserting exit 0. Also: the bare `import torch` at `tests/test_calibration.py:539` that made CI red at HEAD on all three matrix Pythons. |
 | `2026-08-12-sha-remap.md` | Every commit citation remapped onto the post-rewrite history through `git-filter-repo`'s own commit map. 188 citations, zero ambiguous, zero dangling. |
+| `2026-08-12-fdr-claim-corrections.md` | Audit J's sixteen claims against `docs/FDR_v3.md` — five false, five stale, six unsubstantiated — worked through one at a time. Withdrawn claims are struck and named rather than deleted, including the executive summary's unmeasured "100 % precision" for the heuristic detector. |
+| `2026-08-12-fix-detector.md` | Audit G. The first measurement of the shipped detector's precision and of centroid error against the FDR's ≤ 2 px objective, plus two docstrings that claimed more than the code did. Nothing retrained, no dataset regenerated. |
+| `2026-08-12-fix-twin-identity.md` | Audit H. Cross-frame identity in the digital twin: what it may remember across frames, bounded and counted rather than assumed. |
+| `2026-08-12-fix-unit-id-and-docs.md` | Audits I and K. `unit_id`, malformed RLE, and three docstrings that described behaviour the code does not have. |
+| `2026-08-12-fix-contracts-and-orphans.md` | Audit L. Millimetres truncated rather than rounded on the way to the wire, four orphaned modules, a gate that never ran, and the frozen dataclass contracts that were never actually checked. |
+| `2026-08-12-fix-realtest-gap.md` | Audit M. The unannotated real photograph in `recog/realtest/`. No published figure moves, and the exclusion is now stated in the receipt rather than left silent. |
+| `2026-08-12-objective-closure.md` | Audits N and J. Which FDR objectives close, which were restated and which were withdrawn — every figure re-derived by executing something at HEAD rather than carried over from the audit. |
+| `2026-08-12-model-card.md` | Audit O. `docs/MODEL_CARD.md` and `docs/datasets/`: nine checkpoints in one comparison table, the datasets' provenance, and the failure modes — every table generated from the receipts, with `scripts/model_card_tables.py --check` failing on drift. |
+| `2026-08-12-world-test-harness.md`, `2026-08-12-z-decisions-to-bay.md` | Reaching the `bpy`-only renderer from pytest at all, and moving the Z decisions out of it into the testable `bay.py`. This is the defect-1 lesson acted on. |
+| `2026-08-12-followups.md`, `2026-08-12-last-cleanups.md` | The items earlier passes found and recorded rather than fixed at the time, cleared — including the ones that turned out to be already gone, and the one deliberately left alone. |
 | `2026-08-12-figures-audit.md`, `2026-08-12-portfolio-verification.md`, `2026-08-12-public-release-audit.md`, `2026-08-12-ci-and-tone.md` | The pre-publication passes over the figures, the portfolio material, the install path and CI. |
 
 Five tests were found asserting the defect they covered rather than guarding against it, which brings this project's running total to seven: `test_cycle_marks_cells_planned` pinned one cell per battery, two `confirm_placement` tests checked only the anchor cell, and two `ExecutionConfig` tests asserted values of fields no client method read. Two more still stand deliberately — `tests/test_bay.py`'s "zero seated cells is fine" and `tests/test_packing_move.py`'s assertion that a symbol exists.
+
+### The 2026-08-14 execution-layer round
+
+The most recent work in the repository, and the only round whose subject is the
+robot-facing half rather than perception. Three audits first, then the fixes and
+the generalisation they argued for.
+
+| Document | What it is |
+|---|---|
+| [`../audit/2026-08-14-T-kuka-conformance.md`](../audit/2026-08-14-T-kuka-conformance.md) | Whether the KRL routines, the EthernetKRL XML and `execution/protocol.py` would load and run on a KR 6 R700, read against KUKA's own *Expert Programming*, *System Variables* and *EthernetKRL* manuals. **Nothing in it was executed** — there is no controller, no KRL compiler and no WorkVisual in this project — and it says so at the top. |
+| [`../audit/2026-08-14-U-robot-interface-survey.md`](../audit/2026-08-14-U-robot-interface-survey.md) | What a second and a third robot would actually require of the interface, surveyed before any abstraction was written. |
+| [`../audit/2026-08-14-V-execution-seam.md`](../audit/2026-08-14-V-execution-seam.md) | Where the vendor boundary really falls inside `execution/`, and why an ABC cannot enforce the mechanism that closed this project's three E-stop bypasses. |
+| `2026-08-14-kuka-conformance-fixes.md` | Audit T's fixes to the KRL artefacts and the protocol. Suite 1 218 → 1 221. |
+| `2026-08-14-robot-driver-abstraction.md` | The conformance suite, then the template-method base class, then a second driver over a second encoding — in that order, because audit V judged the suite worth more than the interface itself. Suite 1 221 → 1 276. |
+| `2026-08-14-pre-publication-cleanup.md` | The navigation, consistency and hygiene pass over the whole repository before publication: what was corrected, what left the public tree, and the errors found and left for the author. |
 
 ## One caveat on all of it
 

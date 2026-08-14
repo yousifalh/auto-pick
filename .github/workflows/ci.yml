@@ -45,13 +45,15 @@ jobs:
         run: pip install -e ".[dev]"
 
       # A subset of the full suite. The remainder are skipped here by design, not
-      # excluded by a filter: 46 tests need torch (`.[train]`, a ~GB download
+      # excluded by a filter: 47 tests need torch (`.[train]`, a ~GB download
       # whose useful tests want a GPU), 30 of them in tests/test_bay_segmenter.py,
-      # which skips whole at import and so reports as one skip; 1 needs a
-      # Blender-generated COCO dataset, 1 needs `bpy`, and 1 needs the `.[cad]`
-      # STEP converter. Each guards itself with an importorskip/skipif, so this
-      # run is green rather than quietly thinner: `pytest -q` reports
-      # `1162 passed, 20 skipped` against the 1,211 collected with torch present.
+      # which skips whole at import and so reports as one skip; 1 needs `bpy` and
+      # 1 needs the `.[cad]` STEP converter. Each guards itself with an
+      # importorskip/skipif, so this run is green rather than quietly thinner:
+      # `pytest -q` reports `1228 passed, 20 skipped` against the 1,277 collected
+      # with torch present. Counts re-measured 2026-08-14 on a clean torch-free
+      # venv; they read 46 / `1162 passed` / 1,211 collected until then, and the
+      # "1 needs a Blender-generated COCO dataset" skip no longer exists.
       #
       # That claim was false until 2026-08-12: tests/test_calibration.py did a
       # bare `import torch`, so this job was red on all three Pythons while this

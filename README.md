@@ -2,7 +2,7 @@
 
 **A vision-guided robotic cell that picks loose 18650 / 21700 lithium-ion cells from a camera view and places them into protective cartridges — perception, digital twin, 2-D bin packing and KUKA command streaming, running end to end in software.**
 
-MEng Individual Project — Yousif Al-Haidary, University of Nottingham, supervised by Dr Svetan Ratchev.
+MEng Individual Project — Yousif Al-Haidary, University of Nottingham, supervised by Professor Svetan Ratchev FREng.
 
 ```
 Camera ─▶ Recognition ─▶ Planning ─▶ Execution ─▶ KUKA controller
@@ -22,8 +22,8 @@ Training data is path-traced in Blender from real measured CAD. The robot is a m
 1. The story, in 5 minutes: [`docs/PORTFOLIO.md`](docs/PORTFOLIO.md)
 2. The models — what they are, what they score, where they fail: [`docs/MODEL_CARD.md`](docs/MODEL_CARD.md). Nine checkpoints in one comparison table, every figure generated from a receipt, with the failure modes and the scope limits in the same document. The datasets behind them: [`docs/datasets/`](docs/datasets/README.md)
 3. Run it, in 2: `pip install -e . && python -m recog.synth_dataset --out recog/dataset --n 50 && python main.py --config configs/demo.yaml` — output pinned in [`docs/receipts/main_run.txt`](docs/receipts/main_run.txt)
-4. How every number was arrived at: [`docs/superpowers/specs/README.md`](docs/superpowers/specs/README.md)
-5. What is authoritative vs. history: [`docs/README.md`](docs/README.md)
+4. How every number was arrived at: [`docs/superpowers/specs/README.md`](docs/superpowers/specs/README.md) — one document per investigation, written at the time. The adversarial reviews those answer are in [`docs/superpowers/audit/`](docs/superpowers/audit/)
+5. The report, and what is authoritative vs. history: [`docs/FDR_v3.md`](docs/FDR_v3.md) is the current revision — start at §13.2.2 for what this project can and cannot claim. [`docs/README.md`](docs/README.md) indexes it and everything else in `docs/`, and says which documents are superseded
 
 ---
 
@@ -106,7 +106,7 @@ Many people have built a CAD-to-robot perception stack. The part of this reposit
 
 Each of these degraded output silently, and **no test caught any of them.** That is the point of the section, and it is worth stating exactly rather than flatteringly: the suite grew from **621 to 752 tests** over defects 2–5 (defect 1 predates the 621 anchor and was fixed at 533–570 tests) and never went red, because for each defect the tests that would have caught it did not exist until the fix shipped with them. Twice the green suite was *asserting the defect* — one test required the retired `tau` gate to fire, another asserted that the run receipt printed the hardcoded `mm_per_px`; both were deleted by the fix. Every one of the five was found by running the pipeline, rendering frames, or measuring against ground truth.
 
-**And it has since happened five more times, which is the honest way to leave that number.** Six adversarial audits on 2026-08-12 (`docs/superpowers/audit/`) found five further tests that pinned the behaviour they were supposed to guard: `test_cycle_marks_cells_planned` asserted `planned_count() == len(queue)`, i.e. exactly one occupancy cell per 13 × 44-cell battery; two `confirm_placement` tests checked the anchor cell only, and passed just as happily when the other 571 cells stayed PLANNED for ever; and two `ExecutionConfig` tests asserted values of `approach_height_mm`, a field no client method reads. Two more are still standing on purpose — `tests/test_bay.py` pins "zero seated cells is fine" and `tests/test_packing_move.py` asserts only that a function exists. The suite is at **1,211** tests now (`pytest --collect-only` at HEAD with torch installed; it was 814 when this paragraph was written and 1,074 on 2026-08-12), and the pattern of it going green over a defect is the recurring one in this project, not a solved problem. **The documented torch-free install runs 1,181 of those 1,211**: `pip install -e ".[dev]" && pytest -q` reports `1162 passed, 20 skipped`, green. Seventeen of those twenty skips are torch — sixteen individual tests plus `tests/test_bay_segmenter.py`, which calls `pytest.importorskip("torch")` at module level and so takes its 30 tests out of the collection entirely — and the other three need `bpy`, a Blender-generated COCO dataset, and the `.[cad]` STEP converter. Twenty skips on a clean install is by design, not a thinner run that went unnoticed.
+**And it has since happened five more times, which is the honest way to leave that number.** Six adversarial audits on 2026-08-12 (`docs/superpowers/audit/`) found five further tests that pinned the behaviour they were supposed to guard: `test_cycle_marks_cells_planned` asserted `planned_count() == len(queue)`, i.e. exactly one occupancy cell per 13 × 44-cell battery; two `confirm_placement` tests checked the anchor cell only, and passed just as happily when the other 571 cells stayed PLANNED for ever; and two `ExecutionConfig` tests asserted values of `approach_height_mm`, a field no client method reads. Two more are still standing on purpose — `tests/test_bay.py` pins "zero seated cells is fine" and `tests/test_packing_move.py` asserts only that a function exists. The suite collects **1,277** tests now, 1,276 of them passing and one skipped for `bpy` (at HEAD with torch installed; it was 814 when this paragraph was written, 1,074 and then 1,211 on 2026-08-12, and 1,221 before the 2026-08-14 execution-layer work), and the pattern of it going green over a defect is the recurring one in this project, not a solved problem. **The documented torch-free install passes 1,228 of those 1,276**: `pip install -e ".[dev]" && pytest -q` reports `1228 passed, 20 skipped`, green. Eighteen of those twenty skips are torch — seventeen individual tests plus `tests/test_bay_segmenter.py`, which calls `pytest.importorskip("torch")` at module level and so takes its 30 tests out of the collection entirely — and the other two need `bpy` and the `.[cad]` STEP converter. Twenty skips on a clean install is by design, not a thinner run that went unnoticed.
 
 | # | Defect | Effect | Fixed at |
 |---|---|---|---|
@@ -221,7 +221,7 @@ auto-pick/
 │   ├── mock_kuka_server.py Software-only KUKA simulator
 │   └── krl_prog/           Reference KRL routines for the real controller
 ├── configs/          YAML configs per module + top-level demo.yaml
-├── tests/            Pytest suite (1,211 tests; 1,181 without torch)
+├── tests/            Pytest suite (1,276 passing; 1,228 without torch)
 ├── docs/             Final Design Report, specs, receipts — index: docs/README.md
 ├── main.py           End-to-end integration loop
 └── pyproject.toml    Project metadata and coverage config
@@ -332,13 +332,13 @@ Dev extras (`pip install -e '.[dev]'`) add pytest, pytest-cov.
 
 ## Design Report
 
-The full Final Design Report — requirements, literature review, detailed design, test strategy, risk assessment, and AHEP-4 learning-outcome mapping — is in `docs/FDR_v3.md` (`docs/FDR.md` and `docs/FDR_v2.md` are the superseded earlier revisions). Start at §13.2.2 for what this project can and cannot claim.
+The full Final Design Report — requirements, literature review, detailed design, test strategy, risk assessment, and AHEP-4 learning-outcome mapping — is in [`docs/FDR_v3.md`](docs/FDR_v3.md) (`docs/FDR.md` and `docs/FDR_v2.md` are the superseded earlier revisions). Start at §13.2.2 for what this project can and cannot claim.
 
-A narrative account of the measurement work, written for a general engineering reader, is `docs/PORTFOLIO.md`.
+A narrative account of the measurement work, written for a general engineering reader, is [`docs/PORTFOLIO.md`](docs/PORTFOLIO.md).
 
 ## Authors
 
-Yousif Al-Haidary, supervised by Dr Svetan Ratchev.
+Yousif Al-Haidary, supervised by Professor Svetan Ratchev FREng, Cripps Professor of Production Engineering, University of Nottingham.
 
 ## Trademarks
 

@@ -1,5 +1,7 @@
 # Open-cartridge tray interior Implementation Plan
 
+*What this is: the task-by-task implementation plan a design spec was executed from, kept as part of this project's working record rather than written as documentation for a reader. The note that follows is tooling direction for the coding agent that executed the plan. For what these documents are, how they were used and what came of them, see [`../specs/README.md`](../specs/README.md).*
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make an `open_case` cartridge render as a real recessed tray — lid removed, electronics module and `placement_area` plane seated on the cavity floor — instead of a flat decal painted on the outside of a closed lid.
