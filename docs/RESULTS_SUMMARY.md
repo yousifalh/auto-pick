@@ -57,7 +57,10 @@ maps through the shipping extractor and packer at each frame's **true** scale �
 perfect segmentation, perfect boxes, perfect calibration — that SKU places zero
 cells in **10 of 10** instances at the production 4.25 mm wall inset. Tolerance
 is not the lever either: taking the nominal 18.5 → 18.3 mm recovers **0**
-instances, and relaxing the wall inset to 0.0 mm recovers **0**. The other
+instances, and removing the 4.25 mm wall inset entirely recovers **1** — a
+single bay measuring 65.10 mm against a 65.0 mm cell, turned 0.297°. Across the
+whole 502-scene corpus the SKU places zero in **43 of 47** instances, and no
+instance turned more than **0.28°** takes a cell at any inset. The other
 three SKUs carry +1.75, +70.2 and +75.75 mm of margin and are fine; the 13000
 is spent by 6.9° of rotation.
 
