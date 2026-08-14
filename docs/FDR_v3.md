@@ -35,8 +35,9 @@ place each cell into a valid cartridge slot. The system was built
 and evaluated entirely in software after the laboratory robot was
 withdrawn for an external project in mid-March 2026 and lab access
 was not regained before the project deadline. The execution layer is
-implemented to the EthernetKRL 3.1 specification but was not
-validated against the real robot.
+designed for EthernetKRL 3.1's binary
+(`<RAW>`) mode; the controller-side program is written against the
+manuals but has never been compiled, EKI-parsed or run (§7.1).
 
 Headline results. A from-scratch Faster R-CNN detector (ResNet-34
 backbone, 15 epochs, CPU only) achieves validation mAP@0.5 = 0.87
@@ -311,8 +312,8 @@ The project was decomposed into two terms: autumn for requirements
 capture and independent module prototypes, spring for consolidation
 into a working end-to-end pipeline and for this report. Physical
 robot access was withdrawn in mid-March 2026 (§11.1, §12.2) and was
-not regained, so the executor is implemented to the EthernetKRL
-specification but not validated against the real controller. The
+not regained, so the executor's host side is complete and tested
+while its controller side is unverified against hardware (§7.1). The
 recognition and planning subsystems are validated empirically against
 the synthetic dataset. The report is written to be re-executable:
 every numerical claim is either reproducible by running a named
