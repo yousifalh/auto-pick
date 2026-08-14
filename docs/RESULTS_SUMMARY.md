@@ -298,5 +298,5 @@ worse when they were measured properly.
 | τ retired — the fail budget never bound | `docs/receipts/tau_calibration.txt` |
 | Real-photo placeable fraction 0.318 vs heuristic 0.217, n = 20 | `docs/receipts/seg_ablation.txt` |
 | Bay 54.9 × 65.0 mm vs an 18.5 × 65.0 mm cell (geometry) | `recog/synth3d/assets/catalog.json`, `configs/planning.yaml` |
-| 10 of 10 zero-placement instances on ground-truth masks | `docs/superpowers/specs/2026-08-11-placement-feasibility.md` §3, §5 |
+| 10 of 10 zero-placement instances on ground-truth masks | `docs/receipts/placement_feasibility.txt` |
 | Eleven datasets, 6,018 scenes, ~8 GPU-hours | `docs/datasets/README.md` |
