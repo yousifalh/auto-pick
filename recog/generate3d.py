@@ -3,7 +3,8 @@ Generate the synthetic 3-D dataset. Runs inside Blender.
 
     BLENDER="/c/Program Files/Blender Foundation/Blender 5.0/blender.exe"
     "$BLENDER" -b --python recog/generate3d.py -- --n 20 --out recog/dev3d --res 640 360
-    "$BLENDER" -b --python recog/generate3d.py -- --n 2000 --out recog/dataset3d --device GPU --resume
+    "$BLENDER" -b --python recog/generate3d.py -- \
+        --n 2000 --out recog/dataset3d --device GPU --resume
 
 Output is flat Pascal-VOC that recog.dataset.BatteryCartridgeDataset reads
 directly; recog/training.py owns the train/val split.

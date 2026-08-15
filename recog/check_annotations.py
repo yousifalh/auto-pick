@@ -239,7 +239,8 @@ def pairwise_class_overlaps(
     out: Dict[Tuple[str, str], int] = {}
     for a, b in itertools.combinations(sorted(SEG_CLASSES), 2):
         ma, mb = by_class.get(a), by_class.get(b)
-        out[(a, b)] = int(np.count_nonzero(ma & mb)) if ma is not None and mb is not None else 0
+        out[(a, b)] = (int(np.count_nonzero(ma & mb))
+                       if ma is not None and mb is not None else 0)
     return out
 
 

@@ -39,7 +39,7 @@ Box = Tuple[float, float, float, float]
 
 
 # ------------------------------------------------------ helper geometry --
-    
+
 def _iou(a: Box, b: Box) -> float:
     """Intersection-over-union for two (xmin, ymin, xmax, ymax) tuples."""
     x0 = max(a[0], b[0])

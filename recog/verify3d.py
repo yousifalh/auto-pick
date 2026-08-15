@@ -122,7 +122,8 @@ def tile(images, cols: int, out: Path, label_texts=None):
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--data", default=None, help="dataset root with images/ + annotations/")
+    ap.add_argument("--data", default=None,
+                    help="dataset root with images/ + annotations/")
     ap.add_argument("--sweep", default=None, help="sweep root produced by --sweep")
     ap.add_argument("--n", type=int, default=12)
     ap.add_argument("--cols", type=int, default=4)

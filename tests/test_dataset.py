@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from recog.dataset import (
-    CLASS_MAP, BatteryCartridgeDataset, RealPhotoDataset, VocAnnotation,
+    CLASS_MAP, BatteryCartridgeDataset, RealPhotoDataset,
     collate_fn, parse_coco_json, parse_voc_xml,
 )
 

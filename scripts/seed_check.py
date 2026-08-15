@@ -126,7 +126,7 @@ def render(a: Dict, b: Dict, c: Dict, env: Dict[str, str],
     lines = [
         "Training reproducibility: same seed twice, then a different seed",
         "=" * 66,
-        f"  command       : python scripts/seed_check.py",
+        "  command       : python scripts/seed_check.py",
         f"  config        : {config}  (1 epoch; NOT the 40-epoch schedule)",
         f"  torch         : {env['torch']}  cuda {env['cuda']}  "
         f"cudnn {env['cudnn']}",

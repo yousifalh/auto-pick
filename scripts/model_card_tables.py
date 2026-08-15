@@ -134,7 +134,8 @@ class Receipt:
         # Per-SKU IoU, present only on the cad_test receipts.
         self.per_sku: dict[str, dict[str, float]] = {}
         for row in re.findall(
-            r"^  (AnkerPowerCore\d+)\s+(\d+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s*$",
+            r"^  (AnkerPowerCore\d+)\s+(\d+)\s+([\d.]+)\s+([\d.]+)"
+            r"\s+([\d.]+)\s+([\d.]+)\s*$",
             text,
             re.MULTILINE,
         ):
@@ -270,7 +271,8 @@ def table_comparison(by_ckpt_cad, by_ckpt_own, manifests, configs) -> str:
 def table_per_sku(by_ckpt_cad) -> str:
     """Per-SKU `bay` IoU on the CAD test set, held-out SKU marked."""
     lines = [
-        "| model | " + " | ".join(f"`{s.replace('AnkerPowerCore', 'PC')}`" for s in SKUS) + " |",
+        "| model | " + " | ".join(
+            f"`{s.replace('AnkerPowerCore', 'PC')}`" for s in SKUS) + " |",
         "|---|" + "---:|" * len(SKUS),
     ]
     for ckpt, label in MODEL_ORDER:
@@ -423,7 +425,7 @@ def table_detector() -> str:
     val_size = re.search(r"val size: (\d+)", text)
     gt = re.search(r"gt per class: (\{[^}]*\})", text)
     rows = [
-        f"| metric | k-means anchors (`best.pt`) | torchvision-default anchors |",
+        "| metric | k-means anchors (`best.pt`) | torchvision-default anchors |",
         "|---|---:|---:|",
     ]
     for k in custom:

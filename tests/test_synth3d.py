@@ -298,7 +298,7 @@ def test_every_backdrop_carries_its_own_albedo_range():
         lo, hi = spec["color"]
         assert len(lo) == 3 and len(hi) == 3, name
         assert all(0.0 <= c <= 1.0 for c in lo + hi), name
-        assert all(h >= l for l, h in zip(lo, hi)), name
+        assert all(hi_c >= lo_c for lo_c, hi_c in zip(lo, hi)), name
 
 
 def test_overlap_is_configured_to_actually_happen():
@@ -367,7 +367,8 @@ def test_json_sidecar_is_used_when_yaml_unavailable(tmp_path, monkeypatch):
     case where no .yaml file exists at all. The two files carry different
     render.res values, so the assertion can only pass if the sidecar (not
     the decoy .yaml) was actually the one read."""
-    import os, time
+    import os
+    import time
     src = C.load_config()
     y = tmp_path / "synth3d.yaml"
     j = tmp_path / "synth3d.json"
@@ -387,7 +388,8 @@ def test_stale_sidecar_raises_with_the_fix_command(tmp_path, monkeypatch):
     j = tmp_path / "synth3d.json"
     j.write_text("{}", encoding="utf-8")
     y.write_text("render: {}\n", encoding="utf-8")   # written after the json
-    import os, time
+    import os
+    import time
     os.utime(j, (time.time() - 100, time.time() - 100))
     monkeypatch.setattr(C, "_HAVE_YAML", False)
     with pytest.raises(RuntimeError, match="recog.sync_config"):

@@ -38,7 +38,12 @@ from typing import Callable, Dict, List, Optional, Tuple
 import numpy as np
 
 try:  # pragma: no cover - import guard
-    import torch  # type: ignore
+    # No bare `import torch` here: it bound a module global that nothing in
+    # this file ever read. Every `torch.` reference lives inside
+    # `_to_training_sample`, behind its own local `import torch` (:314), so
+    # the global was dead weight ruff reported as F401. The guard is
+    # unweakened - `from torch.utils.data import ...` imports the torch
+    # package first, so a torch-free environment still lands in `except`.
     from torch.utils.data import Dataset  # type: ignore
 
     _TORCH_AVAILABLE = True

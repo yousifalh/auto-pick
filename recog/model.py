@@ -18,7 +18,10 @@ from __future__ import annotations
 from typing import Any, Dict
 
 try:  # pragma: no cover - import guard
-    import torch
+    # `import torch` was here and unused (F401): this module only ever calls
+    # through `nn`, `torchvision` and the four names below. `import torch.nn
+    # as nn` still imports the torch package itself, so the guard's reach is
+    # unchanged - torch-free environments still fall through to `except`.
     import torch.nn as nn
     import torchvision
     from torchvision.models.detection import FasterRCNN
