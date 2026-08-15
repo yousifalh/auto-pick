@@ -1,6 +1,6 @@
 """`recog/synth3d/world.py` under a stub `bpy` - the decisions and guards.
 
-world.py is the largest file in the project (1495 lines) and, because it
+world.py is the largest file in the project (1649 lines) and, because it
 imports `bpy`, no test in this suite could reach a single line of it. Every
 serious silent failure this project has had lived in, or was masked by,
 exactly that region: an inverted assembly, a two-material object that arrived
@@ -24,8 +24,15 @@ WHAT THIS HARNESS CAN DETECT
     input - whether world.py's own loud assertions still fire on the exact
     historical defects they were written for.
 
+    Since 2026-08-15 it also detects the project's signature failure: a
+    `rotation_euler` write on an object in QUATERNION rotation mode, which
+    Blender discards. The stub `Object` models `rotation_mode`, so source
+    that only looks like it rotates now measures as not rotating. Before
+    that, the stub's euler setter always applied and the harness actively
+    CONCEALED the live no-op in `seat_cells`.
+
 WHAT IT CANNOT DETECT
-    Anything about Blender. The `bpy` here is roughly 400 lines of stub that
+    Anything about Blender. The `bpy` here is roughly 970 lines of stub that
     models objects as transformable axis-aligned boxes; it is NOT Blender and
     a green run here says nothing about:
       * a bpy API change (a renamed socket, a moved operator, a changed
@@ -212,8 +219,21 @@ class Matrix:
     def copy(self):
         return Matrix(self._m.copy())
 
+    def __getitem__(self, i):
+        """A row, as a WRITEABLE view - `m[0][0] = s` mutates the matrix in
+        mathutils too, and `assets.reset_pose` builds its scale-only matrix
+        that way."""
+        return self._m[i]
+
     def to_translation(self):
         return Vector(self._m[:3, 3])
+
+    def to_scale(self):
+        """The per-axis scale, as `mathutils.Matrix.to_scale` reports it: the
+        length of each basis column. `assets.reset_pose` reads it to clear an
+        object's rotation WITHOUT also wiping a scale the import may have
+        left on it."""
+        return Vector([float(np.linalg.norm(self._m[:3, i])) for i in range(3)])
 
     def __repr__(self):
         return f"Matrix({np.array2string(self._m, precision=5)})"
@@ -360,6 +380,18 @@ class _Slot:
 
 
 class Object:
+    """A Blender object as a transformable axis-aligned box.
+
+    `rotation_mode` is modelled, and it is not decoration. The glTF importer
+    sets `'QUATERNION'` on every object it creates, and in that mode Blender
+    STORES a `rotation_euler` write in the property and never composes it into
+    `matrix_world` (measured on Blender 5.0: after writing 90 degrees the
+    property read back 1.5708 while the world extents stayed byte-identical).
+    A stub whose euler setter always applies would report a green suite for
+    source that does nothing at all - which is exactly what this harness did
+    while `world.seat_cells` reset its clones with a bare euler write.
+    """
+
     def __init__(self, name, corners, data=None):
         self.name = name
         self.data = _Mesh(corners) if data is None else data
@@ -371,9 +403,17 @@ class Object:
         self.hide_render = False
         self._slots = []
         self._loc = np.zeros(3)
+        # `_rot` is what reaches the basis; `_rot_prop` is what the property
+        # reads back. They part company in QUATERNION mode, as Blender's do.
         self._rot = np.zeros(3)
+        self._rot_prop = np.zeros(3)
         self._scale = np.ones(3)
         self._basis_override = None
+        self._selected = False
+        # Blender's default for an object created by an operator. Only the
+        # glTF importer's objects arrive as QUATERNION, and `copy()` carries
+        # that to every clone, so a template's mode reaches its instances.
+        self.rotation_mode = "XYZ"
 
     @property
     def material_slots(self):
@@ -388,7 +428,9 @@ class Object:
         dup = Object(self.name, self.data._corners.copy(), data=self.data)
         dup._loc = self._loc.copy()
         dup._rot = self._rot.copy()
+        dup._rot_prop = self._rot_prop.copy()
         dup._scale = self._scale.copy()
+        dup.rotation_mode = self.rotation_mode
         if self._basis_override is not None:
             dup._basis_override = self._basis_override.copy()
         dup.pass_index = self.pass_index
@@ -421,13 +463,34 @@ class Object:
 
     @property
     def rotation_euler(self):
-        return Vector(self._rot)
+        return Vector(self._rot_prop)
 
     @rotation_euler.setter
     def rotation_euler(self, v):
-        self._rot = np.asarray(tuple(v)[:3], dtype=float)
+        self._rot_prop = np.asarray(tuple(v)[:3], dtype=float)
+        if self.rotation_mode == "QUATERNION":
+            # THE silent no-op. Blender keeps the written value in the
+            # property - it reads back - and never composes it, so nothing
+            # reaches matrix_world and the object does not move. Returning
+            # here is what lets a test see the difference between code that
+            # rotates and code that only looks like it does.
+            return
+        self._rot = self._rot_prop.copy()
         self._basis_override = None
         self._set_translation(self._loc)
+
+    # -- selection; `assets._separate_by_material` drives it before the
+    #    separate operator, and Blender separates what is SELECTED.
+    def select_set(self, state):
+        sel = _STUB_BPY.context._selected
+        if state and self not in sel:
+            sel.append(self)
+        elif not state and self in sel:
+            sel.remove(self)
+        self._selected = bool(state)
+
+    def select_get(self):
+        return self._selected
 
     @property
     def scale(self):
@@ -712,12 +775,34 @@ class Image:
         self.colorspace_settings = types.SimpleNamespace(name="sRGB")
 
 
+class _Context:
+    """`bpy.context`, with one property that has to behave like Blender's:
+    `selected_objects` hands back a FRESH list on every access.
+
+    `assets._separate_by_material` deselects the previous selection while
+    iterating it. That is safe in Blender and would silently skip every other
+    object against a live list, so a stub that returned its own storage would
+    invent a failure the real code does not have.
+    """
+
+    def __init__(self):
+        self._selected = []
+        self.scene = None
+        self.view_layer = None
+        self.active_object = None
+        self.mode = "OBJECT"
+
+    @property
+    def selected_objects(self):
+        return list(self._selected)
+
+
 def _make_bpy():
     """Build the stub `bpy` module. One module, reset between tests."""
     bpy = types.ModuleType("bpy")
 
     bpy.data = types.SimpleNamespace()
-    bpy.context = types.SimpleNamespace()
+    bpy.context = _Context()
     bpy.ops = types.SimpleNamespace()
     bpy.ops.mesh = types.SimpleNamespace()
     bpy.ops.object = types.SimpleNamespace()
@@ -750,10 +835,13 @@ def _make_bpy():
         view_layer = types.SimpleNamespace(
             objects=types.SimpleNamespace(active=None),
             update=lambda: None)
+        bpy.context = _Context()
         bpy.context.scene = scene
         bpy.context.view_layer = view_layer
-        bpy.context.active_object = None
         bpy.data.objects_created = []
+        # What `bpy.ops.mesh.separate` reports. Blender returns CANCELLED
+        # when it separated nothing; a test sets this to reach that path.
+        bpy.separate_result = {"FINISHED"}
 
     def _spawn(name, corners, location=(0, 0, 0), rotation=(0, 0, 0),
                data=None):
@@ -831,6 +919,7 @@ def _make_bpy():
             obj._scale = np.ones(3)
         if rotation:
             obj._rot = np.zeros(3)
+            obj._rot_prop = np.zeros(3)
         if location:
             obj._loc = np.zeros(3)
         obj._basis_override = None
@@ -865,6 +954,37 @@ def _make_bpy():
         _spawn(src.name, src.data._corners.copy(), tuple(src._loc))
 
     bpy.ops.object.duplicate = duplicate
+
+    def mode_set(mode="OBJECT", **kw):
+        bpy.context.mode = mode
+        return {"FINISHED"}
+
+    bpy.ops.object.mode_set = mode_set
+
+    def separate(type="MATERIAL", **kw):
+        """`bpy.ops.mesh.separate`, modelled at the only two levels
+        `assets._separate_by_material` reads: the RESULT STATUS and which new
+        objects appeared. The box stub cannot split geometry, so it does not
+        pretend to - it spawns one new object per material slot beyond the
+        first, which is what a MATERIAL separate does to the merged
+        `Case*_btm` node (one node, two primitives, two materials, 1180 vs
+        712 triangles per catalog.json).
+
+        `bpy.separate_result` forces the status. Blender returns CANCELLED
+        when it separated nothing, and that result used to be discarded
+        unread - the liner then never existed and `_classify_case_liner`
+        became a silent no-op.
+        """
+        obj = bpy.context.view_layer.objects.active
+        assert obj is not None, "separate with no active object"
+        assert bpy.context.mode == "EDIT", (
+            "Blender's separate operator only runs in EDIT mode")
+        if "FINISHED" in bpy.separate_result:
+            for _ in range(max(len(obj.material_slots) - 1, 0)):
+                obj.copy()          # registers itself in bpy.data.objects
+        return bpy.separate_result
+
+    bpy.ops.mesh.separate = separate
 
     bpy.reset = reset
     reset()
@@ -1094,6 +1214,62 @@ def test_stub_parenting_without_a_parent_inverse_displaces_the_child():
     lo, hi = child.world_bbox()
     assert np.allclose((lo + hi) / 2, (0.32, 0.16, 0.06)), (
         "with the parent inverse set the child must not move at all")
+
+
+def test_stub_ignores_an_euler_write_in_quaternion_mode():
+    """The single most important thing this harness models, and the thing it
+    did NOT model until 2026-08-15.
+
+    Blender IGNORES `rotation_euler` while `rotation_mode == 'QUATERNION'`,
+    which is the mode the glTF importer puts every imported object in. The
+    write still lands in the property - measured on Blender 5.0, writing 90
+    degrees read back 1.5708 - while the world extents stayed byte-identical.
+    A stub whose setter always applied reported PASS for source that moved
+    nothing, which is how `world.seat_cells`'s reset survived a green suite
+    with an eight-line comment above it describing the very failure.
+    """
+    _STUB_BPY.ops.mesh.primitive_cube_add(size=1, location=(0, 0, 0))
+    o = _STUB_BPY.context.active_object
+    o.scale = (0.4, 0.1, 0.1)
+    _STUB_BPY.ops.object.transform_apply(location=False, rotation=False,
+                                         scale=True)
+    o.rotation_mode = "QUATERNION"
+    before = np.subtract(*reversed(o.world_bbox()))
+
+    o.rotation_euler = (0.0, 0.0, math.radians(90))
+
+    assert abs(o.rotation_euler.z - 1.5707963) < 1e-6, (
+        "the property must still read the value back - that is what made the "
+        "no-op invisible")
+    assert np.allclose(np.subtract(*reversed(o.world_bbox())), before), (
+        "nothing may reach matrix_world in quaternion mode")
+
+    o.rotation_mode = "XYZ"
+    o.rotation_euler = (0.0, 0.0, math.radians(90))
+    assert np.allclose(np.subtract(*reversed(o.world_bbox())),
+                       (before[1], before[0], before[2])), (
+        "in XYZ mode the same write must swap the X and Y extents")
+
+
+def test_stub_clone_carries_the_rotation_mode_of_its_template():
+    """`bpy.types.Object.copy()` copies `rotation_mode` like every other
+    transform property, so an object cloned from a glTF-imported template is
+    quaternion-mode too. That is why the euler no-op reaches `seat_cells` and
+    `instantiate`, which never touch an imported object directly - they only
+    ever touch clones of one."""
+    _STUB_BPY.ops.mesh.primitive_cube_add(size=1, location=(0, 0, 0))
+    tmpl = _STUB_BPY.context.active_object
+    tmpl.rotation_mode = "QUATERNION"
+    assert tmpl.copy().rotation_mode == "QUATERNION"
+
+
+def test_stub_matrix_to_scale_reports_the_column_lengths():
+    """`assets.reset_pose` clears an object's rotation by writing a
+    scale-only `matrix_world`, so it has to be able to read the scale back
+    out of a matrix that also carries a rotation and a translation."""
+    M = (Matrix.Translation(Vector((5.0, -2.0, 1.0)))
+         @ Matrix.Rotation(0.7, 4, "Z") @ Matrix.Diagonal((2.0, 3.0, 4.0)))
+    assert np.allclose(tuple(M.to_scale()), (2.0, 3.0, 4.0))
 
 
 def test_stub_leaks_nothing_into_sys_modules():
@@ -1917,14 +2093,33 @@ class _FakeLibrary:
         self._templates = templates
 
 
-def _cell_template(diam=0.0183, length=0.065):
-    """A template shaped like an already-lay_flat'd 18650: long axis in Y."""
+def _cell_template(diam=0.0183, length=0.065, baked_z_deg=0.0):
+    """A template shaped like an already-lay_flat'd 18650: long axis in Y.
+
+    Quaternion-mode, because that is what a template IS here: every one comes
+    out of `AssetLibrary._load_template`, and for the four CAD assets that
+    means the glTF importer, which sets `rotation_mode = 'QUATERNION'` on
+    everything it creates. (Read straight out of the shipped .glb: each
+    `Cell_18650` node carries its own rotation matrix - e.g. columns
+    (0,0,-1), (-1,0,0), (0,1,0) on AnkerPowerCore10000 - so these objects
+    arrive rotated, not merely capable of it.)
+
+    `baked_z_deg` puts a rotation into the template's `matrix_world` the way
+    `assets.lay_flat` does for the whole assembly: one pivot-conjugated
+    matrix write, invisible to `rotation_euler`. A clone of such a template
+    starts life carrying the ASSEMBLY's orientation, which is precisely what
+    `seat_cells` has to clear before it can measure this cell's own extents.
+    """
     _STUB_BPY.ops.mesh.primitive_cube_add(size=1, location=(0, 0, 0))
     o = _STUB_BPY.context.active_object
     o.name = "Cell_template"
     o.scale = (diam, length, diam)
     _STUB_BPY.ops.object.transform_apply(location=False, rotation=False,
                                          scale=True)
+    o.rotation_mode = "QUATERNION"
+    if baked_z_deg:
+        o.matrix_world = (Matrix.Rotation(math.radians(baked_z_deg), 4, "Z")
+                          @ o.matrix_world)
     return o
 
 
@@ -1996,6 +2191,50 @@ def test_a_seated_cell_spins_about_its_own_seat_not_the_origin(W):
         "a Z-axis spin must leave the resting height alone")
 
 
+def test_a_seated_cell_is_reset_out_of_its_assemblys_orientation(W):
+    """`seat_cells` clones a cell out of an assembly template that carries the
+    WHOLE assembly's `lay_flat` rotation baked into `matrix_world`, then resets
+    the clone so `lay_flat` can measure this one cell's own raw extents. The
+    eight comment lines above that reset say a bare `rotation_euler` write
+    "would silently do nothing under the glTF importer's quaternion rotation
+    mode" - and until 2026-08-15 the next line was exactly that write, on an
+    object cloned from a quaternion-mode template. The `dup.location` write on
+    the line after it DID apply, so the clone was left half-reset: moved to the
+    origin, still wearing the assembly's turn.
+
+    A template turned 90 degrees about Z is the case that shows it, because
+    the footprint assertion cannot: it sorts the two XY extents, so a cell
+    lying crosswise measures the same 18.3 x 65.0mm as one lying correctly.
+    What differs is WHICH axis the 65mm runs along - and `bay.seated_cell_poses`
+    has already committed every seat's rot_deg to the un-turned pose.
+    """
+    lib = _FakeLibrary({"AnkerX": {"cell": [_cell_template(baked_z_deg=90.0)]}})
+    made = W.seat_cells(lib, "AnkerX", [(0.02, 0.01, 0.0)], 0.006, rng(),
+                        _MAT_CFG)
+    lo, hi = made[0].world_bbox()
+    assert (hi - lo)[1] == pytest.approx(0.065, abs=1e-6), (
+        "the cell's own 65mm axis must come back to Y, where its raw mesh "
+        "puts it - a 65mm X extent means the template's baked assembly "
+        "rotation survived the reset")
+    assert (hi - lo)[0] == pytest.approx(0.0183, abs=1e-6)
+    assert (hi - lo)[2] == pytest.approx(0.0183, abs=1e-6), (
+        "and it must still be lying down, not standing on end")
+
+
+def test_a_seated_cell_keeps_the_scale_the_reset_must_not_wipe(W):
+    """The reset clears rotation and position, not SIZE. A template whose
+    transform carries a scale - `matrix_world = Identity` would silently
+    discard it - must still measure its own format after seating, or the
+    footprint assertion below would be asserting against a shrunken cell."""
+    tmpl = _cell_template(0.0183 / 2, 0.065 / 2, baked_z_deg=90.0)
+    tmpl.matrix_world = tmpl.matrix_world @ Matrix.Diagonal((2.0, 2.0, 2.0))
+    made = W.seat_cells(_FakeLibrary({"AnkerX": {"cell": [tmpl]}}), "AnkerX",
+                        [(0.0, 0.0, 0.0)], 0.006, rng(), _MAT_CFG)
+    lo, hi = made[0].world_bbox()
+    assert (hi - lo)[1] == pytest.approx(0.065, abs=1e-6)
+    assert (hi - lo)[0] == pytest.approx(0.0183, abs=1e-6)
+
+
 def test_a_seated_cell_gets_its_own_material(W):
     """A template object carries no material - it is never rendered directly,
     only cloned - so seat_cells must draw and apply one explicitly or every
@@ -2043,13 +2282,92 @@ def test_the_footprint_check_is_keyed_on_the_format_it_was_drawn_for(W):
 def test_the_footprint_check_runs_once_per_asset_and_format(W):
     """It is memoised, so it must still fire for a DIFFERENT asset or a
     different format after one pair has passed - otherwise the first correct
-    cartridge in a run would disable the check for every later one."""
+    cartridge in a scene would disable the check for every later one. (Across
+    scenes the memo is dropped entirely; see
+    `test_reset_scene_clears_the_memoised_footprint_check`.)"""
     good = _FakeLibrary({"A": {"cell": [_cell_template()]}})
     W.seat_cells(good, "A", [(0, 0, 0)], 0.006, rng(), _MAT_CFG)
     assert ("A", "18650") in W._seat_cell_footprint_checked
     bad = _FakeLibrary({"B": {"cell": [_cell_template(0.030, 0.080)]}})
     with pytest.raises(AssertionError):
         W.seat_cells(bad, "B", [(0, 0, 0)], 0.006, rng(), _MAT_CFG)
+
+
+# =========================================================================== #
+#  8b. assets.py, under the same stubs
+#
+#  assets.py imports bpy, so no other test in this repository can reach a line
+#  of it; `_load_world` loads it as the REAL module (not a fake), and every
+#  seat_cells test above already runs through its `clone` and `lay_flat`.
+#  What follows drives the two decisions in it that fail SILENTLY: a separate
+#  operator that did nothing, and a clone that keeps a pose it never applied.
+# =========================================================================== #
+
+def _two_material_case():
+    """A `case`-named object carrying two material slots - the merged
+    `Case*_btm` node the glTF importer hands over (one node, two primitives,
+    one material each)."""
+    _STUB_BPY.ops.mesh.primitive_cube_add(size=1, location=(0, 0, 0))
+    o = _STUB_BPY.context.active_object
+    o.name = "Case10000_btm"
+    for n in ("shell", "liner"):
+        o.data.materials.append(_STUB_BPY.data.materials.new(n))
+    return o
+
+
+def test_a_cancelled_material_separate_is_caught_loudly(W):
+    """Blender returns CANCELLED from `mesh.separate` when it separated
+    nothing. That result was read by nobody: `_split_multi_material_case`
+    would hand back the still-merged object, `_classify_case_liner` sees one
+    `case` and returns early, and the liner - the whole reason the split
+    exists - just never appears. No error, a full render, a dataset missing
+    a class."""
+    o = _two_material_case()
+    _STUB_BPY.separate_result = {"CANCELLED"}
+    with pytest.raises(AssertionError, match="separate"):
+        W.A._separate_by_material(o)
+    assert _STUB_BPY.context.mode == "OBJECT", (
+        "the check must fire AFTER edit mode is left, or a raise strands "
+        "Blender in EDIT mode for everything built after it")
+
+
+def test_a_separate_that_produces_no_piece_is_caught_loudly(W):
+    """The status is Blender's opinion; the pieces are the fact. Asserting
+    both means the guarantee survives a change of heart in Blender's own
+    CANCELLED convention."""
+    _STUB_BPY.ops.mesh.primitive_cube_add(size=1, location=(0, 0, 0))
+    o = _STUB_BPY.context.active_object
+    o.name = "Case10000_btm"
+    o.data.materials.append(_STUB_BPY.data.materials.new("only"))
+    with pytest.raises(AssertionError, match="piece|separate"):
+        W.A._separate_by_material(o)
+
+
+def test_a_two_material_case_separates_into_two_pieces(W):
+    """The happy path, and the caller's contract: `_split_multi_material_case`
+    replaces the merged object with every piece, original first."""
+    o = _two_material_case()
+    pieces = W.A._separate_by_material(o)
+    assert len(pieces) == 2 and pieces[0] is o
+    assert _STUB_BPY.context.mode == "OBJECT", (
+        "the operator runs in EDIT mode; leaving Blender there would break "
+        "every later build in the same scene")
+
+
+def test_clone_carries_the_source_pose_without_relying_on_an_euler_write(W):
+    """`clone` used to restate the pose with `dup.rotation_euler =
+    src.rotation_euler.copy()`. On a quaternion-mode template that write is a
+    no-op, so the line taught the wrong idiom while `src.copy()` was doing the
+    real work. The property it must preserve is the POSE, which is what this
+    measures - not which attribute carried it."""
+    tmpl = _cell_template(baked_z_deg=90.0)
+    dup = W.A.clone(tmpl)
+    lo_t, hi_t = tmpl.world_bbox()
+    lo_d, hi_d = dup.world_bbox()
+    assert np.allclose(lo_d, lo_t) and np.allclose(hi_d, hi_t), (
+        "a clone must start in exactly its source's pose")
+    assert (hi_d - lo_d)[0] == pytest.approx(0.065, abs=1e-9), (
+        "including the 90-degree turn baked into the template's matrix_world")
 
 
 # =========================================================================== #
@@ -2558,7 +2876,7 @@ def test_every_fallback_palette_kind_is_one_the_procedural_builder_knows(W):
     for lo, hi in W._FALLBACK_PALETTE.values():
         assert len(lo) == 3 and len(hi) == 3
         assert all(0.0 <= c <= 1.0 for c in tuple(lo) + tuple(hi))
-        assert all(l < h for l, h in zip(lo, hi)), (
+        assert all(lo_c < hi_c for lo_c, hi_c in zip(lo, hi)), (
             "a ramp whose low end is not below its high end is a flat colour")
 
 
@@ -2765,6 +3083,69 @@ def test_the_only_exception_handler_in_the_module_is_the_bmesh_fallback():
     assert tries == ["_crown_lid"], (
         f"world.py's exception handlers are now in {sorted(set(tries))}; only "
         f"_crown_lid's documented bmesh-signature fallback is expected")
+
+
+def test_only_self_built_objects_are_posed_with_a_rotation_euler_write():
+    """A budget on the idiom, because the failure has no other symptom.
+
+    `rotation_euler` is composed into `matrix_world` only while
+    `rotation_mode == 'XYZ'`. The glTF importer sets `'QUATERNION'`, and
+    `Object.copy()` carries that to every clone, so a euler write on anything
+    that came from a template is discarded in silence: the property reads
+    back, the scene still renders, the part is simply never turned. That is
+    the defect `_gate_orientation.py` exists for, and it survived a green
+    suite twice - in `lay_flat`/`place_item`, then again in `seat_cells`.
+
+    The four functions listed below are the only ones allowed the write, and
+    each earns it the same way: it poses an object IT created moments earlier
+    with `bpy.ops.mesh.primitive_*` / `light_add` / `camera_add`, which
+    Blender creates in XYZ mode. Anything holding a template clone must use
+    the rotation-mode-agnostic `matrix_world` composition (`assets.lay_flat`,
+    `assets.place_item`, `assets.reset_pose`).
+    """
+    allowed = {
+        ("world.py", "_add_area_light"),        # bpy.ops.object.light_add
+        ("world.py", "setup_lighting"),         # bpy.ops.object.light_add
+        ("world.py", "build_procedural_tray"),  # primitive_cylinder_add
+        ("world.py", "build_obstructions"),     # primitive_*_add
+    }
+    found = set()
+    for path in (WORLD_PY, ROOT / "recog" / "synth3d" / "assets.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for fn in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
+            for n in ast.walk(fn):
+                targets = (n.targets if isinstance(n, ast.Assign)
+                           else [n.target]
+                           if isinstance(n, (ast.AugAssign, ast.AnnAssign))
+                           else [])
+                for t in targets:
+                    if (isinstance(t, ast.Attribute)
+                            and t.attr == "rotation_euler"):
+                        found.add((path.name, fn.name))
+    assert found == allowed, (
+        f"rotation_euler is written in {sorted(found - allowed)} and no "
+        f"longer in {sorted(allowed - found)}. A write on an object that came "
+        f"from a template is a silent no-op under the importer's quaternion "
+        f"rotation mode; use a matrix_world composition instead.")
+
+
+def test_reset_scene_clears_the_memoised_footprint_check():
+    """`_assert_seat_cell_footprint` is memoised on (asset, cell_format) in a
+    PROCESS-global set. Without a clear per scene it fires once in a 1000-image
+    run and is off for the other 999 - a guard that reports itself as present
+    while checking nothing. `reset_scene` is where a scene's process-global
+    state has to be dropped, alongside the datablock purge."""
+    scene_py = ROOT / "recog" / "synth3d" / "scene.py"
+    fn = _function(scene_py, "reset_scene")
+    cleared = [n for n in ast.walk(fn)
+               if isinstance(n, ast.Call)
+               and isinstance(n.func, ast.Attribute)
+               and n.func.attr == "clear"
+               and "_seat_cell_footprint_checked" in ast.dump(n.func.value)]
+    assert cleared, (
+        "scene.reset_scene must clear world._seat_cell_footprint_checked, or "
+        "the seated-cell footprint assertion runs once per PROCESS instead of "
+        "once per scene")
 
 
 def test_each_seating_constant_is_defined_in_exactly_one_place():

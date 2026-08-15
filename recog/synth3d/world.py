@@ -31,7 +31,11 @@ from mathutils import Matrix, Vector
 
 from . import assets as A
 from . import bay
-from .config import CELL_FORMATS, CELL_H_MM, CELL_W_MM
+# CELL_H_MM / CELL_W_MM were imported here and never read (F401). Nothing in
+# this module measures a cell directly; every call site goes through
+# CELL_FORMATS[entry["cell_format"]] (:804, :1069, :1533), which is where the
+# "18650" entry gets those two constants from anyway.
+from .config import CELL_FORMATS
 from .lightrig import off_axis_placement, shadow_direction
 from .materials import apply_to_object, for_role, set_input, rng_range
 
@@ -89,7 +93,9 @@ def kelvin_to_rgb(k: float):
         b = 0.0
     else:
         b = 138.5177312231 * math.log(k - 10) - 305.0447927307
-    clamp = lambda v: max(0.0, min(255.0, v)) / 255.0
+    def clamp(v: float) -> float:
+        return max(0.0, min(255.0, v)) / 255.0
+
     return (clamp(r), clamp(g), clamp(b))
 
 
@@ -1510,7 +1516,14 @@ def _assert_seat_cell_footprint(asset: str, cell_format: str,
                                 lo: Vector, hi: Vector) -> None:
     """Assert a freshly lay_flat'd (or, for a procedural tray, directly
     built) cell clone's measured XY footprint matches
-    CELL_FORMATS[cell_format], once per (asset, cell_format).
+    CELL_FORMATS[cell_format], once per (asset, cell_format) PER SCENE.
+
+    Per scene, not per process: `scene.reset_scene` clears the memo below,
+    because every scene re-imports its own templates (`build` clears
+    `library._templates` right after the reset) and so is a fresh chance for
+    a template to measure something other than its CELL_FORMATS entry. A memo
+    that spanned the run would have fired on image 0 and stayed off for the
+    other 999 of a 1000-image render.
 
     Generalised from a single hardcoded 18650 check (design spec Sec6.1):
     it now asserts against the format the clone was DRAWN FOR, not a
@@ -1588,15 +1601,25 @@ def seat_cells(library, asset: str, seats, floor_z: float, rng: random.Random,
     for i, (x, y, rot_deg) in enumerate(seats):
         dup = A.clone(template)
         # Reset to identity and re-flatten the single object exactly as
-        # AssetLibrary.instantiate does for a standalone loose cell - see
-        # assets.lay_flat's docstring for why a bare rotation_euler write
-        # would silently do nothing under the glTF importer's quaternion
-        # rotation mode. This clone was just duplicated from a template
-        # that carries the whole assembly's own lay_flat rotation baked in;
-        # lay_flat has to measure THIS object's own raw extents, not the
-        # assembly's, to rest it on its side correctly in isolation.
-        dup.rotation_euler = (0.0, 0.0, 0.0)
-        dup.location = (0.0, 0.0, 0.0)
+        # AssetLibrary.instantiate does for a standalone loose cell. This
+        # clone was just duplicated from a template that carries the whole
+        # assembly's own lay_flat rotation baked in; lay_flat has to measure
+        # THIS object's own raw extents, not the assembly's, to rest it on
+        # its side correctly in isolation.
+        #
+        # `A.reset_pose`, because the two lines this replaced were
+        #     dup.rotation_euler = (0.0, 0.0, 0.0)
+        #     dup.location = (0.0, 0.0, 0.0)
+        # under the comment that already said a bare rotation_euler write
+        # "would silently do nothing under the glTF importer's quaternion
+        # rotation mode" - and it did nothing, while the location line
+        # applied, leaving every seated cell moved to the origin but still
+        # wearing the assembly's turn. Nothing downstream could see it: the
+        # footprint assertion below sorts the two XY extents, so a cell
+        # seated crosswise measures the same 18.3 x 65.0mm as a correct one,
+        # while bay.seated_cell_poses has already committed each seat's
+        # rot_deg to the un-turned pose. See assets.reset_pose.
+        A.reset_pose(dup)
         bpy.context.view_layer.update()
         A.lay_flat([dup])
 

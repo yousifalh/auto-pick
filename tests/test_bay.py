@@ -262,7 +262,9 @@ def test_module_and_placement_rects_tile_the_interior_exactly(
     union = (min(m[0], p[0]), min(m[1], p[1]), max(m[2], p[2]), max(m[3], p[3]))
     assert union == pytest.approx((ix0, iy0, ix1, iy1))
 
-    area = lambda r: (r[2] - r[0]) * (r[3] - r[1])
+    def area(r):
+        return (r[2] - r[0]) * (r[3] - r[1])
+
     assert area(m) + area(p) == pytest.approx((ix1 - ix0) * (iy1 - iy0))
 
 
@@ -323,7 +325,9 @@ def test_bay_edge_detected_generically_on_all_four_sides(interior, bay, edge):
 
     m = module_rect_local(interior, bay)
     p = placement_rect_local(interior, bay)
-    area = lambda r: (r[2] - r[0]) * (r[3] - r[1])
+    def area(r):
+        return (r[2] - r[0]) * (r[3] - r[1])
+
     ix0, iy0, ix1, iy1 = (v / 1000.0 for v in interior)
     assert area(m) + area(p) == pytest.approx((ix1 - ix0) * (iy1 - iy0))
 
@@ -668,7 +672,7 @@ def test_dense_obstruction_coverage_yields_fewer_or_no_seated_cells_without_rais
 def test_obstruction_forbidden_mask_is_empty_for_no_obstructions():
     rect = (0.0, 0.0, 0.055, 0.065)
     mask = obstruction_forbidden_mask([], rect, SEAT_MM_PER_CELL)
-    assert mask.any() == False
+    assert not mask.any()
     assert mask.shape == (
         max(1, __import__("math").ceil(0.065 / SEAT_MM_PER_CELL)),
         max(1, __import__("math").ceil(0.055 / SEAT_MM_PER_CELL)),
@@ -943,7 +947,8 @@ def test_sample_tray_anchored_footprint_roughly_brackets_the_measured_skus():
         ox0, oy0, ox1, oy1 = s.case_outer_mm
         widths.append(ox1 - ox0)
         heights.append(oy1 - oy0)
-    widths.sort(); heights.sort()
+    widths.sort()
+    heights.sort()
     assert 40.0 <= widths[len(widths) // 2] <= 130.0
     assert 60.0 <= heights[len(heights) // 2] <= 220.0
 

@@ -189,12 +189,69 @@ def check_placement_pose():
               f"rot={rot}: rests on the floor (z_min = {round(lo.z, 9)})")
 
 
+# --------------------------------------------------------------------------- #
+#  4. reset_pose really resets
+#
+#  The same no-op, third occurrence. `seat_cells` and `instantiate` both have
+#  to put a template clone back to identity before `lay_flat` can measure that
+#  ONE object's raw extents, and both used to do it with
+#  `o.rotation_euler = (0, 0, 0)` - discarded in silence on a quaternion-mode
+#  clone, while the `o.location = (0, 0, 0)` beside it applied, leaving the
+#  object at the origin still wearing the assembly's turn. Checks 1-3 above
+#  cannot see it: they never reset anything, and the seated-cell footprint
+#  assertion sorts the two XY extents, so a cell lying crosswise measures the
+#  same as a correct one. This checks the postcondition directly.
+# --------------------------------------------------------------------------- #
+
+def check_reset_pose_is_live():
+    print("\n[4] reset_pose: a template clone must come back to identity")
+    name = "AnkerPowerCore10000"
+    lib = fresh_library()
+    by_role = lib._load_template(name)
+    cells = by_role.get("cell") or []
+    if not cells:
+        check(False, f"{name} has no cell template to reset")
+        return
+
+    o = assets.clone(cells[0])
+    print(f"        rotation_mode as imported: {o.rotation_mode}")
+    before = o.matrix_world.copy()
+    assets.reset_pose(o)
+    bpy.context.view_layer.update()
+    M = o.matrix_world
+
+    def off_diag(m):
+        return max(abs(m[i][j])
+                   for i in range(3) for j in range(3) if i != j)
+
+    off = off_diag(M)
+    check(off < 1e-9,
+          f"no rotation survives the reset (largest off-diagonal term "
+          f"{off:.3e}) - a bare euler write here would leave the template's "
+          f"own {off_diag(before):.3f} in place")
+    check(all(M[i][i] > 0.0 for i in range(3)),
+          "the reset leaves a positive, axis-aligned scale")
+    check(M.to_translation().length < 1e-9,
+          f"the clone sits at the origin (|t| = "
+          f"{M.to_translation().length:.3e})")
+
+    ext, _, _ = extent([o])
+    lo_l = [min(c[i] for c in o.bound_box) for i in range(3)]
+    hi_l = [max(c[i] for c in o.bound_box) for i in range(3)]
+    local = [(hi_l[i] - lo_l[i]) * float(M[i][i]) for i in range(3)]
+    check(all(abs(ext[i] - local[i]) < 1e-9 for i in range(3)),
+          f"its world extents {mm(ext)}mm are its own unrotated mesh's "
+          f"{[round(v * MM, 1) for v in local]}mm - which is the whole point "
+          f"of the reset: lay_flat then measures THIS part, not the assembly")
+
+
 def main():
     print(f"orientation gate - Blender {bpy.app.version_string}")
     print(f"assets: {ASSETS_DIR}")
     check_lay_flat()
     check_rotation_is_live()
     check_placement_pose()
+    check_reset_pose_is_live()
 
     print()
     if _failures:

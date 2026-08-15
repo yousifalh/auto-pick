@@ -219,6 +219,46 @@ def drop_to_floor(objects):
         o.location.z -= lo.z
 
 
+def reset_pose(o):
+    """Put `o` back at the world origin, unrotated, with its scale intact.
+
+    This is the "reset to identity" step that has to come before `lay_flat`
+    can measure ONE object's own raw extents: a template clone arrives
+    wearing the whole assembly's `lay_flat`/`flip_if_inverted` rotation,
+    which is the assembly's answer to "which way is up", not this part's.
+
+    Written as a `matrix_world` assignment for the same reason `lay_flat`
+    is, and the reason is not stylistic. Both call sites used to say
+
+        o.rotation_euler = (0, 0, 0)
+        o.location = (0, 0, 0)
+
+    and the first of those two lines did NOTHING. The glTF importer sets
+    `rotation_mode = 'QUATERNION'` on every object it creates and
+    `Object.copy()` carries that mode to every clone; Blender ignores
+    `rotation_euler` in quaternion mode (measured: writing 90 degrees read
+    back 1.5708 while the world extents stayed byte-identical). The second
+    line - `location` is composed in every rotation mode - DID apply, so the
+    object was left half-reset: moved to the origin, still turned. Nothing
+    downstream could see it, because a cell lying crosswise measures the same
+    sorted footprint as one lying correctly.
+
+    Flipping `rotation_mode` to `'XYZ'` instead is the fix that looks obvious
+    and is worse than the bug: euler writes then rotate each object about ITS
+    OWN origin, which pulls an assembly apart (measured [114.7, 90.9, 52.2]mm
+    instead of [62.9, 90.9, 22.2]mm). See `lay_flat`'s docstring and design
+    spec Sec12.3.
+
+    The scale is preserved rather than reset with everything else: the euler
+    form left `o.scale` alone, and a bare `matrix_world = Identity` would
+    silently resize any object whose import left a scale on it.
+    """
+    scale = o.matrix_world.to_scale()
+    M = Matrix.Identity(4)
+    M[0][0], M[1][1], M[2][2] = scale.x, scale.y, scale.z
+    o.matrix_world = M
+
+
 def clone(src, target=None):
     """Linked duplicate of `src`: shares mesh data (see the module
     docstring on template import cost) but gets independent per-instance
@@ -238,8 +278,14 @@ def clone(src, target=None):
     dup.data = src.data
     target.objects.link(dup)
     dup.hide_render = False
-    dup.location = src.location.copy()
-    dup.rotation_euler = src.rotation_euler.copy()
+    # `src.copy()` already carries the whole transform over; this restates it
+    # as the one write that says so in every rotation mode. It used to be a
+    # location copy plus `dup.rotation_euler = src.rotation_euler.copy()`,
+    # and that euler line was dead twice over: it copied a value copy() had
+    # already copied, AND it was a silent no-op on the quaternion-mode
+    # objects the glTF importer produces - so it taught the idiom that broke
+    # `lay_flat`, `place_item` and `seat_cells` in turn. See `reset_pose`.
+    dup.matrix_world = src.matrix_world.copy()
     for slot in dup.material_slots:
         slot.link = "OBJECT"
     return dup
@@ -256,10 +302,35 @@ def _separate_by_material(o):
     o.select_set(True)
     bpy.context.view_layer.objects.active = o
     bpy.ops.object.mode_set(mode="EDIT")
-    bpy.ops.mesh.separate(type="MATERIAL")
+    res = bpy.ops.mesh.separate(type="MATERIAL")
     bpy.ops.object.mode_set(mode="OBJECT")
     o.select_set(False)
     new = [x for x in bpy.data.objects if x not in before]
+    # Both checks fire AFTER edit mode is left, so a failure does not strand
+    # Blender in EDIT for everything built afterwards.
+    #
+    # Blender returns CANCELLED when it separated nothing, and that result
+    # used to be discarded unread. The consequence was silent and total:
+    # `_split_multi_material_case` handed the still-merged object back,
+    # `_classify_case_liner` saw a single `case` and returned early, and the
+    # liner - the only reason this split exists, since the two primitives
+    # share one glTF node and one Blender object - simply never appeared. A
+    # full render, a clean manifest, one class missing from the dataset.
+    #
+    # The status is Blender's opinion; the pieces are the fact, so assert
+    # both. The caller only calls this on an object with more than one
+    # material slot, so at least one new object is required of a run that
+    # claims to have finished.
+    assert "FINISHED" in res, (
+        f"bpy.ops.mesh.separate(type='MATERIAL') returned {sorted(res)} on "
+        f"{o.name!r}: it separated nothing, so the shell and the cell liner "
+        f"are still one fused object and case_liner will be missing from "
+        f"every scene built from this asset")
+    assert new, (
+        f"bpy.ops.mesh.separate(type='MATERIAL') reported FINISHED on "
+        f"{o.name!r} ({len(o.material_slots)} material slots) but produced no "
+        f"new piece - the split did not happen and nothing downstream can "
+        f"tell")
     return [o] + new
 
 
@@ -550,8 +621,12 @@ class AssetLibrary:
                                   footprint=(hi.x - lo.x, hi.y - lo.y)))
             else:
                 for o in objs:
-                    o.rotation_euler = (0, 0, 0)
-                    o.location = (0, 0, 0)
+                    # `reset_pose`, not a euler write: these are clones of
+                    # glTF-imported templates, so `o.rotation_euler = (0,0,0)`
+                    # left each piece wearing the assembly's own lay_flat
+                    # rotation while `lay_flat` below tried to measure the
+                    # piece's raw extents. See reset_pose's docstring.
+                    reset_pose(o)
                     bpy.context.view_layer.update()
                     lay_flat([o])
                     lo, hi = group_bbox([o])

@@ -45,8 +45,9 @@ def _too_thin(w: int, h: int, cfg) -> bool:
     return lo <= 0 or hi > limit * lo
 
 
-def boxes_from_mask(ids: np.ndarray, id_meta: Dict[int, dict], class_ids: Dict[str, int],
-                    cfg, full_areas: Dict[int, int] = None
+def boxes_from_mask(ids: np.ndarray, id_meta: Dict[int, dict],
+                    class_ids: Dict[str, int], cfg,
+                    full_areas: Dict[int, int] = None
                     ) -> Tuple[List[dict], List[dict]]:
     """
     ids       (H, W) int32 instance map, 0 = background

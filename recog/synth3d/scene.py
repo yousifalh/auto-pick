@@ -38,6 +38,16 @@ from .config import CELL_FORMATS, Config, VARIANTS, Variant
 
 
 def reset_scene():
+    # Process-global state that outlives a scene, cleared with the scene it
+    # belongs to. `world._assert_seat_cell_footprint` memoises on
+    # (asset, cell_format) so it costs nothing per cell; without this clear
+    # that memo spans the whole RUN, so in a 1000-image render the check
+    # fires on the first cartridge of each (asset, format) and is off for
+    # every one after it - a guard that reads as present in the source and
+    # verifies one scene in a thousand. Each scene re-imports its own
+    # templates, so each scene is a fresh chance for a template to measure
+    # something other than its CELL_FORMATS entry.
+    W._seat_cell_footprint_checked.clear()
     bpy.ops.wm.read_factory_settings(use_empty=True)
     for coll in (bpy.data.objects, bpy.data.meshes, bpy.data.materials,
                  bpy.data.lights, bpy.data.cameras, bpy.data.images,
