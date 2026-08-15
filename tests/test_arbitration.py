@@ -231,8 +231,8 @@ def test_empty_region_admits_nothing():
 
 
 def test_calibrate_picks_the_smallest_tau_meeting_the_budget():
-    from recog.calibrate_tau import calibrate
-
+    # `calibrate` is not imported here: this test reaches it through the
+    # `calibrate_from_pairs` helper below (:262), which does its own import.
     # (iou, admits_a_cell_in_the_optimistic_error)
     records = [(0.99, False)] * 90 + [(0.50, True)] * 10
     out = calibrate_from_pairs(records, fail_budget=0.05)

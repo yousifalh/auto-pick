@@ -92,7 +92,8 @@ def test_next_free_x_result_actually_clears_the_mask():
     # Anti-vacuity guard: measured rate is 63/200 with this seed; floor is
     # set with headroom below that so the test still fails loudly if a
     # future change collapses reach toward zero.
-    assert hits > 40, f"test is vacuous: only {hits}/200 iterations exercised the assertions"
+    assert hits > 40, (
+        f"test is vacuous: only {hits}/200 iterations exercised the assertions")
 
 
 def test_next_free_x_tol_is_millimetres_not_cells():
@@ -196,7 +197,8 @@ def test_next_free_x_non_binary_cell_sizes_property(mm_per_cell):
     # make the test pass.
     # Measured hit rate is 200/200 at all three cell sizes, so a floor of
     # 20 would pass silently even after a 90 % collapse in reach.
-    assert hits > 150, f"test is vacuous: only {hits}/200 iterations exercised the assertions"
+    assert hits > 150, (
+        f"test is vacuous: only {hits}/200 iterations exercised the assertions")
 
 
 def test_shelf_survives_an_obstacle_instead_of_being_abandoned():

@@ -49,8 +49,23 @@ try:  # pragma: no cover - import guard
 except Exception as exc:  # pragma: no cover - hard dep
     raise ImportError("opencv-python is required") from exc
 
-from common.types import BBox
+from common.types import BBox, DEFAULT_WALL_INSET_MM, UnknownScale
 from plan.scene import CellState, OccupancyGrid
+
+# `UnknownScale` and the wall inset MOVED to common.types on 2026-08-15
+# and are re-exported here, not re-implemented. They are contracts two
+# packages share - recog.seg_evaluate raises the exception and
+# recog.calibrate_tau / recog.seg_ablation score against the inset - and
+# holding them here meant `recog` imported `plan` at module load. See
+# common/types.py for the full note. Every existing
+# `from plan.placement_area import UnknownScale` keeps working and keeps
+# naming the SAME class, which is the part that matters: the planner
+# catches it to turn an uncalibrated frame into a counted skip.
+#
+# The private alias is kept because scripts/placement_feasibility.py - a
+# frozen receipt-generating script - imports `_DEFAULT_WALL_INSET_MM`
+# from this module by that name.
+_DEFAULT_WALL_INSET_MM = DEFAULT_WALL_INSET_MM
 
 
 # ------------------------------------------------------------- result ---
@@ -83,24 +98,6 @@ class PlacementArea:
 
 
 # ------------------------------------------------------------- scale ----
-
-class UnknownScale(ValueError):
-    """No millimetres-per-pixel is available for this frame.
-
-    Neither the frame's own calibration (``Snapshot.mm_per_px``) nor a
-    deliberately configured fallback (``planning.camera.mm_per_px_x``,
-    or ``mode.mm_per_px``) said how big a pixel is, so every
-    millimetre in the answer would be invented.
-
-    Raised rather than defaulted. This project's characteristic failure
-    is silent degradation: a tau gate documented as retired kept
-    rejecting every cartridge for weeks, and a hardcoded 0.625 mm/px cost
-    9 cells and put 3 placements onto ground-truth non-floor material -
-    both silent, both discovered only by someone re-deriving the number
-    from scratch. An unknown scale is a configuration error and reads as
-    one.
-    """
-
 
 def _resolve_scale(per_frame: Optional[float], fallback: Optional[float],
                    who: str) -> float:
@@ -158,13 +155,39 @@ def _rasterise_mask(
     this cannot fire - both callers derive ``rect`` from the mask itself -
     but "unmeasured" defaulting to "safe" is how the class of defect this
     change repairs gets in.
+
+    ``resolution_mm`` is the size of a cell AFTER the one-pixel clamp,
+    not the requested ``mm_per_cell``. A cell can never be finer than a
+    pixel, so on a frame coarser than ``mm_per_cell`` the clamp binds and
+    a cell IS one pixel - and the grid used to keep reporting
+    ``mm_per_cell`` regardless. Measured at 2.0 mm/px with 1.5 mm cells:
+    a 40 px crop became 40 cells claiming 60 mm of an 80 mm crop, the
+    forbidden mask compressed 25 % toward the origin with the far 20 mm
+    never measured. The corpus tops out near 1.4 mm/px so nothing in tree
+    reaches the clamp - but ``OccupancyGrid.resolution_mm`` is read as
+    the true millimetres of a cell by ``_overlaps_forbidden``, by
+    ``Planner._cell_block_for`` and (since 2026-08-15) by
+    ``Planner._pack_cartridge`` to size the packing strip, so a grid that
+    lies about its own extent would make all three wrong together.
+
+    Written as a branch rather than ``px_per_cell * mm_per_px`` because
+    the two differ in the last bit: at 1.4 mm/px that product is
+    1.4999999999999998, and the resolution is compared for equality and
+    multiplied by the row count to give the strip extent.
     """
     ix1, iy1, ix2, iy2 = rect
-    px_per_cell = max(1.0, mm_per_cell / mm_per_px)
+    if mm_per_cell >= mm_per_px:
+        px_per_cell = mm_per_cell / mm_per_px
+        resolution_mm = mm_per_cell
+    else:
+        # The clamp binds: one cell, one pixel, and a pixel spans
+        # mm_per_px millimetres.
+        px_per_cell = 1.0
+        resolution_mm = mm_per_px
     rows = max(1, int((iy2 - iy1) / px_per_cell))
     cols = max(1, int((ix2 - ix1) / px_per_cell))
 
-    grid = OccupancyGrid(rows=rows, cols=cols, resolution_mm=mm_per_cell)
+    grid = OccupancyGrid(rows=rows, cols=cols, resolution_mm=resolution_mm)
     h_mask, w_mask = inside_mask.shape
 
     # Cell (r, c) covers pixels [y0, y1) x [x0, x1). At least one pixel
@@ -455,28 +478,23 @@ class BadDetectorBox(PlacementDisagreement):
     """
 
 
-# catalog.json (recog/synth3d/assets/catalog.json) carries a measured
-# `case_wall_mm` per asset from CAD conversion: 4.0, 3.75, 3.7, 4.25 mm
-# across the four cataloged cartridges. No asset/SKU identifier crosses
-# the Recognition -> Planning boundary (Detection/BBox/Snapshot carry
-# none), so there is no way to look up the *specific* cartridge's wall
-# thickness at inference time - a single scalar has to stand in for all
-# of them. The MAX of the four measured values is used, deliberately:
-# eroding a bit further than necessary only costs a sliver of floor
-# space at the cartridge's edge, while eroding too little would let
-# actual wall material be reported as safe to place a cell against -
-# the same "skip costs a cycle, misplacement costs a cell" asymmetry
-# plan.arbitration is built on. A deployment that knows its cartridge
-# SKU should pass its measured case_wall_mm explicitly instead of
-# relying on this default.
-_DEFAULT_WALL_INSET_MM = 4.25
+# DEFAULT_WALL_INSET_MM (4.25 mm, the MAX of the four CAD-measured
+# `case_wall_mm` in recog/synth3d/assets/catalog.json) now lives in
+# common.types, imported at the top of this file. It is read by
+# recog.calibrate_tau and recog.seg_ablation as well as by the extractor
+# below, and a constant three packages share belongs in the package all
+# three already depend on. Its full provenance note travelled with it.
+#
+# _MAX_CARTRIDGE_EXTENT_MM below did NOT travel, and the asymmetry is
+# deliberate: nothing outside this module reads it, and it is a bound
+# this extractor enforces rather than a vocabulary anyone shares.
 
 
 # The OUTER footprint of the largest cartridge in
 # recog/synth3d/assets/catalog.json. The four cataloged `extents_mm` are
 # 62.9x90.9, 80.7x97.0, 62.3x167.8 and 81.7x180.0 mm, and this is their
 # per-axis MAX - the same rule, for the same reason, as
-# _DEFAULT_WALL_INSET_MM above: no asset/SKU identifier crosses the
+# common.types.DEFAULT_WALL_INSET_MM: no asset/SKU identifier crosses the
 # Recognition -> Planning boundary, so one scalar pair has to stand in
 # for every cartridge, and it has to be the one that cannot refuse a real
 # one.
@@ -565,7 +583,7 @@ class SegmentationPlacementAreaExtractor:
 
     def __init__(self, mm_per_cell: float = 1.5,
                  mm_per_px: Optional[float] = None,
-                 wall_inset_mm: float = _DEFAULT_WALL_INSET_MM,
+                 wall_inset_mm: float = DEFAULT_WALL_INSET_MM,
                  max_cartridge_extent_mm: Tuple[float, float]
                  = _MAX_CARTRIDGE_EXTENT_MM) -> None:
         self.mm_per_cell = float(mm_per_cell)
@@ -762,7 +780,30 @@ class SegmentationPlacementAreaExtractor:
         occupancy = _rasterise_mask(
             inside, (x0, y0, x1, y1), self.mm_per_cell, scale)
 
-        ox, oy = int(cartridge_bbox.xmin), int(cartridge_bbox.ymin)
+        # The crop origin, clamped the way the crop itself was clamped.
+        # `recog.inference.attach_cartridge_masks` cuts the label map with
+        # `max(0, int(bbox.xmin))` / `max(0, int(bbox.ymin))`, so for a
+        # box hanging off the left or top of the frame the mask starts at
+        # the IMAGE edge and the raw corner is not where its (0, 0) is.
+        # Adding the raw corner back shifted every place target in that
+        # cartridge by the overhang, silently - the rectangle it produces
+        # is internally consistent and nothing downstream re-derives it.
+        # The heuristic extractor has clamped here since it was written.
+        ox = max(0, int(cartridge_bbox.xmin))
+        oy = max(0, int(cartridge_bbox.ymin))
+        # The clamp is only recoverable if the mask really is the crop
+        # this box produces. A mask LARGER than the box cannot be, and
+        # then neither corner tells you where its (0, 0) sits.
+        if (inside.shape[0] > int(cartridge_bbox.ymax) - oy
+                or inside.shape[1] > int(cartridge_bbox.xmax) - ox):
+            raise ValueError(
+                f"label_map is {inside.shape[0]} x {inside.shape[1]} px "
+                f"but the cartridge box {cartridge_bbox} can only crop "
+                f"{int(cartridge_bbox.ymax) - oy} x "
+                f"{int(cartridge_bbox.xmax) - ox} px from the image. The "
+                f"mask and the box describe different crops, so the "
+                f"placement rectangle cannot be put back into image "
+                f"coordinates.")
         return PlacementArea(
             rectangle=BBox(ox + x0, oy + y0, ox + x1, oy + y1),
             inside_mask=inside,
@@ -791,6 +832,7 @@ class SegmentationPlacementAreaExtractor:
 # planner.
 
 __all__ = [
+    "DEFAULT_WALL_INSET_MM",
     "PlacementArea",
     "PlacementAreaExtractor",
     "HeuristicPlacementAreaExtractor",

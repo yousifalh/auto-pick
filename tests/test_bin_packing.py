@@ -13,7 +13,6 @@ Verifies the core algorithmic guarantees from PPR §5.3.3:
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
 from plan.bin_packing import (
     Item, PackedItem, PackResult, first_fit_decreasing,

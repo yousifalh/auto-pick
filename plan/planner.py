@@ -109,6 +109,16 @@ from plan.scene import (
 log = get_logger("autopick.planner")
 
 
+# The millimetre slack `common.packing` allows a footprint against the
+# strip's far edge (`first_fit_decreasing(..., tol=1e-6)`, the default
+# `pack_best_effort` is called with here). `_cell_block_for` has to
+# accept exactly it and no more: since the packing strip is sized from
+# the occupancy grid, a placement that overruns the grid by more than
+# this did not come out of the packer at all, and clipping it would mark
+# a battery smaller than the space it was tested against.
+_FIT_TOL_MM = 1e-6
+
+
 # ------------------------------------------------------ configuration --
 
 @dataclass
@@ -719,17 +729,38 @@ class Planner:
     # ---- FFDH wrapper ---------------------------------------------------
 
     def _pack_cartridge(self, ctg: Cartridge) -> PackResult:
-        pr = ctg.placeable_rectangle
-        # The cartridge's OWN scale, not the current frame's: this
-        # rectangle is in the pixels of the frame that measured it.
-        # _drop_areas_measured_at_another_scale guarantees they are the
-        # same number whenever both exist, and this reads the one that
-        # is true by construction rather than the one that is true by
-        # convention.
-        scale = _resolve_scale(ctg.mm_per_px, self.cfg.mm_per_px,
-                               f"cartridge {ctg.id}")
-        strip_w_mm = pr.width * scale
-        strip_h_mm = pr.height * scale
+        occ = ctg.occupancy
+        # THE STRIP IS THE GRID, not the rectangle the grid was rasterised
+        # from. The forbidden mask handed to the packer below IS this
+        # occupancy grid, and its row/col count truncates
+        # (`plan/placement_area.py::_rasterise_mask`: `rows = int((iy2 -
+        # iy1) / px_per_cell)`), so the rectangle is up to one cell wider
+        # and taller than the mask has cells for. Sizing the strip from
+        # `pr.width * scale` handed the packer that fringe, and
+        # `common.packing._overlaps_forbidden` CLAMPS its column and row
+        # range to `mask.shape` - so the fringe read FREE and a cell could
+        # be seated up to one whole cell past the last floor anybody
+        # measured. At 0.5 mm/px on a 100 x 200 px rectangle the strip
+        # measured 50.0 x 100.0 mm against a 33 x 66 cell grid spanning
+        # 49.5 x 99.0 mm: 1.5 mm of unmeasured floor on each axis, 35 % of
+        # the 4.25 mm wall inset this project deliberately erodes for
+        # safety. Fixed 2026-08-15; `_cell_block_for` below is the same
+        # arithmetic on the reservation side and was tightened with it.
+        #
+        # The ORIGIN is unchanged - cell (0, 0) is the rectangle's corner
+        # either way - so `_cell_to_workspace` and every place target it
+        # produces are untouched by this.
+        #
+        # No `_resolve_scale` here any more, because nothing in this
+        # method needs a scale: the grid already carries its own
+        # millimetres. The frame's scale is still resolved, and still
+        # refuses to be guessed, on every path that converts one of these
+        # placements into a coordinate - `_place_target` /
+        # `_cell_to_workspace` for the place point, `_nearest_battery`
+        # for the pick - and `_ensure_placement_areas` resolves it before
+        # a cartridge can hold a grid at all.
+        strip_w_mm = occ.cols * occ.resolution_mm
+        strip_h_mm = occ.rows * occ.resolution_mm
 
         # Estimate an upper bound on how many items might fit, with 2x
         # slack so FFDH has enough candidates to saturate the strip.
@@ -748,7 +779,7 @@ class Planner:
             for i in range(n_est)
         ]
 
-        forbidden = ctg.occupancy.mask_of(
+        forbidden = occ.mask_of(
             CellState.FORBIDDEN, CellState.PLANNED, CellState.PLACED,
         )
         # pack_best_effort, not first_fit_decreasing: FFDH alone placed
@@ -761,7 +792,7 @@ class Planner:
             items, strip_w_mm, strip_h_mm,
             allow_rotation=self.cfg.allow_rotation,
             forbidden_mask=forbidden,
-            mm_per_cell=ctg.occupancy.resolution_mm,
+            mm_per_cell=occ.resolution_mm,
         )
 
     # ---- pose construction ---------------------------------------------
@@ -977,12 +1008,13 @@ class Planner:
         is how the packer seats a cell into space that is already full.
 
         ``clip`` is the difference between the two. For a new placement,
-        a footprint reaching more than one cell past the grid means the
-        packing strip and the grid disagree about the rectangle and
-        every reservation in the cartridge is off by an unknown amount,
-        so it raises. For a battery being re-projected after the
-        cartridge moved, falling outside the new rectangle is an
-        ordinary consequence of re-measuring, and the caller counts it.
+        a footprint reaching past the grid by more than the packer's own
+        ``1e-6`` mm fit tolerance means the packing strip and the grid
+        disagree about the rectangle and every reservation in the
+        cartridge is off by an unknown amount, so it raises. For a
+        battery being re-projected after the cartridge moved, falling
+        outside the new rectangle is an ordinary consequence of
+        re-measuring, and the caller counts it.
         """
         occ = ctg.occupancy
         if occ is None:
@@ -993,19 +1025,32 @@ class Planner:
         row1 = int(np.ceil((y_mm + h_mm) / res_mm))
         col1 = int(np.ceil((x_mm + w_mm) / res_mm))
 
-        # The strip is `pr.height * scale` mm while the grid is
-        # `int(height_px / px_per_cell)` cells, so the far edge can sit
-        # up to one cell past the last row: that is quantisation, and it
-        # clips. More than one cell means the strip and the grid are
-        # describing different rectangles, and every reservation in this
-        # cartridge is then off by an unknown amount.
-        if not clip and (row1 > occ.rows + 1 or col1 > occ.cols + 1):
+        # The strip IS the grid - `_pack_cartridge` sizes it as
+        # `occ.cols * res_mm` x `occ.rows * res_mm` - so a placement
+        # cannot reach past the last cell by any distance a reader would
+        # call a distance. What is left is `pack_best_effort`'s own fit
+        # tolerance, 1e-6 mm, which `np.ceil` turns into one extra cell
+        # INDEX on a footprint that ends flush with the far edge; the
+        # clip below drops that index and the sliver it names is under a
+        # nanometre of floor.
+        #
+        # Until 2026-08-15 the strip was `pr.height * scale` while the
+        # grid was `int(height_px / px_per_cell)` cells, so the far edge
+        # really could sit a whole cell - 1.5 mm - past the last row, and
+        # this guard tolerated exactly that while the clip below silently
+        # under-marked the footprint. Both halves are gone: the strip no
+        # longer produces such a placement, and if one arrives anyway the
+        # strip and the grid are describing different rectangles and every
+        # reservation in this cartridge is off by an unknown amount.
+        if not clip and (x_mm + w_mm > occ.cols * res_mm + _FIT_TOL_MM
+                         or y_mm + h_mm > occ.rows * res_mm + _FIT_TOL_MM):
             raise RuntimeError(
                 f"cartridge {ctg.id}: placement at ({x_mm:.1f}, "
-                f"{y_mm:.1f}) + ({w_mm:.1f} x {h_mm:.1f}) mm needs cells up "
-                f"to ({row1}, {col1}) in a {occ.rows} x {occ.cols} grid at "
-                f"{res_mm} mm — the packing strip and the occupancy grid "
-                "disagree about the placeable rectangle")
+                f"{y_mm:.1f}) + ({w_mm:.1f} x {h_mm:.1f}) mm reaches past a "
+                f"{occ.rows} x {occ.cols} grid at {res_mm} mm, which spans "
+                f"{occ.rows * res_mm:.3f} x {occ.cols * res_mm:.3f} mm — the "
+                "packing strip and the occupancy grid disagree about the "
+                "placeable rectangle")
         # `_xy_mm_to_cell` clips the near corner INTO the grid, which
         # would turn a footprint lying entirely past the far edge into a
         # one-cell block on the boundary — a battery marked somewhere it

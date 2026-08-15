@@ -277,7 +277,6 @@ def test_a_rotated_placement_reserves_the_rotated_block():
     the same defect, one costume down.
     """
     from common.packing import Item, PackedItem
-    from plan.scene import Cartridge, OccupancyGrid
 
     planner = _make_planner()
     ctg = _bare_cartridge()
@@ -1258,3 +1257,142 @@ def test_a_scale_change_while_a_cartridge_is_unseen_keeps_its_batteries():
     assert planner.rescaled_area_drop_count == 0
     assert len(planner.env.cartridge(cid).placed_reservations()) == 1
     assert planner.rescaled_placed_reservation_drop_count == 0
+
+
+# ------------------ the packing strip and the occupancy grid, in mm ----
+#
+# `_pack_cartridge` sized the strip from the PIXEL rectangle
+# (`pr.width * scale`) while the forbidden mask it handed the packer is
+# the occupancy grid, whose row/col count TRUNCATES
+# (`plan/placement_area.py::_rasterise_mask`: `rows = int((iy2 - iy1) /
+# px_per_cell)`). The leftover fringe is off the end of the mask, and
+# `common.packing._overlaps_forbidden` CLAMPS `c2`/`r2` to `mask.shape`,
+# so that fringe reads FREE. A cell could therefore be seated up to one
+# whole grid cell - 1.5 mm, 35 % of the 4.25 mm wall inset this project
+# deliberately erodes - past the last floor anybody measured.
+#
+# Reproduced at 0.5 mm/px on a 100 x 200 px rectangle: the strip measured
+# 50.0 x 100.0 mm while the grid spans 33 x 66 cells = 49.5 x 99.0 mm.
+
+def _cartridge_at(px_w, px_h, mm_per_px, mm_per_cell=1.5):
+    """A cartridge whose grid is rasterised from its own rectangle, so
+    the two are related exactly the way the extractor relates them."""
+    import numpy as np
+
+    from plan.placement_area import _rasterise_mask
+    from plan.scene import Cartridge
+
+    inside = np.ones((px_h, px_w), np.uint8)
+    grid = _rasterise_mask(inside, (0, 0, px_w, px_h), mm_per_cell, mm_per_px)
+    return Cartridge(
+        id=0, bbox=BBox(0, 0, px_w, px_h), confidence=0.9,
+        placeable_rectangle=BBox(0, 0, px_w, px_h), mm_per_px=mm_per_px,
+        occupancy=grid,
+    )
+
+
+def _strip_handed_to_the_packer(planner, ctg, monkeypatch):
+    """The (width, height) `_pack_cartridge` actually packs into."""
+    import plan.planner as planner_mod
+
+    seen = {}
+    real = planner_mod.pack_best_effort
+
+    def spy(items, strip_width, strip_height, **kw):
+        seen["strip"] = (strip_width, strip_height)
+        return real(items, strip_width, strip_height, **kw)
+
+    monkeypatch.setattr(planner_mod, "pack_best_effort", spy)
+    planner._pack_cartridge(ctg)
+    return seen["strip"]
+
+
+def test_the_packing_strip_is_exactly_the_grid_the_mask_describes(
+        monkeypatch):
+    """The strip must be the grid's own extent, not the rectangle's.
+
+    Anything wider is millimetres the forbidden mask has no cells for,
+    and `_overlaps_forbidden` reports a footprint over them as free
+    because it clamps its column/row range to `mask.shape`.
+    """
+    planner = _make_planner()
+    ctg = _cartridge_at(100, 200, mm_per_px=0.5)
+    occ = ctg.occupancy
+    assert (occ.rows, occ.cols) == (66, 33), "fixture drifted"
+
+    strip_w, strip_h = _strip_handed_to_the_packer(planner, ctg, monkeypatch)
+
+    assert (strip_w, strip_h) == (occ.cols * occ.resolution_mm,
+                                  occ.rows * occ.resolution_mm)
+    # The numbers this was reproduced at, spelled out: the rectangle says
+    # 50.0 x 100.0 mm and the grid holds 49.5 x 99.0 mm of cells.
+    assert (strip_w, strip_h) == (49.5, 99.0)
+
+
+def test_no_cell_is_seated_past_the_floor_the_grid_measured():
+    """The behavioural half. A 25 mm-wide item fits twice in the 50.0 mm
+    the rectangle claims and once in the 49.5 mm the grid holds; the
+    second one hangs 0.5 mm over floor nobody looked at."""
+    from plan.planner import PlannerConfig
+
+    planner = _make_planner()
+    planner.cfg = PlannerConfig(battery_width_mm=25.0,
+                                battery_length_mm=99.0, mm_per_px=0.5)
+    ctg = _cartridge_at(100, 200, mm_per_px=0.5)
+    occ = ctg.occupancy
+
+    packed = planner._pack_cartridge(ctg)
+    assert packed.placements, "fixture must place something"
+    for p in packed.placements:
+        assert p.x + p.width <= occ.cols * occ.resolution_mm + 1e-6, (
+            f"a cell reaches {p.x + p.width:.3f} mm across a floor "
+            f"measured to {occ.cols * occ.resolution_mm:.3f} mm")
+        assert p.y + p.height <= occ.rows * occ.resolution_mm + 1e-6, (
+            f"a cell reaches {p.y + p.height:.3f} mm down a floor "
+            f"measured to {occ.rows * occ.resolution_mm:.3f} mm")
+
+
+def test_the_reservation_guard_no_longer_tolerates_a_whole_cell_overrun():
+    """`_cell_block_for` clipped a footprint reaching up to one whole
+    cell past the grid, because the strip really could produce one. Now
+    that the strip IS the grid, an overrun that large means the two
+    describe different rectangles - which is exactly what the guard says
+    it is for, and it must fire rather than clip and under-mark."""
+    planner = _make_planner()
+    ctg = _cartridge_at(100, 200, mm_per_px=0.5)
+    occ = ctg.occupancy
+    res = occ.resolution_mm
+
+    # Flush against the far edge is fine; it is the grid's own extent.
+    r0, r1, c0, c1 = planner._cell_block_for(
+        ctg, 0.0, 0.0, occ.cols * res, occ.rows * res)
+    assert (r1, c1) == (occ.rows, occ.cols)
+
+    # One whole cell past it is not.
+    with pytest.raises(RuntimeError, match="disagree about the placeable"):
+        planner._cell_block_for(
+            ctg, 0.0, 0.0, occ.cols * res + res, occ.rows * res)
+    with pytest.raises(RuntimeError, match="disagree about the placeable"):
+        planner._cell_block_for(
+            ctg, 0.0, 0.0, occ.cols * res, occ.rows * res + res)
+
+
+def test_every_placement_quantises_without_being_clipped():
+    """The two sides made consistent, stated as one property: on a real
+    packed cartridge no placement needs a cell the grid does not have, so
+    `_cell_block_for` never clips and the marked block is the ceil of the
+    footprint it was tested at."""
+    import numpy as np
+
+    planner = _make_planner()
+    ctg = _cartridge_at(220, 480, mm_per_px=0.38)
+    occ = ctg.occupancy
+    res = occ.resolution_mm
+
+    packed = planner._pack_cartridge(ctg)
+    assert len(packed.placements) >= 4, "fixture must pack several cells"
+    for p in packed.placements:
+        r0, r1, c0, c1 = planner._cell_block_for(
+            ctg, p.x, p.y, p.width, p.height)
+        assert r1 == int(np.ceil((p.y + p.height) / res)) <= occ.rows
+        assert c1 == int(np.ceil((p.x + p.width) / res)) <= occ.cols

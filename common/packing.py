@@ -74,6 +74,20 @@ def _overlaps_forbidden(
 
     ``mask`` is indexed ``[row, col]``, with each cell ``mm_per_cell`` mm
     square and aligned to the strip origin.
+
+    ``c2`` / ``r2`` are CLAMPED to ``mask.shape``, so a footprint that
+    reaches past the mask is judged on the cells the mask does have and
+    the overhang reads FREE. That is the only thing this function can do
+    - it has no cells out there to consult - which makes it the CALLER's
+    job to keep the strip inside the mask. ``plan.planner`` did not:
+    until 2026-08-15 it sized the strip from the placeable rectangle in
+    pixels while the mask was the occupancy grid, whose cell count
+    truncates, so the strip overran the mask by up to one cell (measured:
+    1.5 mm on each axis of a 100 x 200 px rectangle at 0.5 mm/px) and a
+    battery could be seated on floor nobody measured. It now sizes the
+    strip as ``cols * resolution_mm`` x ``rows * resolution_mm``, which is
+    this mask exactly. The clamp stays because ``recog.synth3d.layout``
+    packs against jig-pocket masks it builds itself.
     """
     c1 = max(0, int(x / mm_per_cell))
     r1 = max(0, int(y / mm_per_cell))

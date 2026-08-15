@@ -7,12 +7,11 @@ helpers on ``OccupancyGrid``.
 """
 from __future__ import annotations
 
-import numpy as np
 import pytest
 
 from common.types import BBox, ClassLabel, Detection, Snapshot
 from plan.scene import (
-    Battery, Cartridge, CellState, EnvironmentModel, OccupancyGrid,
+    Cartridge, CellState, EnvironmentModel, OccupancyGrid,
     PlacementCollision, Reservation, TrackingConfig, WorkspaceBounds,
 )
 

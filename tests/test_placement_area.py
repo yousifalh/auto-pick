@@ -640,3 +640,148 @@ def test_both_extractors_accept_the_scale_on_the_same_contract():
         params = inspect.signature(cls.extract).parameters
         assert "mm_per_px" in params, cls.__name__
         assert params["mm_per_px"].default is None, cls.__name__
+
+
+# ------------------------------------- the grid's own extent, in mm ----
+#
+# `_rasterise_mask` clamps `px_per_cell = max(1.0, mm_per_cell /
+# mm_per_px)` - a cell can never be finer than a pixel - but the grid it
+# builds carried `resolution_mm=mm_per_cell` regardless. Once the frame
+# is coarser than mm_per_cell the clamp binds, a cell IS one pixel, and
+# the grid then reports an extent it does not have. Everything
+# downstream reads `OccupancyGrid.resolution_mm` as the true size of a
+# cell: `common.packing._overlaps_forbidden` maps millimetres to cells
+# with it, `Planner._cell_block_for` quantises reservations with it, and
+# since 2026-08-15 `Planner._pack_cartridge` sizes the packing strip
+# from it.
+
+def test_a_grid_cell_measures_what_it_actually_covers():
+    """rows * resolution_mm must be the crop's real millimetres.
+
+    Reproduced at 2.0 mm/px with 1.5 mm cells: px_per_cell clamps to 1.0,
+    so a 40 px crop yields 40 cells - and at the stored 1.5 mm/cell the
+    grid claimed 60 mm of an 80 mm crop. The forbidden mask was
+    compressed 25 % toward the origin and the far 20 mm went unmeasured.
+    """
+    import numpy as np
+
+    from plan.placement_area import _rasterise_mask
+
+    mm_per_px, mm_per_cell = 2.0, 1.5
+    inside = np.ones((40, 40), np.uint8)
+    grid = _rasterise_mask(inside, (0, 0, 40, 40), mm_per_cell, mm_per_px)
+
+    assert (grid.rows, grid.cols) == (40, 40), (
+        "one cell per pixel is the clamp doing its job; this test is "
+        "about what the grid then says a cell measures")
+    assert grid.resolution_mm == 2.0, (
+        f"a cell here IS one pixel, which spans {mm_per_px} mm, but the "
+        f"grid reports {grid.resolution_mm} mm")
+    assert grid.rows * grid.resolution_mm == 80.0
+    assert grid.cols * grid.resolution_mm == 80.0
+
+
+def test_a_grid_cell_is_still_exactly_mm_per_cell_when_the_clamp_is_slack():
+    """The corpus tops out near 1.4 mm/px, so the clamp never binds in
+    tree and the resolution must come back as the configured 1.5 mm -
+    EXACTLY, not 1.4999999999999998. It is compared for equality by
+    `Planner._drop_areas_measured_at_another_scale`'s neighbours and it
+    multiplies the strip extent, so a float round-trip through
+    px_per_cell * mm_per_px would move measured results for no reason.
+    """
+    import numpy as np
+
+    from plan.placement_area import _rasterise_mask
+
+    inside = np.ones((200, 200), np.uint8)
+    for mm_per_px in (0.38, 0.490, 0.625, 0.998, 1.045, 1.4):
+        grid = _rasterise_mask(inside, (0, 0, 200, 200), 1.5, mm_per_px)
+        assert grid.resolution_mm == 1.5, (
+            f"{mm_per_px} mm/px leaves the clamp slack, so a cell really "
+            f"is 1.5 mm; got {grid.resolution_mm!r}")
+
+
+def test_the_grid_extent_matches_the_crop_across_the_scale_range():
+    """One statement of the invariant, over both sides of the clamp.
+
+    The grid may fall short of the crop by up to the cell the row/col
+    count truncates - that is quantisation and it errs safe. It may not
+    fall short by MORE, which is what a resolution that disagrees with
+    the real pixels-per-cell produces: at 2.0 mm/px a 64 px crop spans
+    128 mm and the grid claimed 96 of them.
+    """
+    import numpy as np
+
+    from plan.placement_area import _rasterise_mask
+
+    inside = np.ones((64, 48), np.uint8)
+    for mm_per_px in (0.25, 0.5, 1.0, 1.5, 2.0, 3.0):
+        grid = _rasterise_mask(inside, (0, 0, 48, 64), 1.5, mm_per_px)
+        res = grid.resolution_mm
+        assert grid.rows * res <= 64 * mm_per_px + 1e-9
+        assert grid.cols * res <= 48 * mm_per_px + 1e-9
+        assert 64 * mm_per_px - grid.rows * res < res, (
+            f"at {mm_per_px} mm/px the grid is short of the crop by more "
+            f"than the one cell truncation can explain")
+        assert 48 * mm_per_px - grid.cols * res < res, (
+            f"at {mm_per_px} mm/px the grid is short of the crop by more "
+            f"than the one cell truncation can explain")
+
+
+# ------------------------------- the crop origin the segmenter used ----
+
+def test_a_box_straddling_the_image_edge_keeps_its_crop_origin():
+    """`recog.inference.attach_cartridge_masks` crops with
+    ``max(0, int(bbox.xmin))``, so for a box that hangs off the left or
+    top of the frame the label map starts at the image edge, not at the
+    box corner. The extractor added the RAW corner back, shifting every
+    place target in that cartridge by the overhang - silently, because
+    the rectangle it returns is self-consistent and nothing downstream
+    re-derives it. The heuristic extractor has always clamped here.
+    """
+    import numpy as np
+
+    from common.types import BBox
+    from plan.arbitration import CH_BAY, CH_CARTRIDGE
+    from plan.placement_area import SegmentationPlacementAreaExtractor
+
+    # The box hangs 10 px off the left edge and 5 px off the top, so
+    # inference crops image[0:95, 0:90] and the label map is 95 x 90.
+    box = BBox(-10, -5, 90, 95)
+    label = np.zeros((95, 90), np.int8)
+    label[5:90, 5:85] = CH_CARTRIDGE
+    label[12:83, 12:78] = CH_BAY
+
+    ex = SegmentationPlacementAreaExtractor(
+        mm_per_cell=1.5, mm_per_px=0.625, wall_inset_mm=0.0)
+    pa = ex.extract(np.zeros((200, 200, 3), np.uint8), box, label_map=label)
+
+    assert pa.rectangle.xmin >= 0 and pa.rectangle.ymin >= 0, (
+        "the placement rectangle starts left of / above the image the "
+        "mask was measured in - the crop origin was not clamped")
+    # The mask's own bay starts 12 px in, so the rectangle must land
+    # there in IMAGE coordinates, not 10 px further left.
+    assert pa.rectangle.xmin == 12 and pa.rectangle.ymin == 12
+
+
+def test_a_label_map_bigger_than_its_box_is_refused():
+    """The origin is only recoverable if the mask really is the crop that
+    box produces. A mask larger than the box cannot be, and pairing the
+    two would place the rectangle wherever the arithmetic happened to
+    land."""
+    import numpy as np
+    import pytest
+
+    from common.types import BBox
+    from plan.arbitration import CH_BAY, CH_CARTRIDGE
+    from plan.placement_area import SegmentationPlacementAreaExtractor
+
+    label = np.zeros((95, 90), np.int8)
+    label[5:90, 5:85] = CH_CARTRIDGE
+    label[12:83, 12:78] = CH_BAY
+
+    ex = SegmentationPlacementAreaExtractor(
+        mm_per_cell=1.5, mm_per_px=0.625, wall_inset_mm=0.0)
+    with pytest.raises(ValueError, match="label_map"):
+        ex.extract(np.zeros((200, 200, 3), np.uint8),
+                   BBox(0, 0, 40, 40), label_map=label)
