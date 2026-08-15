@@ -8,9 +8,12 @@ module:
 1.  The types here are the *only* values that cross the boundaries
     ``Recognition → Planning`` and ``Planning → Execution``. Anything
     module-internal lives in that module.
-2.  Every type provides a ``to_dict()`` method that emits
+2.  Every *dataclass* here provides a ``to_dict()`` method that emits
     JSON-compatible primitives. This is what makes the pipeline
-    serialisable for logging, regression fixtures, and inspection.
+    serialisable for logging, regression fixtures, and inspection. The
+    two non-dataclass contracts at the foot of the file
+    (:class:`UnknownScale`, :data:`DEFAULT_WALL_INSET_MM`) are an
+    exception class and a scalar; there is nothing to serialise.
 3.  A type that states an invariant in its docstring **checks it in
     ``__post_init__``**. Frozen guarantees a value will not change; it
     guarantees nothing about the value being possible, and until
@@ -77,7 +80,7 @@ from typing import Any
 # ----------------------------------------------------------- geometry ------
 
 @dataclass(frozen=True)
-class BBox: 
+class BBox:
     """An axis-aligned bounding box in image-pixel coordinates.
 
     The convention is 0-based with inclusive ``xmin``/``ymin`` and
@@ -393,6 +396,83 @@ class RobotStatus:
             "cycle_time_ms": float(self.cycle_time_ms),
             "message": self.message,
         }
+
+
+# --------------------------------------- scale, and the cartridge wall ---
+#
+# The two contracts below are not data that flows through the pipeline;
+# they are the vocabulary two packages have to agree on to talk about a
+# frame's scale. They lived in ``plan.placement_area`` until 2026-08-15,
+# which put them on the wrong side of a boundary: ``recog.seg_evaluate``
+# imported ``UnknownScale`` and ``recog.calibrate_tau`` imported the wall
+# inset, so ``recog`` imported ``plan`` at module load — the exact
+# back-edge ``plan/bin_packing.py``'s docstring cites as the reason the
+# packing algorithms live in ``common.packing`` ("so that
+# recog.synth3d.layout can use them too without creating a back-edge
+# from recog into plan"). Both importing modules carried a comment saying
+# — correctly — that importing beats restating. Importing was right; the
+# location was wrong, and ``common`` is the package both sides already
+# depend on. ``plan.placement_area`` re-exports both, so every existing
+# ``from plan.placement_area import UnknownScale`` keeps working and
+# keeps naming the same object.
+
+
+class UnknownScale(ValueError):
+    """No millimetres-per-pixel is available for this frame.
+
+    Neither the frame's own calibration (``Snapshot.mm_per_px``) nor a
+    deliberately configured fallback (``planning.camera.mm_per_px_x``,
+    or ``mode.mm_per_px``) said how big a pixel is, so every
+    millimetre in the answer would be invented.
+
+    Raised rather than defaulted. This project's characteristic failure
+    is silent degradation: a tau gate documented as retired kept
+    rejecting every cartridge for weeks, and a hardcoded 0.625 mm/px cost
+    9 cells and put 3 placements onto ground-truth non-floor material -
+    both silent, both discovered only by someone re-deriving the number
+    from scratch. An unknown scale is a configuration error and reads as
+    one.
+
+    One class, raised in three packages. ``plan.placement_area
+    ._resolve_scale`` raises it for a frame the extractor is asked to
+    measure, ``plan.planner`` catches it and turns it into a counted
+    skip, and ``recog.seg_evaluate.resolve_frame_scales`` raises it for a
+    crop whose corpus carries no sidecar. A second class of the same name
+    in a second module is how "raise rather than default" quietly becomes
+    "raise in one of the two places" — and how an ``except
+    UnknownScale`` stops catching the one that matters.
+    """
+
+
+#: The cartridge wall thickness the segmentation extractor erodes by,
+#: in millimetres, when a deployment does not state its own.
+#:
+#: catalog.json (recog/synth3d/assets/catalog.json) carries a measured
+#: `case_wall_mm` per asset from CAD conversion: 4.0, 3.75, 3.7, 4.25 mm
+#: across the four cataloged cartridges. No asset/SKU identifier crosses
+#: the Recognition -> Planning boundary (Detection/BBox/Snapshot carry
+#: none), so there is no way to look up the *specific* cartridge's wall
+#: thickness at inference time - a single scalar has to stand in for all
+#: of them. The MAX of the four measured values is used, deliberately:
+#: eroding a bit further than necessary only costs a sliver of floor
+#: space at the cartridge's edge, while eroding too little would let
+#: actual wall material be reported as safe to place a cell against -
+#: the same "skip costs a cycle, misplacement costs a cell" asymmetry
+#: plan.arbitration is built on. A deployment that knows its cartridge
+#: SKU should pass its measured case_wall_mm explicitly instead of
+#: relying on this default.
+#:
+#: It is spelled without a leading underscore here because it is
+#: load-bearing across three packages: ``plan.placement_area`` erodes by
+#: it, ``recog.calibrate_tau`` scores against it and
+#: ``recog.seg_ablation`` packs against it, and every one of those
+#: reached for the private ``_DEFAULT_WALL_INSET_MM`` (or, in
+#: seg_ablation's case, restated the literal 4.25). An underscore on a
+#: name three packages import is false advertising.
+#: ``plan.placement_area._DEFAULT_WALL_INSET_MM`` remains as an alias
+#: because ``scripts/placement_feasibility.py`` — a frozen
+#: receipt-generating script — imports it under that name.
+DEFAULT_WALL_INSET_MM = 4.25
 
 
 # There is deliberately no ``iter_labels(names)`` helper here. It existed

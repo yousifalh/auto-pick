@@ -64,15 +64,23 @@ log = get_logger("recog.calibrate_tau")
 # smaller structuring element is easier to fit, so testing against the
 # measured (smaller) footprint only ever flags MORE optimistic-error
 # regions as unsafe, never fewer. Imported rather than restated - same
-# reasoning as _DEFAULT_WALL_INSET_MM just below - so this can never
+# reasoning as DEFAULT_WALL_INSET_MM just below - so this can never
 # again independently drift from recog/seg_ablation.py's own copy the
 # way it once did (2026-08-10 consolidation).
 from recog.synth3d.config import CELL_H_MM, CELL_W_MM  # noqa: E402
 
-# plan/placement_area.py's SegmentationPlacementAreaExtractor default -
-# imported rather than restated so the wall inset this calibration scores
-# against can never silently drift from the one production erodes by.
-from plan.placement_area import _DEFAULT_WALL_INSET_MM  # noqa: E402
+# The wall inset plan.placement_area's SegmentationPlacementAreaExtractor
+# defaults to - imported rather than restated so the inset this
+# calibration scores against can never silently drift from the one
+# production erodes by.
+#
+# From common.types since 2026-08-15, not plan.placement_area. Same
+# object, and this was one of the two module-level back-edges from
+# `recog` into `plan` (tests/test_seams.py pins that there are now
+# none): a constant three packages read belongs in the package all three
+# already depend on, and importing it from `plan` pulled cv2 and
+# plan.scene into a module that is otherwise lazy about both.
+from common.types import DEFAULT_WALL_INSET_MM  # noqa: E402
 
 
 # ------------------------------------------------------------ calibrate --
@@ -297,7 +305,7 @@ def format_report(result: Dict, *, records: Sequence[dict],
             f"inset too deep AND tested with a cell too large, on every "
             f"frame at once.")
     lines.append(f"  wall_inset        : {wall_inset_mm:.2f} mm - "
-                 "plan.placement_area's _DEFAULT_WALL_INSET_MM - eroded "
+                 "common.types' DEFAULT_WALL_INSET_MM - eroded "
                  f"per frame at {min(inset_px)}-{max(inset_px)} px "
                  f"({int(round(wall_inset_mm / median_mm_per_px))} px at "
                  "the median GSD)")
@@ -448,8 +456,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--fail-budget", type=float, default=0.05)
     ap.add_argument("--wall-inset-mm", type=float,
-                    default=_DEFAULT_WALL_INSET_MM,
-                    help="Defaults to plan.placement_area's own default, "
+                    default=DEFAULT_WALL_INSET_MM,
+                    help="Defaults to the extractor's own default, "
                          "so this scores against the same erosion "
                          "production actually applies.")
     ap.add_argument("--cell-w-mm", type=float, default=CELL_W_MM)

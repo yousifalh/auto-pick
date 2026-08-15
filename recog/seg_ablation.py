@@ -66,20 +66,29 @@ from __future__ import annotations
 import argparse
 import json
 import warnings
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from common.types import BBox
+# DEFAULT_WALL_INSET_MM is the wall thickness
+# plan.placement_area.SegmentationPlacementAreaExtractor erodes by, and
+# it is IMPORTED here since 2026-08-15 rather than restated. It was a
+# local `_DEFAULT_WALL_INSET_MM = 4.25` whose comment gave a real reason
+# for the copy - "so this module's import surface stays free of cv2 at
+# module-load time" - which was true while the constant lived in
+# plan.placement_area. It now lives in common.types, which imports only
+# dataclasses/enum/typing, so the reason is gone and the second copy is
+# just a second place for 4.25 to drift from the number production
+# actually erodes by.
+from common.types import BBox, DEFAULT_WALL_INSET_MM
 # The 18650's own CAD-measured footprint - see recog.synth3d.config's own
 # comment for the figure's provenance. Imported rather than restated, the
 # same reasoning as recog.calibrate_tau's copy (which independently
-# duplicated this exact pair until this consolidation) and unlike
-# _DEFAULT_WALL_INSET_MM below: recog.synth3d.config has no cv2/torch/bpy
-# import of its own, so pulling it in here does not compromise this
-# module's lazy-import discipline (2026-08-10 consolidation).
+# duplicated this exact pair until this consolidation): recog.synth3d
+# .config has no cv2/torch/bpy import of its own, so pulling it in here
+# does not compromise this module's lazy-import discipline (2026-08-10
+# consolidation).
 from recog.synth3d.config import CELL_H_MM, CELL_W_MM
 
 # spec Sec1.1's measured heuristic baseline on recog/realtest, using the
@@ -90,20 +99,11 @@ HEURISTIC_BASELINE_MEAN_FRACTION = 0.218
 HEURISTIC_BASELINE_N_ZERO = 7
 HEURISTIC_BASELINE_N = 20
 
-# matches plan.placement_area.SegmentationPlacementAreaExtractor's own
-# default (restated, not imported, so this module's import surface stays
-# free of cv2 at module-load time - see the lazy imports throughout this
-# file). Used as the default wall_inset_mm everywhere below; a caller
-# that measures against a different inset should pass it explicitly, not
-# rely on a hardcoded 4.0 that quietly diverges from what production
-# actually erodes by (final review, D-integration-arbitration).
-_DEFAULT_WALL_INSET_MM = 4.25
-
 
 # =========================================================== delta_cells ===
 
 def _pack_count(label_map: np.ndarray, mm_per_px: float,
-                wall_inset_mm: float = _DEFAULT_WALL_INSET_MM) -> int:
+                wall_inset_mm: float = DEFAULT_WALL_INSET_MM) -> int:
     """Cells FFDH packs into ``label_map``'s arbitrated safe region."""
     from common.packing import Item, first_fit_decreasing
     from plan.arbitration import arbitrate
@@ -144,7 +144,7 @@ def _pack_count(label_map: np.ndarray, mm_per_px: float,
 
 def delta_cells(gt_label_map: np.ndarray, pred_label_map: np.ndarray,
                 mm_per_px: float,
-                wall_inset_mm: float = _DEFAULT_WALL_INSET_MM) -> int:
+                wall_inset_mm: float = DEFAULT_WALL_INSET_MM) -> int:
     """Cells the packer places on truth, minus cells on the prediction.
 
     See the module docstring for the sign convention.
@@ -155,7 +155,7 @@ def delta_cells(gt_label_map: np.ndarray, pred_label_map: np.ndarray,
 
 def evaluate_delta_cells(segmenter, full_dataset, val_indices: Sequence[int],
                          scales: Dict[int, float],
-                         wall_inset_mm: float = _DEFAULT_WALL_INSET_MM
+                         wall_inset_mm: float = DEFAULT_WALL_INSET_MM
                          ) -> Dict[str, Any]:
     """delta_cells over every crop in the segmenter's OWN validation split.
 
@@ -254,14 +254,15 @@ def evaluate_delta_cells(segmenter, full_dataset, val_indices: Sequence[int],
 _CATALOG_ASSET_WIDTHS_MM: Tuple[float, ...] = (62.9, 80.7, 62.3, 81.7)
 _CATALOG_MEAN_WIDTH_MM = sum(_CATALOG_ASSET_WIDTHS_MM) / len(_CATALOG_ASSET_WIDTHS_MM)
 
-# _DEFAULT_WALL_INSET_MM now lives near CELL_W_MM at the top of the
-# module - delta_cells needed it as a default too, and a duplicate
-# definition down here would just be a second place for it to drift.
+# The wall inset now comes from common.types, imported at the top of
+# the module beside CELL_W_MM - delta_cells needed it as a default
+# too, and a duplicate definition down here would just be a second
+# place for it to drift.
 
 
-def _load_real_cartridges(real_dir: Path
-                          ) -> Tuple[Path, List[Tuple[str, Tuple[float, float, float, float]]],
-                                    bool, int]:
+def _load_real_cartridges(
+    real_dir: Path,
+) -> Tuple[Path, List[Tuple[str, Tuple[float, float, float, float]]], bool, int]:
     """``(img_dir, [(file_name, bbox), ...], has_polygons, n_annotations)``.
 
     ``has_polygons`` is checked directly against the raw COCO JSON (not
@@ -388,7 +389,7 @@ def heuristic_vs_segmenter(real_dir: str | Path, segmenter,
 
     cfg = cfg or {}
     wall_inset_mm = float((cfg.get("evaluation") or {}).get(
-        "wall_inset_mm", _DEFAULT_WALL_INSET_MM))
+        "wall_inset_mm", DEFAULT_WALL_INSET_MM))
 
     real_dir = Path(real_dir)
     img_dir, cartridges, has_polygons, n_annotations = \
@@ -573,7 +574,8 @@ def format_report(delta_result: Dict[str, Any], real_result: Dict[str, Any], *,
                  "transfer claim).")
     lines.append("")
 
-    head = f"  {'#':>3} {'image':<14}{'heuristic':>11}{'segmenter':>11}{'delta':>9}  note"
+    head = (f"  {'#':>3} {'image':<14}{'heuristic':>11}"
+            f"{'segmenter':>11}{'delta':>9}  note")
     lines.append(head)
     lines.append("  " + "-" * (len(head) - 2))
     for r in real_result["rows"]:
@@ -602,7 +604,8 @@ def format_report(delta_result: Dict[str, Any], real_result: Dict[str, Any], *,
     lines.append("  see plan.placement_area.HeuristicPlacementAreaExtractor).")
     lines.append("")
 
-    if real_result["beats_baseline_mean"] and not real_result["has_zero_area_cartridges"]:
+    if (real_result["beats_baseline_mean"]
+            and not real_result["has_zero_area_cartridges"]):
         verdict = (f"the segmenter beats the measured baseline "
                   f"({s['mean']:.3f} > {real_result['baseline_mean']:.3f}) "
                   "and has no zero-area cartridges.")
@@ -656,7 +659,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
                          "constant. A real fixed-mount camera is one "
                          "calibrated scale and is served by setting this.")
     ap.add_argument("--real", default="recog/realtest")
-    ap.add_argument("--wall-inset-mm", type=float, default=_DEFAULT_WALL_INSET_MM)
+    ap.add_argument("--wall-inset-mm", type=float, default=DEFAULT_WALL_INSET_MM)
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--out", default="docs/receipts/seg_ablation.txt")
     return ap

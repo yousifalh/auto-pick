@@ -49,11 +49,18 @@ except Exception as exc:  # pragma: no cover - hard dep
     raise ImportError("opencv-python is required") from exc
 
 from common.config import load_demo_config
-from common.logging import get_logger
+from common.logging import get_logger, set_level
 from common.types import ClassLabel, PickPlacePose, RobotStatusCode
-from execution.execution import (ExecutionConfig, KukaClient, RobotEstop,
-                                 RobotFault)
-from execution.task import PickPlaceTask, TaskConfig
+# The seam, never a backend behind it. `build_driver` answers "which
+# robot?" from `mode.robot`, so this file names no vendor: it used to
+# import ExecutionConfig and KukaClient here and spawn
+# execution.mock_kuka_server by name, which made the second conforming
+# driver unreachable from any configuration. RobotEstop and RobotFault
+# come from execution.driver because that is where they are DEFINED;
+# execution.execution only re-exported them.
+from execution import build_driver, build_task_config
+from execution.driver import RobotEstop, RobotFault
+from execution.task import PickPlaceTask
 from plan.placement_area import (HeuristicPlacementAreaExtractor,
                                  SegmentationPlacementAreaExtractor)
 from plan.planner import Planner, PlannerConfig
@@ -210,10 +217,20 @@ def _build_planner(
             **kwargs,
         )
     else:
+        # All three `cartridge:` tuneables, not just the margin. The two
+        # morphology kernels are real constructor parameters with the
+        # same names and the same values as the config keys, and this
+        # call passed only `safety_margin_px` - so editing
+        # `planning.yaml`'s morph_close_ksize/morph_open_ksize changed
+        # nothing, while a reader checking whether the config reached the
+        # code would find the parameter and stop looking (audit
+        # 2026-08-15, C1a). The defaults below are the extractor's own,
+        # so a config that omits them is unchanged.
+        cartridge_cfg = plan_cfg.get("cartridge", {}) or {}
         extractor = HeuristicPlacementAreaExtractor(
-            safety_margin_px=int(
-                plan_cfg.get("cartridge", {}).get("safety_margin_px", 5),
-            ),
+            safety_margin_px=int(cartridge_cfg.get("safety_margin_px", 5)),
+            morph_close_ksize=int(cartridge_cfg.get("morph_close_ksize", 5)),
+            morph_open_ksize=int(cartridge_cfg.get("morph_open_ksize", 3)),
             mm_per_cell=mm_per_cell,
             mm_per_px=planner_cfg.mm_per_px,
         )
@@ -263,30 +280,11 @@ def _build_segmenter(seg_cfg: Dict[str, Any]):
     )
 
 
-def _start_robot(exec_cfg: Dict[str, Any], mode_cfg: Dict[str, Any]):
-    """Return ``(host, port, server_or_None)`` for the chosen backend."""
-    if mode_cfg.get("robot", "mock") != "mock":  # pragma: no cover
-        return (
-            exec_cfg["kuka"]["host"],
-            int(exec_cfg["kuka"]["port"]),
-            None,
-        )
-
-    from execution.mock_kuka_server import run_in_thread
-
-    sim = exec_cfg.get("simulation", {}) or {}
-    host = sim.get("listen_host", "127.0.0.1")
-    port = int(sim.get("listen_port", 54600))
-    srv, _t = run_in_thread(
-        host=host,
-        port=port,
-        drop_prob=float(sim.get("drop_probability", 0.02)),
-        ms_per_100mm=int(
-            sim.get("simulated_move_time_ms_per_100mm", 180),
-        ),
-    )
-    log.info("Mock robot listening on %s:%d", host, port)
-    return host, port, srv
+# `_start_robot` lived here until 2026-08-15 and named
+# `execution.mock_kuka_server` directly. Selecting a backend is
+# `execution.build_driver`'s job now: it returns a RobotDriver and owns
+# the lifetime of any simulator it had to spawn for one. This file no
+# longer knows that a KUKA exists.
 
 
 def _planned_cartridge_ids(planner: Planner) -> Set[int]:
@@ -322,11 +320,23 @@ def run(config_path: str, receipt_path: Optional[str] = None) -> Dict[str, int]:
     exec_cfg = cfg["execution"]
     mode_cfg = cfg.get("mode", {})
 
+    # `mode.log_level` sat in configs/demo.yaml and configs/demo_seg.yaml
+    # from the beginning and was read by no Python (audit 2026-08-15, the
+    # same class as planning.yaml's twelve dead keys, in the one file a
+    # new reader opens first). Applied here rather than at import,
+    # because common.logging gives each logger its own handler and
+    # `propagate = False`: there is no ancestor whose level governs the
+    # pipeline, so the level has to be pushed to the loggers the modules
+    # already built. Both shipped configs say INFO, which is what the
+    # loop already ran at, so no log line moves.
+    if mode_cfg.get("log_level"):
+        set_level(str(mode_cfg["log_level"]))
+
     # --- wire up robot, planner, detector --------------------------------
-    host, port, srv = _start_robot(exec_cfg, mode_cfg)
-    exec_conf = ExecutionConfig.from_dict(exec_cfg)
-    exec_conf.host = host
-    exec_conf.port = port
+    # Which backend, and whether a simulator has to be started for it, is
+    # execution's decision and not this loop's. The driver is returned
+    # unconnected; the `with` below is the connect.
+    driver = build_driver(mode_cfg, exec_cfg)
 
     seg_mode_cfg = mode_cfg.get("segmentation") or {}
     segmenter = _build_segmenter(seg_mode_cfg)
@@ -386,14 +396,13 @@ def run(config_path: str, receipt_path: Optional[str] = None) -> Dict[str, int]:
     stop_on_empty = bool(mode_cfg.get("stop_on_empty_queue", True))
 
     try:
-        with KukaClient(exec_conf) as kuka:
+        with driver as robot:
             # The driver moves the arm; the TASK knows what a cartridge
             # cycle is. On this protocol that is two frames whose order
             # latches the place XY, and the split is what keeps the
             # choreography, the transport height and the vacuum level out
             # of an interface that other arms would have to implement.
-            task = PickPlaceTask(
-                kuka, TaskConfig.from_execution_config(exec_conf))
+            task = PickPlaceTask(robot, build_task_config(exec_cfg))
             for cycle_idx in range(max_cycles):
                 if not _run_one_cycle(
                     cycle_idx, img_iter, detector, planner, task, stats,
@@ -422,8 +431,11 @@ def run(config_path: str, receipt_path: Optional[str] = None) -> Dict[str, int]:
         )
         raise
     finally:
-        if srv is not None:
-            srv.shutdown()
+        # Idempotent, and the safety net for the one route the `with`
+        # cannot cover: `__exit__` never runs when `__enter__` raises, so
+        # a driver whose channel could not be opened would otherwise
+        # leave the simulator `build_driver` spawned for it running.
+        driver.close()
 
     stats["placement_disagreements"] = planner.placement_disagreement_count
     stats["bad_detector_boxes"] = planner.bad_detector_box_count
