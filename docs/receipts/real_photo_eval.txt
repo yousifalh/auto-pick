@@ -20,7 +20,7 @@ Real-photo held-out evaluation
   config      : configs/recognition.yaml
   images      : 6 of 7 scored  (1 excluded: no ground-truth boxes)
   confidence  : 0.70
-  inference   : 1.4 s over 7 image(s) (0.20 s/image)
+  inference   : 1.0 s over 7 image(s) (0.14 s/image)
 
 image                  GT   pred    AP@0.50  note
 --------------------------------------------------------------

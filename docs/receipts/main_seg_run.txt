@@ -1,7 +1,7 @@
 
 End-to-end run: recognition -> planning -> execution
 ==================================================================
-  generated     : 2026-08-12T17:16:13
+  generated     : 2026-08-15T18:51:36
   command       : python main.py --config configs/demo_seg.yaml --receipt docs/receipts/main_seg_run.txt
   config        : configs/demo_seg.yaml
   frames        : recog/dataset3d_seg/images
@@ -38,18 +38,45 @@ disagree (planning.camera.workspace_bounds_mm, origin_offset_*).
   unreachable batteries    : 57
   unreachable cartridges   : 1
 
+Cross-frame identity. Cartridges are TRACKED, not re-detected: one
+missing from a frame keeps its occupancy grid and its placed
+batteries and is re-matched when it returns, because deleting it
+took the whole physical record and the next queue aimed at slots
+that were already full. `tracks expired` is the twin forgetting a
+cartridge it has not seen for `planning.tracking.max_missing_frames`
+frames, and `placed cells forgotten` is what that cost - those two
+are the only route by which physical state still leaves the model,
+and they are printed rather than absorbed. `geometry re-measured`
+counts cartridges whose box moved far enough that their placement
+rectangle was re-extracted at the new position; the batteries they
+were holding are re-projected onto the new grid.
+
+  track dropouts           : 25
+  tracks re-acquired       : 0
+  tracks expired           : 16
+  placed cells forgotten   : 572 (1 batteries)
+  duplicate detections     : 0
+  geometry re-measured     : 0
+  batteries re-projected   : 0
+  batteries off the new grid: 0
+  batteries dropped (rescale): 0
+  cross-cartridge conflicts: 0
+  confirms into a lost track: 0
+
 Execution (mock KUKA unless mode.robot is `real`). A pose needs a
 placement area AND a free battery in the SAME frame, and the loop
 executes at most one pose per cycle before re-planning (PPR 5.4),
 so `placed` is bounded by cycles, not by placement areas.
-`reservations released` is non-zero only when a cartridge SURVIVES
-into the next cycle: on a corpus of unrelated scenes the twin drops
-the whole cartridge and its reservations go with it, uncounted, so
-a 0 there means the scenes did not repeat - not that nothing leaked.
+`reservations released` counts queued-but-unexecuted reservations
+handed back when the queue was rebuilt. It used to read 0 on a
+corpus of unrelated scenes for the wrong reason - the twin deleted
+the whole cartridge and its reservations went with it, uncounted.
+Cartridges now persist across the frames they are missing from, so
+a 0 here means nothing was left over, not that nothing leaked.
 
   loose batteries detected: 78
   poses queued           : 4
-  reservations released  : 0 (queued, then re-planned before execution)
+  reservations released  : 3 (queued, then re-planned before execution)
   placed                 : 1
   pick failed            : 0
   place failed           : 0

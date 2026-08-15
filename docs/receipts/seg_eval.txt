@@ -60,9 +60,9 @@ n calls) - the path batching replaced. This is the single measured source for
 the batching-latency figure; quote THIS receipt rather than a hand-measured one.
    cartridges   total_ms  per_cart_ms  within_50ms   looped_ms
   ------------------------------------------------------------
-            1        6.5         6.55         True         6.6
-            2        8.0         4.02         True        13.2
-            4       13.7         3.42         True        28.3
-            8       16.6         2.08         True        57.1
+            1        9.2         9.19         True         6.6
+            2        7.7         3.87         True        13.0
+            4        9.0         2.26         True        27.3
+            8       16.2         2.02         True        58.6
   ------------------------------------------------------------
-  at 8 cartridges: 16.6 ms batched vs 57.1 ms looped (3.4x) - batching is load-bearing, not an optimisation: the looped figure breaches the 50 ms end-to-end budget on its own.
+  at 8 cartridges: 16.2 ms batched vs 58.6 ms looped (3.6x) - batching is load-bearing, not an optimisation: the looped figure breaches the 50 ms end-to-end budget on its own.

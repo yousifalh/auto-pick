@@ -13,9 +13,9 @@ the same command gave loss 1.7839 vs 1.7608 and selected mean IoU
 recovered; seeding applies from now on.
 
   run   seed        loss      selected IoU   wall s   weights sha256
-  A     20260812    1.8164    0.3590           28.0   2b587394efd2eeb6
-  B     20260812    1.8164    0.3590           28.3   2b587394efd2eeb6
-  C     20260813    1.7972    0.3426           28.1   d4a4a86e3305daa6
+  A     20260812    1.7619    0.3817           29.5   192d868597ab3ad1
+  B     20260812    1.7619    0.3817           28.7   192d868597ab3ad1
+  C     20260813    1.8099    0.3330           27.9   a1e1dcacdf5581cf
   (wall s is the whole process, ~15 s of which is interpreter and
    torch import; it is a cost signal, not a benchmark.)
 
@@ -26,8 +26,8 @@ recovered; seeding applies from now on.
     weights bit-identical: yes
 
   A vs C (seed 20260812 vs 20260813):
-    loss delta           : 0.019200
-    selected IoU delta   : 0.016400
+    loss delta           : 0.048000
+    selected IoU delta   : 0.048700
     differs              : yes
 
 WHAT THIS CLAIMS, EXACTLY. Same seed, same machine, same toolchain ->

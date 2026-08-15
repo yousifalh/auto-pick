@@ -148,7 +148,7 @@ the workspace folder; ~~every measurement quoted in the body can be
 re-generated from a single named script in `docs/receipts/`.~~ **Most
 measurements quoted in the body can be re-generated from a named script;
 the exceptions are enumerated rather than glossed — sixteen of
-thirty-nine receipts have no surviving generator (Appendix C.3), O3's
+forty receipts have no surviving generator (Appendix C.3), O3's
 `bench_cycles.py` and O1.a's `pr_curves.py` were never committed
 (§10.4, Appendix E), and no dataset or checkpoint is tracked by git.**
 
@@ -457,7 +457,7 @@ and no attainable perception or calibration accuracy reaches it.
 `configs/planning.yaml` reserves an **18.5 × 65.0 mm** nominal footprint
 — the 18650's CAD-measured 18.3 mm diameter plus a deliberate 0.2 mm
 margin. Each SKU's placement region is its `interior_mm` minus its
-`module_bay_mm` (`recog/synth3d/catalog.json`):
+`module_bay_mm` (`recog/synth3d/assets/catalog.json`):
 
 | SKU | placement region | margin on the long axis | rotations that still admit a cell |
 |---|---|---:|---|
@@ -483,18 +483,38 @@ The consequence is unconditional on perception. Feeding **ground-truth**
 label maps through the shipping extractor and the shipping packer at
 each frame's **true** scale — perfect segmentation, perfect detector
 boxes, perfect calibration — `AnkerPowerCore10000` places zero cells in
-**10 of 10** instances at the production 4.25 mm wall inset, and the
-whole 30-instance set reaches **10 of 30**, rising to at most ~~**12 of
-30**~~ **11 of 30 (and 25 cells)** with the wall inset taken to 0.0 mm.
+**10 of 10** instances at the production 4.25 mm wall inset — and in
+**47 of 47** open instances of that SKU over the whole 502-scene corpus,
+with no counter-example at any inset. The whole open set reaches
+~~**10 of 30**~~ **9 of 29 (and 23 cells)** at the production inset, and
+~~rising to at most **12 of 30**, then **11 of 30 (and 25 cells)**~~
+**the same 9 of 29 (and 23 cells)** with the wall inset taken to 0.0 mm:
+at HEAD the inset buys nothing at all.
 **Corrected 2026-08-14: the 12 was measured at `ce1d9cd`, when a grid
 cell counted as free if its *centre pixel* was free.** `b93bbd3` made a
 cell free only if all of it is, and re-running the oracle under that
-rule costs it one cartridge and two cells (12 / 27 → 11 / 25); the
-4.25 mm row is unaffected at 10 / 24. Both sides of §13's
-oracle-vs-shipping comparison are therefore on the same code state, and
-11 is the figure the README, `PORTFOLIO.md` and the source spec already
-carry (`docs/superpowers/specs/2026-08-11-placement-feasibility.md`, §5
-Result table). Tolerance is not the lever
+rule cost it one cartridge and two cells (12 / 27 → 11 / 25); the
+4.25 mm row was unaffected at 10 / 24.
+**Corrected again 2026-08-15, and this time from a receipt rather than a
+spec table.** `b69bcb3` committed `scripts/placement_feasibility.py` and
+`docs/receipts/placement_feasibility.txt`, which regenerate the oracle
+from the committed CAD catalogue, `configs/planning.yaml` and the
+ground-truth annotations, with a `--check` mode that fails on drift.
+A geometry defect fixed the same day moved it: `Planner._pack_cartridge`
+sized its packing strip from `pr.width × scale` while testing
+placements against an occupancy grid rasterised at 1.5 mm, so the strip
+stood up to one grid cell wider per axis than the placeable floor it was
+checked against and a cell could be seated up to 1.5 mm past the
+measured edge. Sizing the strip from the grid — `occ.cols × res_mm` by
+`occ.rows × res_mm` — removes those fits: 10 / 24 → 9 / 23 at 4.25 mm
+and 11 / 25 → 9 / 23 at 0.00 mm. The denominator moved 30 → 29 for a
+separate reason, recorded in §5 of the receipt: it enumerates
+ground-truth open cartridges directly instead of pairing 30
+detector-matched instances, the two censuses differ by three units, and
+all three place zero cells either way.
+`docs/superpowers/specs/2026-08-11-placement-feasibility.md` §3, §5 and
+its 2026-08-12 addendum are superseded on these totals; the receipt is
+now the citable source. Tolerance is not the lever
 either: 18.5 → 18.3 mm recovers **0** instances at any calibration, and
 the wall inset recovers **0** all the way down to 0.0 mm — both of those
 rows measured on the real predicted masks and real detector boxes the
@@ -1201,10 +1221,17 @@ imagery where PCB obstructions are non-trivial, and on the
 pixel-precise obstruction masks that §13.2(5) would introduce. The
 cost is wall-time. Within the post-fix run the aware arm takes
 ~~0.33 ms per pack at 2.5 % coverage and peaks at 1.14 ms at 15 %~~
-**0.32 ms per pack at 2.5 % coverage and peaks at 1.05 ms at 15 %**
-(re-read from `forbidden_bench.txt` 2026-08-12; the two figures above
-were from an earlier run on other hardware and were carried forward
-without being re-read),
+~~0.32 ms per pack at 2.5 % coverage and peaks at 1.05 ms at 15 %~~
+**0.35 ms per pack at 2.5 % coverage and peaks at 1.07 ms at 10 %**
+(re-read from `forbidden_bench.txt` on 2026-08-15; the 0.32 / 1.05 pair
+was the 2026-08-12 reading of the same column and the 0.33 / 1.14 pair
+came from an earlier run on other hardware. These are wall-clock
+microseconds and the receipt says so — they move on every regeneration.
+The **cell counts in the same table do not**: every count column, the
+`forbidden_bench.csv` sidecar and the eight-seed sweep in
+`forbidden_bench_seeds.txt` came back byte-identical through the
+2026-08-15 packing-strip fix, which is what rules `common/packing.py`
+out as the cause of the placement movement recorded in §3),
 against roughly 0.09 ms for the naive arm, because a blocked cursor
 now triggers a column scan instead of an immediate shelf
 abandonment — and because it does more work simply by placing more
@@ -1507,7 +1534,9 @@ uncorrected behaviour is recorded here because the safety argument in
   closes and raises, `main` logs `CRITICAL` with the partial statistics
   and re-raises, and there is no path on which a Category-0 stop
   produces a normal-looking summary.
-* **Neither timeout bounded what it names.** `_recv_status`
+* **Neither timeout bounded what it names.** `_recv_status` (a method
+  since removed; the equivalent path is now `KukaClient.recv`, which
+  takes a whole-frame `deadline` and delegates to `read_exactly`)
   unconditionally re-armed the command timeout before reading a byte,
   so `handshake_timeout_ms` bounded only the TCP connect (measured:
   0.73 s against a 300 ms setting); and `command_timeout_ms` was a
@@ -3399,12 +3428,16 @@ had.** Segmentation was moved out of Planning and into Recognition, on
 the grounds that it is perception and belongs in the perception budget.
 Planning then performs mask arithmetic only, measured at **2.0–2.2 ms
 per cartridge** against the tested 8 ms O3 budget of §10.4. Segmentation
-itself runs at **16.6 ms for 8 crops batched** — still
-inside the 50 ms end-to-end PPR budget, by 33.4 ms.
+itself runs at **16.2 ms for 8 crops batched** — still
+inside the 50 ms end-to-end PPR budget, by 33.8 ms.
 Batching is still a requirement rather than an optimisation: the same
-eight crops, same checkpoint, same warm-up give 16.6 ms batched against
-**57.1 ms if they are segmented one at a time (3.4×)**, which
-breaches the end-to-end budget outright either way.
+eight crops, same checkpoint, same warm-up give 16.2 ms batched against
+**58.6 ms if they are segmented one at a time (3.6×)**, which
+breaches the end-to-end budget outright either way. (Updated 2026-08-15
+from 16.6 / 57.1 ms / 3.4×, the 2026-08-12 regeneration of the same
+receipt. This row is wall-clock and is re-taken on every regeneration;
+every IoU, boundary and area figure in `seg_eval.txt` came back
+byte-identical in the same run.)
 
 An earlier pass of this measurement reported 40.9 ms batched / 157.0 ms
 looped — the figure this document and `NEXT_STEPS.md` previously
@@ -3420,14 +3453,15 @@ re-run clean (`docs/receipts/seg_eval.txt`, regenerated at commit
 that receipt re-takes the timings in the same run — the table is
 wall-clock and cannot be carried forward across a regeneration — so
 this pair moves a little each time: **21.2 / 88.0 ms** at the
-2026-08-11 scale correction, and **16.6 / 57.1 ms** at the 2026-08-12
-regeneration that repaired the receipt's embedded commit citation,
-which is the pair quoted above. None of those regenerations touched any
+2026-08-11 scale correction, **16.6 / 57.1 ms** at the 2026-08-12
+regeneration that repaired the receipt's embedded commit citation, and
+**16.2 / 58.6 ms** at the 2026-08-15 regeneration, which is the pair
+quoted above. None of those regenerations touched any
 code on the inference path, so the spread is the machine and not the
-change. Read as a range, the measured span across five clean runs is
-**16.6–21.2 ms batched / 57.1–88.0 ms looped**, against an original
+change. Read as a range, the measured span across six clean runs is
+**16.2–21.2 ms batched / 57.1–88.0 ms looped**, against an original
 16.7 ms; the margin against the 50 ms budget has stayed between 28.8
-and 33.4 ms throughout — nowhere near the ~9 ms the contended figure
+and 33.8 ms throughout — nowhere near the ~9 ms the contended figure
 gave. The architecture conclusion is unchanged either way: batching
 remains load-bearing — the looped figure alone breaches the 50 ms
 budget, on every pair measured.
@@ -3934,7 +3968,7 @@ improved on all three classes, and the margin against a mask head is
 unchanged by the 2026-08-11 scale correction, which moves both sides of
 that comparison together) and the latency budget's *shape* (batching is
 still load-bearing), with its *margin* narrowed only slightly
-(16.7 ms originally, 16.6–21.2 ms across five clean regenerations of
+(16.7 ms originally, 16.2–21.2 ms across six clean regenerations of
 the receipt, at 8 crops against a 50 ms budget) once a
 GPU-contention-inflated intermediate reading (40.9 ms, superseded by a
 clean re-measurement in `docs/receipts/seg_eval.txt`) is set aside.
@@ -4480,7 +4514,15 @@ the receipt was regenerated at `82cff22`~~ **1 210 passing / 2 skipped,
 93 % branch coverage over `main.py`'s import closure and 67 % over all
 49 modules the coverage config resolves to; regenerated 2026-08-13 at
 `885a044`, and the 18-module scope it used to headline is retired to a
-third block in the receipt at 91 %** — see C.2 and §9.3). `git log --oneline` at submission time is at
+third block in the receipt at 91 %** — see C.2 and §9.3. **Noted
+2026-08-15: this receipt is now stale on its test count and is left
+un-refreshed rather than re-cited.** The suite at HEAD is 1 396 passed /
+1 skipped of 1 397 collected — 187 tests beyond the 1 210 this receipt
+records — and the receipt's stated scope is a clean worktree of
+`885a044`, so regenerating it in a shared working tree would produce a
+figure whose own provenance line would be false. It needs a fresh
+`pytest --cov` on a clean checkout of whatever commit this work lands
+as; the coverage percentages above are historical until then). `git log --oneline` at submission time is at
 `docs/receipts/git-log.txt`. The two Faster R-CNN training runs are
 logged at `docs/receipts/train.log` (custom anchors, 0.76 mAP@0.5)
 and `docs/receipts/train_default.log` (default anchors, 0.87 mAP@0.5),
@@ -4571,16 +4613,23 @@ conclusion it supports survives ~~at 89 %~~ **at 93 %, on a scope that
 now includes the packer and the segmenter it used to omit
 (re-scoped 2026-08-13)**.
 
-**3. Sixteen of the thirty-nine committed receipts have no surviving
+**3. Sixteen of the forty committed receipts have no surviving
 tool.** (Thirty-four when this appendix was written; `detector_bench.txt`,
-`seed_reproducibility.txt`, `main_run.txt`, `real_photo_eval.txt` and
-`real_photo_eval_include_empty.txt` have been added since, each
-with a committed generator — `scripts/detector_bench.py`,
-`scripts/seed_check.py`, `main.py --receipt` and `recog/eval_real.py` —
+`seed_reproducibility.txt`, `main_run.txt`, `real_photo_eval.txt`,
+`real_photo_eval_include_empty.txt` and `placement_feasibility.txt` have
+been added since, each with a committed generator —
+`scripts/detector_bench.py`, `scripts/seed_check.py`,
+`main.py --receipt`, `recog/eval_real.py` and
+`scripts/placement_feasibility.py` —
 so the numerator below is unchanged at sixteen. **The denominator read
-thirty-seven until 2026-08-14**, which was the 34 + 3 arithmetic written
-before the two real-photo receipts landed at `9b38de9`;
-`git ls-files docs/receipts` counts 39.) `ffdh_ablation.{csv,txt}`, `frcnn_map{,_default}.txt`,
+thirty-seven until 2026-08-14 and thirty-nine until 2026-08-15**; the
+first was the 34 + 3 arithmetic written before the two real-photo
+receipts landed at `9b38de9`, the second predated
+`placement_feasibility.txt` at `b69bcb3`. `git ls-files docs/receipts`
+counts **40**. Three iterations of one error, each corrected a commit
+late, all of them arithmetic carried forward instead of a count re-run;
+the fix is to re-run `git ls-files docs/receipts | wc -l` whenever a
+receipt is added.) `ffdh_ablation.{csv,txt}`, `frcnn_map{,_default}.txt`,
 `frcnn_latency.txt`, `heuristic_ablation.txt`, the two
 `heuristic_failure_*.json`, `pr_summary.txt`, `train{,_default}.log`,
 `train_curve{,_default}.csv`, `train_eval.txt`,
@@ -4825,7 +4874,7 @@ re-running the named script against the committed source tree.~~
 
 **Corrected 2026-08-12: that closing sentence was contradicted by
 Appendix C.3 in this same document, which records that sixteen of the
-thirty-nine committed receipts have no surviving generator.** The
+forty committed receipts have no surviving generator.** The
 accurate statement is narrower and is given per cell rather than in
 general. Nine of the eleven project-requirement cells can be
 re-verified from committed tooling. **O3** named `bench_cycles.py`,

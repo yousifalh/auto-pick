@@ -46,11 +46,11 @@ looped**, and the looped path breaches the 50 ms end-to-end budget on its own
 256 is at or above native crop resolution, so it is not a resample upward.
 
 **Why the README gives different milliseconds for this same claim.** It quotes
-**16.6 ms batched against 57.1 ms looped**, from `docs/receipts/seg_eval.txt`.
+**16.2 ms batched against 58.6 ms looped**, from `docs/receipts/seg_eval.txt`.
 Neither figure is wrong and neither supersedes the other: they are two
 different models on two different splits, and that latency row is wall-clock,
-re-taken every time either receipt is regenerated — the spread across five
-clean runs on this hardware is 16.6–21.2 ms batched (FDR §13.2.1). What both
+re-taken every time either receipt is regenerated — the spread across six
+clean runs on this hardware is 16.2–21.2 ms batched (FDR §13.2.1). What both
 receipts establish is the load-bearing part, identically: batched fits the
 50 ms end-to-end budget and looped breaches it on its own. Cite the receipt
 you are quoting and do not mix the two. *Note added 2026-08-14: the two
@@ -403,7 +403,7 @@ table is the consolidated view; each row names where the evidence lives.
 | 2 | **Residual unsafe placements.** | 2 of 25 placed cells overlap a tray wall, by 8.3 % and 5.2 % of footprint. | Overlap test against **ground-truth** masks; the predicted masks cannot see it (see #3). | 2 cells mis-seated on one cartridge's left wall. Down from 5 of 26, worst case 100 %. | `docs/superpowers/specs/2026-08-11-placement-safety.md` §2.3 |
 | 3 | **Self-checking does not work.** Every planner guard — `P_safe`, clearance inset, overlap test — is computed from the same label map that is wrong. | Guards agree with the error. Four of five original offenders sit **100.0 %** inside the predicted free floor. | You cannot, from the prediction. Only reduced boundary error or force-sensed contact at placement time. | A clearance margin was proposed, measured, and **rejected**: 1.5 mm gives up 4 cells and *creates* a third overlap. | README "The structural insight"; `docs/superpowers/specs/2026-08-11-placement-safety.md` §2.4 |
 | 4 | **Sealed-unit hallucination.** A closed cartridge gets a confident `bay` where there is no cavity. | The pipeline plans into a sealed unit. | Per-crop false-positive rate on sealed crops. | 21.8 % of sealed crops → 2.6 % after the crown fix. **Not receipt-backed** — see [§8](#8-what-is-not-receipt-backed). | `docs/superpowers/specs/2026-08-11-sealed-unit-experiment.md` |
-| 5 | **One cartridge cannot be certified at any accuracy.** `AnkerPowerCore10000`'s bay is 54.9 × **65.0 mm**; the cell is 18.5 × **65.0 mm**. Exactly. | Zero cells placed, always. | Geometry, not perception — the packer alone consumes ~0.32 mm per degree of the ±2° seating jitter, against 0.00 mm of margin. | **10 of 10** instances place zero cells *on ground-truth masks*. Tolerance is not the lever: 18.5 → 18.3 mm recovers 0. | README "A cartridge that cannot be certified"; FDR §3 |
+| 5 | **One cartridge cannot be certified at any accuracy.** `AnkerPowerCore10000`'s bay is 54.9 × **65.0 mm**; the cell is 18.5 × **65.0 mm**. Exactly. | Zero cells placed, always. | Geometry, not perception — the packer alone consumes ~0.32 mm per degree of the ±2° seating jitter, against 0.00 mm of margin. | **10 of 10** instances place zero cells *on ground-truth masks*, and **47 of 47** over the whole 502-scene corpus. Neither knob is the lever: 18.5 → 18.3 mm recovers 0, and the 4.25 mm wall inset taken to 0.00 mm recovers 0 (it recovered 1 until the 2026-08-15 packing-strip fix). | `docs/receipts/placement_feasibility.txt` §2–§3; README "A cartridge that cannot be certified"; FDR §3 |
 | 6 | **Domain cliff on the demo corpus.** | The segmenter predicts **no `bay` at all** on `synth_dataset.py`'s flat green rectangles. | A run producing zero placement areas — which `main.py` treats as a failed run and raises on, rather than completing quietly. | `configs/demo_seg.yaml` must read renders, not the demo corpus. | README "The same loop with the trained segmenter" |
 | 7 | **The heuristic extractor does not work on real cartridges.** Otsu on green assumes a light tray with a dark module. | Zero placeable area. | Run it on the annotated real photographs. | **Zero placeable area on 7 of the 20** real annotated cartridges. Demo-only path; warns at construction. | README "Two placement-area extractors" |
 | 8 | **Checkpoint selection is noise-limited.** | `best.pt` and `last.pt` are indistinguishable. | The Δ column in §4. | ≤ 0.0036 across nine models — selection is not choosing. | the receipts' own notes |
@@ -472,10 +472,21 @@ Four things on this page, named so they are not mistaken for the rest.
    no receipt**. Its anchor — pooled `bay` 0.6555 — *is* a receipt figure, and
    the 0.6555 → 0.8755 movement in §4's table is fully receipt-backed. The
    per-crop rates are not. README "Where to look" says the same.
-2. **The 2-of-25 placement figures** (failure mode #2) and the oracle
-   comparison trace to a results table in
+2. **The 2-of-25 placement figures** (failure mode #2) and the *shipping* side
+   of the oracle comparison trace to a results table in
    `docs/superpowers/specs/2026-08-11-placement-safety.md`, a committed document, but not to a
-   receipt with a committed generator.
+   receipt with a committed generator. (**Retracted in part, 2026-08-15: this
+   item used to put the whole "oracle comparison" here.** The ground-truth
+   oracle acquired both at `b69bcb3` — `docs/receipts/placement_feasibility.txt`,
+   generated by the committed `scripts/placement_feasibility.py` and guarded by
+   `tests/test_placement_feasibility_receipt.py`, with a `--check` mode that
+   fails on drift. It regenerates from the committed CAD catalogue, the
+   committed planning config and the ground-truth annotations, needs no
+   checkpoint, and at HEAD reports 9 of 29 open cartridges and 23 cells at
+   every wall inset from 4.25 mm down to 0.00 mm. Only the shipping-pipeline
+   half, which needs the detector-and-segmenter pairing pass, is still
+   un-receipted; it has not been re-measured since the 2026-08-15 packing-strip
+   fix and should not be quoted until it is.)
 3. **"No checkpoint carries a `seed`"** (§7) was measured by loading all nine
    `best.pt` files in the author's working tree and listing their non-weight
    keys. The checkpoints are gitignored, so a cloner cannot re-run it. Command:
@@ -489,9 +500,13 @@ Four things on this page, named so they are not mistaken for the rest.
    verify them against anything. What they buy is stated in
    [`datasets/README.md`](datasets/README.md) and it is narrower than it looks.
 
-Sixteen of the repository's thirty-nine committed receipts are inherited from
+Sixteen of the repository's **forty** committed receipts are inherited from
 before this repository's history and have **no surviving generator**; FDR
-Appendix C enumerates them.
+Appendix C enumerates them. (**Corrected 2026-08-15: the denominator read
+thirty-nine**, which was the count before `placement_feasibility.txt` landed at
+`b69bcb3`. `git ls-files docs/receipts | wc -l` is 40. The numerator is
+unchanged — every receipt added since the appendix was written has a committed
+generator.)
 
 ## 9. Regenerating this page
 

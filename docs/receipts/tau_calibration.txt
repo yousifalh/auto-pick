@@ -9,7 +9,7 @@ Tau calibration (placement-disagreement threshold)
     distribution    : median 0.8211, range 0.4903-1.0739 mm/px
     fallback        : none configured - an uncalibrated frame raises UnknownScale rather than reverting to a constant
     note            : the generator's NOMINAL framing (0.6250) is the framing at margin=1.0, zoom=1.0 and describes NO frame here. This calibration used it as a constant before 2026-08-11, which eroded the wall inset too deep AND tested with a cell too large, on every frame at once.
-  wall_inset        : 4.25 mm - plan.placement_area's _DEFAULT_WALL_INSET_MM - eroded per frame at 4-9 px (5 px at the median GSD)
+  wall_inset        : 4.25 mm - common.types' DEFAULT_WALL_INSET_MM - eroded per frame at 4-9 px (5 px at the median GSD)
   cell footprint    : 18.3 x 65.0 mm (18650, CAD-measured), 22 x 79 px at the median GSD
   fail budget       : 5.00% of accepted cartridges may admit a cell
   split             : seed=0, 126 val crops total

@@ -38,6 +38,7 @@ superseded revisions.
 | [`MODEL_CARD.md`](MODEL_CARD.md) | **The models, in one page.** Architecture, training data, the consolidated held-out comparison of all nine segmenter checkpoints, the detector's scope, ten known failure modes, intended use and explicit non-use. Every table is generated from the receipts and configs by `scripts/model_card_tables.py`; `--check` fails if any figure has drifted. Start here if you came to read about the machine learning. |
 | [`datasets/`](datasets/README.md) | **Data card.** The eleven generated datasets — per-class instance counts, disjointness, and a committed byte-for-byte copy of each dataset's `manifest.json` (its full generator config and seed), since the datasets themselves are gitignored. |
 | [`PORTFOLIO.md`](PORTFOLIO.md) | Narrative account of the measurement work, for a general engineering reader. |
+| [`CORRECTIONS.md`](CORRECTIONS.md) | **Every figure this repository has published and then withdrawn, in one place** — what it read, what it reads now, when it changed and why. The repository `README.md` used to carry this inline; the errata are consolidated here without loss and the README keeps a short clause and a link where the history is load-bearing. |
 
 `CV_BULLETS.md` — CV and LinkedIn phrasing, plus notes on how to present each
 result in an interview — **was withdrawn from the public tree on 2026-08-14**
