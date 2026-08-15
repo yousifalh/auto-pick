@@ -25,6 +25,9 @@ rejected on one axis and accepted on the other two. ``pack_command``
 raises :class:`CoordinateOutOfRange` naming the axis and its actual
 limit rather than letting ``struct`` report ``'h' format requires
 -32768 <= number <= 32767`` with no indication of which field it meant.
+:func:`pack_status` enforces the same three limits on the pose it
+reports back, because it packs the same body; it used to enforce none of
+them, and to mask the status code into the byte it fits.
 :class:`CoordinateOutOfRange` subclasses ``struct.error`` **on purpose**:
 ``struct.error`` is not a ``ValueError``, so it falls through the
 driver's transient tuple to the fatal path and fires a halt, which is
@@ -134,6 +137,20 @@ class CoordinateOutOfRange(struct.error):
     a frame that cannot be built is three identical failures and a
     delay. The message names the axis and the actual limit, which
     ``struct``'s own does not.
+    """
+
+
+class StatusCodeOutOfRange(struct.error):
+    """A status code does not fit the one byte the reply has for it.
+
+    ``pack_status`` used to mask the code with ``& 0xFF``. That is not a
+    harmless truncation on this wire, because the low byte of an
+    out-of-range code is itself a valid status: 256 becomes 0 (``OK``)
+    and 259 becomes 3 (``PLACE_FAILED``). A controller-side bug would
+    have arrived at the host as a different, plausible, actionable
+    answer rather than as a failure. Subclasses ``struct.error`` for the
+    same reason :class:`CoordinateOutOfRange` does — it is the packer
+    refusing a value the frame cannot carry, not a line fault.
     """
 
 
@@ -306,11 +323,39 @@ def pack_status(
     wrapping. Masking with ``& 0xFFFF`` reported a 70-second cycle as
     4.5 seconds — a small, plausible, wrong number arriving in the
     latency statistics with nothing to distinguish it from a real one.
+
+    The pose and the code are **range-checked, not clamped and not
+    masked**, exactly as :func:`pack_command` checks the pose. The two
+    functions pack the same ``">BBiihH"`` body, so the same three axis
+    limits apply to a reported pose as to a commanded one — including
+    the int16/int32 asymmetry on z — and this direction used to enforce
+    neither. A z beyond int16 raised ``struct``'s own message, which
+    names the format character and not the axis; a code beyond one byte
+    was truncated into a different valid status. Both now raise here,
+    at the end that built the value, rather than reaching a host that
+    cannot tell the difference.
+
+    Saturating ``cycle_ms`` while rejecting the rest is deliberate and
+    not an inconsistency: a cycle time is a *measurement* whose loss is
+    reported back through ``cycle_ms_saturated``, while a coordinate or
+    a status code is an *assertion* with no honest way to be censored.
     """
+    if not 0 <= int(code) <= 0xFF:
+        raise StatusCodeOutOfRange(
+            f"status code {int(code)} does not fit the reply's one-byte "
+            f"field (0..255). Masking it would have reported "
+            f"{int(code) & 0xFF}, which is a valid status.")
+    for value, (axis, lo, hi, width) in zip(
+            (int(x_mm), int(y_mm), int(z_mm)), _AXIS_LIMITS):
+        if not lo <= value <= hi:
+            raise CoordinateOutOfRange(
+                f"reported {axis} = {value} mm does not fit the wire's "
+                f"{width} field for that axis ({lo}..{hi} mm). Note the "
+                f"asymmetry: x and y are int32, z is int16.")
     body = struct.pack(
         _BODY_FMT,
         PROTOCOL_VERSION,
-        int(code) & 0xFF,
+        int(code),
         int(x_mm), int(y_mm), int(z_mm),
         max(0, min(int(cycle_ms), CYCLE_MS_MAX)),
     )
@@ -360,6 +405,7 @@ __all__ = [
     "PROTOCOL_VERSION",
     "ProtocolError",
     "STATUS_LEN",
+    "StatusCodeOutOfRange",
     "UnsupportedOpCode",
     "VersionMismatch",
     "crc16_modbus",

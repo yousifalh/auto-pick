@@ -86,10 +86,30 @@ class KukaHarness(ConformanceHarness):
     def break_channel(self, driver: RobotDriver) -> None:
         driver._sock.close()       # dead descriptor, still installed
 
+    def transport_deadline_s(self, driver: RobotDriver):
+        return driver._sock.gettimeout()
+
     # ---- targets ---------------------------------------------------------
 
     def reachable_target(self) -> Pose:
         return Pose.from_mm(10.0, 10.0, 10.0)
+
+    def non_repeatable_request(self, driver: RobotDriver) -> Request:
+        """``PICK_AND_PLACE``: seven controller-side steps, one frame.
+
+        The second element of ``pick_place_requests`` — the one that
+        descends, applies vacuum, transports and inserts. Re-sending it
+        after a read timeout runs the cycle again, on a wire with no
+        sequence number and against a controller
+        (``krl_prog/laptop_comm.src`` CASE 4) that does not read another
+        frame until ``PickAndPlace`` has returned.
+        """
+        return driver.pick_place_requests(
+            pick=WorkspacePoint(100.0, 50.0, 5.0),
+            place=WorkspacePoint(-50.0, 100.0, 2.0),
+            transport_height_mm=80.0,
+            vacuum_level_percent=80,
+        )[1]
 
     def unencodable_target(self) -> Pose:
         """Beyond int32 on x. Raises ``CoordinateOutOfRange``, a

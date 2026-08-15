@@ -25,9 +25,14 @@ KUKA and never were.
 
 **What this driver does not do**, so nothing downstream assumes it:
 there is no heartbeat and no watchdog (nothing ever sends
-``OpCode.HEARTBEAT``), there is **no sequence number**, so a late reply
-is mis-paired with the next command, and the base's retry loop re-sends
-requests, which is not idempotent for ``PICK_AND_PLACE``. It performs
+``OpCode.HEARTBEAT``), and there is **no sequence number**, so a reply
+that arrives after its deadline is mis-paired with whatever goes out
+next. That hazard is not closed and cannot be closed from this end.
+What *is* closed is this client's contribution to it: the base's retry
+loop no longer re-sends a request outside
+:attr:`~execution.driver.RobotDriver.IDEMPOTENT_KINDS`, so a
+``PICK_AND_PLACE`` that times out halts the arm instead of being
+commanded a second time. It performs
 **no workspace check** beyond asking whether a coordinate fits in the
 wire's fields — reachability is enforced by the planner and by the
 controller's software limits, neither of which this class can see, so

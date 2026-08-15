@@ -17,17 +17,19 @@ from __future__ import annotations
 
 import os
 import re
+from socket import timeout as _socket_timeout
 
 import pytest
 
 from common.types import (PickPlacePose, RobotStatus, RobotStatusCode,
                           WorkspacePoint)
-from execution.driver import Pose, Reachability, RequestKind
+from execution.driver import Pose, Reachability, RequestKind, RobotFault
 from execution.execution import (KUKA_CONTROLLER_INSERT_Z_MM, ExecutionConfig,
                                  KukaClient, wire_mm)
 from execution.mock_kuka_server import run_in_thread
 from execution.protocol import (COMMAND_LEN, CYCLE_MS_MAX, STATUS_LEN,
-                                CoordinateOutOfRange, OpCode, Z_MM_MAX,
+                                CoordinateOutOfRange, OpCode,
+                                StatusCodeOutOfRange, Z_MM_MAX,
                                 pack_command, pack_status, unpack_command,
                                 unpack_status)
 from execution.task import PickPlaceTask, TaskConfig
@@ -225,6 +227,58 @@ def test_an_out_of_range_z_is_fatal_not_retryable():
     assert not issubclass(CoordinateOutOfRange, ValueError)
 
 
+class _PartialWriteSocket:
+    """A socket whose ``sendall`` times out after writing part of a frame.
+
+    This is the real shape of the failure and the reason it cannot be
+    retried: ``socket.sendall`` raises ``socket.timeout`` **without
+    reporting how many bytes went out**, and this stream cannot
+    resynchronise — there is no length prefix and no sync word, so a
+    reader takes exactly 16 bytes and a second frame written behind a
+    partial one fails CRC on every frame after it (``protocol.py``
+    module docstring, audit F §1.6).
+    """
+
+    def __init__(self) -> None:
+        self.writes = 0
+        self.armed = None
+
+    def settimeout(self, t) -> None:
+        self.armed = t
+
+    def gettimeout(self):
+        return self.armed
+
+    def sendall(self, data: bytes) -> None:
+        self.writes += 1
+        raise _socket_timeout("timed out with part of the frame written")
+
+    def close(self) -> None:
+        pass
+
+
+def test_a_send_that_times_out_is_fatal_and_the_frame_is_not_re_sent():
+    """A write-side timeout must not go round the retry loop.
+
+    ``socket.timeout`` is in ``TRANSIENT_EXCEPTIONS`` because a *read*
+    that times out is worth another attempt. A write that times out is
+    not the same event: the frame may be half on the wire, and the retry
+    used to append a second frame behind it. Two writes happen here —
+    the command, then the halt attempt — and no more.
+    """
+    driver = KukaClient(ExecutionConfig(host="127.0.0.1", port=1,
+                                        max_retries=3))
+    sock = _PartialWriteSocket()
+    driver._sock = sock
+    with pytest.raises(RobotFault):
+        driver.move_to(WorkspacePoint(10, 10, 10))
+    assert sock.writes == 2, (
+        f"{sock.writes} writes: the MOVE_TO and the halt are the only two "
+        f"a write-side timeout may produce")
+    assert driver.halted and driver.halt_attempts == 1
+    assert not driver.halt_delivered
+
+
 def test_the_cycle_time_field_saturates_rather_than_wrapping():
     """``aux_u16`` is vacuum percent outbound and cycle milliseconds
     inbound — one field, two meanings, one direction each. The inbound
@@ -243,6 +297,42 @@ def test_the_cycle_time_field_saturates_rather_than_wrapping():
         pack_status(code=1, x_mm=0, y_mm=0, z_mm=0, cycle_ms=1234))
     assert ordinary["cycle_ms"] == 1234
     assert ordinary["cycle_ms_saturated"] is False
+
+
+def test_the_reply_path_range_checks_what_the_command_path_range_checks():
+    """``pack_status`` checked nothing while ``pack_command`` checked all
+    three axes, and the two pack the same ``">BBiihH"`` body.
+
+    Two different silences came out of that. A z beyond int16 raised a
+    bare ``struct.error`` naming no axis — the message
+    ``CoordinateOutOfRange`` exists to replace — and the status code was
+    masked with ``& 0xFF``, so 256 became 0 (``OK``) and 259 became 3
+    (``PLACE_FAILED``): a truncation that turns an impossible status
+    into a valid, plausible, actionable one on the path a host trusts to
+    tell it whether the arm did what it was told.
+    """
+    assert (256 & 0xFF) == RobotStatusCode.OK.value, (
+        "the defect, for the record: an out-of-range code truncated to a "
+        "real one")
+    assert (259 & 0xFF) == RobotStatusCode.PLACE_FAILED.value
+
+    with pytest.raises(StatusCodeOutOfRange):
+        pack_status(code=256, x_mm=0, y_mm=0, z_mm=0, cycle_ms=0)
+    with pytest.raises(StatusCodeOutOfRange):
+        pack_status(code=-1, x_mm=0, y_mm=0, z_mm=0, cycle_ms=0)
+
+    with pytest.raises(CoordinateOutOfRange) as err:
+        pack_status(code=1, x_mm=0, y_mm=0, z_mm=100_000, cycle_ms=0)
+    assert "z" in str(err.value) and "int16" in str(err.value)
+    with pytest.raises(CoordinateOutOfRange):
+        pack_status(code=1, x_mm=2 ** 31, y_mm=0, z_mm=0, cycle_ms=0)
+
+    # Everything that fits still packs exactly as before, including the
+    # unknown-status frame the conformance suite builds.
+    s = unpack_status(
+        pack_status(code=99, x_mm=-5, y_mm=5, z_mm=1, cycle_ms=7))
+    assert (s["code"], s["x_mm"], s["y_mm"], s["z_mm"], s["cycle_ms"]) == (
+        99, -5, 5, 1, 7)
 
 
 def test_a_saturated_cycle_time_is_flagged_on_the_status():

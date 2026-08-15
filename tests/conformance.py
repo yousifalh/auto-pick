@@ -93,6 +93,24 @@ class Hangup:
 
 
 @dataclass(frozen=True)
+class Trickle:
+    """Reply sentinel: send ``payload[:split]``, wait, send the rest.
+
+    A whole reply, delivered in two TCP segments. It exists because the
+    read path's per-chunk deadline is only observable when there is more
+    than one chunk: the driver arms what is *left* of the command
+    deadline before each ``recv``, so the value the transport is left
+    carrying after a two-segment reply is the remainder, not the whole.
+    A one-segment reply leaves the full timeout armed and hides the
+    defect on any fixed-length framing.
+    """
+
+    payload: bytes
+    split: int
+    gap_s: float
+
+
+@dataclass(frozen=True)
 class Observed:
     """One request as the far end saw it, in neutral terms."""
 
@@ -163,6 +181,14 @@ class ScriptedEndpoint:
                     conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER,
                                     struct.pack("ii", 1, 0))
                     return
+                if isinstance(out, Trickle):
+                    try:
+                        conn.sendall(out.payload[:out.split])
+                        time.sleep(out.gap_s)
+                        conn.sendall(out.payload[out.split:])
+                    except OSError:
+                        return
+                    continue
                 hangup = isinstance(out, Hangup)
                 payload = out.payload if hangup else out
                 try:
@@ -292,10 +318,40 @@ class ConformanceHarness:
         """
         raise NotImplementedError
 
+    # ---- transport -------------------------------------------------------
+
+    def transport_deadline_s(self, driver: RobotDriver):
+        """The write/read deadline currently armed on the transport.
+
+        Returns seconds, or ``None`` for a blocking transport with no
+        deadline. This is the one observation in the suite that is about
+        the transport rather than the protocol, and it is here because
+        the defect it pins is not visible any other way: a reply that
+        arrives near the command deadline leaves the socket armed with
+        whatever was left of it, and the *next* write inherits that. A
+        16-byte frame never blocks long enough for a behavioural test to
+        see the difference, so the suite asks what deadline is armed
+        instead of timing a write that will not stall.
+        """
+        raise NotImplementedError
+
     # ---- targets ---------------------------------------------------------
 
     def reachable_target(self) -> Pose:
         """A pose this driver can encode and the mock will accept."""
+        raise NotImplementedError
+
+    def non_repeatable_request(self, driver: RobotDriver) -> Request:
+        """A request this backend must not send twice.
+
+        Every backend surveyed has one: an operation whose effect is not
+        a function of the arm's state but of how many times it ran. On
+        this project's KUKA wire it is ``PICK_AND_PLACE`` — a
+        grasp-and-insert that on a second run picks nothing and inserts
+        the cell the first run already placed. The driver must never
+        re-send it on a read timeout, because a timeout does not say the
+        cycle did not happen; it says nothing came back yet.
+        """
         raise NotImplementedError
 
     def unencodable_target(self) -> Pose:
@@ -667,6 +723,128 @@ class RobotDriverConformance:
         finally:
             ep.close()
 
+    def test_a_request_that_cannot_be_repeated_is_never_re_sent(self, harness):
+        """A read timeout is not evidence that the command did not run.
+
+        This is the gap the retry loop had, and it was the loudest one in
+        the system: the loop retried *every* transient failure with a
+        bare re-send, and neither wire here carries a sequence number, so
+        a ``PICK_AND_PLACE`` that timed out at the default 5000 ms
+        against a seven-step cycle was re-commanded — a second
+        grasp-and-insert on a cell the first attempt may already have
+        placed — and every reply after it answered the previous request.
+
+        The driver may still escalate. It may not repeat. Exactly one of
+        these frames goes on the wire, and then the halt.
+        """
+        ep = self._endpoint(harness, self._after_handshake(harness, None))
+        try:
+            with harness.make_driver(ep.port, max_retries=3) as driver:
+                request = harness.non_repeatable_request(driver)
+                with pytest.raises(RobotFault):
+                    driver.execute(request)
+                assert driver.halted
+                assert driver.halt_attempts == 1
+            assert ep.count(request.kind) == 1, (
+                f"{request.name} went out {ep.count(request.kind)} times; a "
+                f"request that is not safe to repeat must be sent once and "
+                f"then escalated")
+            assert ep.wait_for_halt()
+        finally:
+            ep.close()
+
+    def test_a_reply_after_the_deadline_is_not_answered_by_a_second_send(
+            self, harness):
+        """The mis-pairing itself, with a reply that really is late.
+
+        The previous test uses silence, which cannot distinguish "the
+        controller never got it" from "the controller is still working".
+        Here the controller *does* answer, after the deadline, which is
+        the case the docstring at ``execute`` used to name as a hazard
+        and leave open: the late ``SUCCESS`` must not be paired with a
+        re-sent request, and the only way to guarantee that on a wire
+        with no sequence number is to not re-send.
+        """
+        ok = harness.status_frame(RobotStatusCode.OK)
+        late = harness.status_frame(RobotStatusCode.SUCCESS)
+
+        def reply(observed: Observed, n: int):
+            if observed.kind is RequestKind.HANDSHAKE:
+                return ok
+            time.sleep(0.4)               # twice the 200 ms command deadline
+            return late
+
+        ep = self._endpoint(harness, reply)
+        try:
+            driver = harness.make_driver(
+                ep.port, max_retries=3, command_timeout_ms=200,
+                retry_pause_ms=1)
+            driver.connect()
+            request = harness.non_repeatable_request(driver)
+            with pytest.raises(RobotFault):
+                driver.execute(request)
+            assert ep.count(request.kind) == 1, (
+                "the late reply must not be given a second request to be "
+                "mis-paired with")
+            # The halt still had a live socket, so it went out; this is
+            # asserted on the driver rather than the far end because the
+            # far end is still asleep on its own reply.
+            assert driver.halt_attempts == 1
+            assert driver.halt_delivered
+        finally:
+            ep.close()
+
+    def test_the_send_path_arms_the_full_command_timeout(self, harness):
+        """The write side must be bounded, and bounded by its own knob.
+
+        The read path arms ``remaining`` on the transport before each
+        chunk and never restores it, so after a reply that lands near the
+        deadline the socket carries a near-zero timeout — and the next
+        ``sendall`` ran under it. A ``sendall`` that times out may have
+        written *part* of a frame, and Python does not report how much:
+        on a stream this protocol cannot resynchronise (``protocol.py``
+        docstring, "framing is positional"), a second frame written
+        behind a partial one corrupts every frame after it.
+
+        Measured here rather than timed, because a 16-byte frame never
+        stalls long enough to time a write that fails.
+        """
+        ok = harness.status_frame(RobotStatusCode.OK)
+        done = harness.status_frame(RobotStatusCode.SUCCESS)
+
+        def reply(observed: Observed, n: int):
+            if observed.kind is RequestKind.HANDSHAKE:
+                return ok
+            # Late, and in two segments. Both are needed: the wait spends
+            # the deadline, and the split forces a second `recv` that
+            # arms what is left of it. A single-segment reply leaves the
+            # full timeout armed on a fixed-length framing and the defect
+            # is invisible.
+            time.sleep(0.25)              # 250 ms of a 400 ms deadline
+            return Trickle(done, split=6, gap_s=0.02)
+
+        ep = self._endpoint(harness, reply)
+        driver = harness.make_driver(
+            ep.port, max_retries=1, command_timeout_ms=400, retry_pause_ms=1)
+        try:
+            driver.connect()
+            status = self._move(driver, harness.reachable_target())
+            assert status.code is RobotStatusCode.SUCCESS
+
+            left = harness.transport_deadline_s(driver)
+            assert left is not None and left < 0.25, (
+                f"precondition: the read path should have left {left!r}s of "
+                f"the 400 ms deadline armed on the transport")
+
+            driver.send(driver.encode(Request(RequestKind.HALT, "HALT")))
+            assert harness.transport_deadline_s(driver) == pytest.approx(
+                0.4, abs=1e-3), (
+                "send() must arm the whole command timeout, not inherit what "
+                "the last read left behind")
+        finally:
+            driver.close()
+            ep.close()
+
     # ---- 4. the latch ----------------------------------------------------
 
     def test_a_controller_reporting_a_stop_latches_the_driver(self, harness):
@@ -741,10 +919,24 @@ class RobotDriverConformance:
         may only do that if the driver has already turned every other
         code into an exception — which is a base-class property here, not
         an accident of the status enum happening to be exhaustive.
+
+        **The command timeout is set here rather than left at the
+        harness default, and the reason is a measurement.** The harnesses
+        default to 300 ms because most of this suite is deliberate
+        silence and a short deadline keeps it fast. This test is the one
+        that drives a controller which actually moves: the KUKA
+        simulator's ``PICK_AND_PLACE`` is seven motions and two dwells
+        and takes ~340 ms at ``ms_per_100mm=2``. Under a 300 ms deadline
+        it timed out — and this test passed anyway, because the retry
+        loop re-sent the cycle and read the first cycle's reply as the
+        answer to the second. That is the mis-pairing this suite now pins
+        two tests against, and it had been running inside the suite's own
+        happy path. A deadline that does not fit the operation is a test
+        artefact, not a property of the driver.
         """
         port, close = harness.start_mock()
         try:
-            with harness.make_driver(port) as driver:
+            with harness.make_driver(port, command_timeout_ms=5000) as driver:
                 for request in harness.smoke_requests(driver):
                     status = driver.execute(request)
                     assert status.code in RobotDriver.ACTIONABLE_STATUS, (

@@ -48,11 +48,21 @@ hardware safety chain, and the ROS 2 action layer does not model one at
 all. Clearing a latched stop is out of band everywhere, and on ABB near
 a singularity it needs a human at the pendant.
 
-So :meth:`RobotDriver.halt` is documented as *decelerate and hold, in
-band, idempotent, explicitly not safety-rated*. It is still the right
-thing to send, and this driver still latches on it — a latched client
-refusing to command further motion is a real protection — but the name
-no longer claims a safety function the wire cannot deliver.
+So :meth:`RobotDriver.halt` is documented as *an in-band request to stop
+moving, idempotent, explicitly not safety-rated, and — on this
+backend — actionable only between commands*. That last clause is not a
+hedge: this driver has one socket and one thread, so the only place a
+halt can be issued is after a command has returned, and
+``krl_prog/laptop_comm.src`` does not read another record until the one
+it is executing has finished, so a halt sent mid-cycle would sit in the
+EKI buffer until the cycle ended anyway. An in-cycle abort would need a
+second channel and a KRL ``INTERRUPT``; neither exists here.
+:meth:`RobotDriver.halt` states this in full.
+
+It is still the right thing to send, and this driver still latches on
+it — a latched client refusing to command further motion is a real
+protection — but neither the name nor the docstring now claims a
+function the wire cannot deliver.
 
 :class:`RobotEstop` keeps its name deliberately. It is raised when the
 **controller reports** ``RobotStatusCode.ESTOP``, i.e. when the machine
@@ -310,8 +320,9 @@ _SEALED = frozenset({
     "connect", "close", "execute", "halt", "move",
     "__enter__", "__exit__",
     "halted", "estopped", "halt_attempts", "halt_delivered",
-    "add_frame_observer",
+    "add_frame_observer", "add_teardown", "teardown_count",
     "_handshake", "_read_status", "_request_halt", "_fatal", "_observe",
+    "_run_teardowns",
 })
 
 
@@ -369,7 +380,51 @@ class RobotDriver:
     #: the fatal path. ``struct.error`` is not a ``ValueError`` subclass,
     #: which is how an out-of-range coordinate once escaped without a
     #: stop.
+    #:
+    #: ``socket.timeout`` is in here for the **read** side only. A write
+    #: that times out is a different event and does not reach this
+    #: tuple: :meth:`TcpFrameDriver.send` converts it to a
+    #: :class:`RobotFault`, because a ``sendall`` that timed out may have
+    #: written part of a frame and does not say how much.
     TRANSIENT_EXCEPTIONS: Tuple[type, ...] = (socket.timeout, ValueError)
+
+    #: The request kinds a transient failure may be **retried** on.
+    #:
+    #: A read timeout does not say the controller failed to act; it says
+    #: nothing has come back yet. Neither wire in this repository carries
+    #: a sequence number, so a re-send is indistinguishable from the
+    #: original at the far end and a late reply is mis-paired with the
+    #: retry. Retrying is therefore only safe where running the request
+    #: twice reaches the same state as running it once, and the
+    #: classification below is by what each kind *does at the
+    #: controller*, not by how it is framed:
+    #:
+    #: * ``HANDSHAKE`` — a query and an ack. ``laptop_comm.src`` CASE 7
+    #:   answers ``OK`` and touches nothing. Repeatable.
+    #: * ``HALT`` — asks the arm to stop and hold. Stopping twice is
+    #:   stopping; a stop that could not be repeated would be a worse
+    #:   defect than the one this attribute fixes.
+    #: * ``MOVE`` — an **absolute** goal pose, on both drivers. The arm
+    #:   converges to the same place whether it is commanded once or
+    #:   three times. (It would not be repeatable on a backend whose
+    #:   motion command were relative; such a driver must remove ``MOVE``
+    #:   from this set, which is why this is a class attribute.)
+    #: * ``GRIPPER`` — sets a state, not a delta: vacuum on at 80 %,
+    #:   vacuum off, jaws to a width. Applying it twice leaves the same
+    #:   state.
+    #:
+    #: ``VENDOR`` is deliberately **absent**, and that is the whole point
+    #: of the attribute. A vendor request is by construction an operation
+    #: the base class cannot reason about, and on this project it is
+    #: ``PICK_AND_PLACE``: seven controller-side steps at 150 mm/s
+    #: against a 5000 ms default deadline, which descends, applies
+    #: vacuum, transports and inserts. A second run grasps nothing and
+    #: inserts a cell the first run already placed. The base class must
+    #: not repeat what it cannot describe.
+    IDEMPOTENT_KINDS: frozenset = frozenset({
+        RequestKind.HANDSHAKE, RequestKind.HALT,
+        RequestKind.MOVE, RequestKind.GRIPPER,
+    })
 
     def __init_subclass__(cls, **kw) -> None:
         super().__init_subclass__(**kw)
@@ -391,6 +446,11 @@ class RobotDriver:
         self._halt_attempts = 0
         self._halt_delivered = False
         self._observers: list = []
+        # Callables the *builder* of this driver attached to its
+        # lifetime; see add_teardown. Empty for every driver constructed
+        # directly, which is every driver in the conformance suite.
+        self._teardowns: list = []
+        self._teardown_count = 0
 
     # ---- hooks a driver must supply -------------------------------------
 
@@ -485,6 +545,55 @@ class RobotDriver:
         for fn in self._observers:
             fn(request, frame)
 
+    # ---- sealed: builder-attached teardown -------------------------------
+
+    def add_teardown(self, fn: Callable[[], None]) -> None:
+        """Register ``fn()`` to run once, when this driver is closed.
+
+        For whoever BUILT the driver, not for the driver itself. The one
+        caller is :func:`execution.build_driver`, which spawns an
+        in-process simulator for the ``mock`` and ``json`` backends and
+        has to stop that thread again.
+
+        It exists because the alternative had already been written and
+        was worse: ``main.py`` held the server handle beside the driver
+        and shut it down in its own ``finally``, so every future caller
+        of the factory inherited responsibility for a thread it never
+        asked for, and one that forgot leaked it. ``close()`` is the one
+        event that happens on *every* route out of a run — normal exit,
+        a refused handshake, ``RobotEstop`` and ``_request_halt`` all
+        reach it — which is exactly the property the escalation was
+        built around.
+
+        Teardowns run in reverse registration order, exactly once, and a
+        raising teardown does not stop the others or reach the caller:
+        ``close()`` is on the fault paths, and a simulator that would
+        not stop must not replace the fault that prompted the close. It
+        is logged instead.
+        """
+        self._teardowns.append(fn)
+        self._teardown_count += 1
+
+    @property
+    def teardown_count(self) -> int:
+        """How many teardowns were registered on this driver, ever.
+
+        Does not decrease when they run: it answers "was this driver
+        built with a simulator attached?", which is a fact about the
+        driver and not about whether it is still open.
+        """
+        return self._teardown_count
+
+    def _run_teardowns(self) -> None:
+        while self._teardowns:
+            fn = self._teardowns.pop()
+            try:
+                fn()
+            except Exception as exc:       # pragma: no cover - defensive
+                self.log.error(
+                    "a teardown registered on this driver raised (%r); the "
+                    "resource it owns may still be running", exc)
+
     # ---- sealed: lifecycle ----------------------------------------------
 
     @property
@@ -544,7 +653,20 @@ class RobotDriver:
             raise
 
     def close(self) -> None:
-        self.close_channel()
+        """Close the transport, then run any builder-attached teardowns.
+
+        The transport goes first: a teardown stops the thing at the
+        other end of it, and stopping a controller while a socket to it
+        is still open is how a test starts reading a reset instead of a
+        clean shutdown. Both halves are idempotent, which matters
+        because ``close`` is reached repeatedly on the fault paths
+        (``halt``'s ``finally``, ``connect``'s handshake failure,
+        ``__exit__``).
+        """
+        try:
+            self.close_channel()
+        finally:
+            self._run_teardowns()
 
     def __enter__(self) -> "RobotDriver":
         self.connect()
@@ -569,6 +691,12 @@ class RobotDriver:
         ever emitted ``SUCCESS`` here — a tolerance wider than anything
         that exists, which a conformance suite cannot pin and a second
         controller would read as permission.
+
+        This loop needs no idempotency gate of the kind
+        :meth:`execute` grew: it sends exactly one kind of request, and
+        ``HANDSHAKE`` is in :attr:`IDEMPOTENT_KINDS` because it asks the
+        controller for an ack and changes nothing (``laptop_comm.src``
+        CASE 7).
         """
         timeout_s = self.policy.handshake_timeout_ms / 1000
         last_err: Optional[Exception] = None
@@ -627,17 +755,32 @@ class RobotDriver:
         requests a halt and raises. Fatal failures skip the retries.
         Returns only codes in :attr:`ACTIONABLE_STATUS`.
 
-        **Stated hazard, not a guarantee.** There is no sequence number
-        on this project's wire, so a late reply is mis-paired with the
-        next command, and the retry below re-sends the request — which
-        is not idempotent for a pick-and-place. A driver whose transport
-        has sequence numbers should still expect this loop to re-send.
+        **What "retry" is now bounded by.** Neither wire here carries a
+        sequence number, so a reply that arrives after its deadline is
+        mis-paired with whatever went out next. This loop used to answer
+        that by re-sending everything, which made the mis-pairing worse
+        for exactly the request it hurt most: a ``PICK_AND_PLACE`` that
+        timed out was re-commanded, so a cell that had already been
+        picked and inserted was picked and inserted again, and every
+        reply after it answered the previous request.
+
+        A transient failure is now retried only for a kind in
+        :attr:`IDEMPOTENT_KINDS`; for anything else the first transient
+        failure goes straight to :meth:`_fatal`, which requests a halt
+        and raises. That is strictly less capable and strictly more
+        honest: the driver still cannot tell whether the cycle ran, but
+        it no longer resolves that ignorance by running it again.
+
+        The mis-pairing hazard itself is **not** closed — it cannot be,
+        without a sequence number on the wire. What is closed is this
+        client's contribution to it.
         """
         if self._halted:
             raise RobotEstop(
                 f"refusing to send {request.name}: this driver is latched")
 
         last_err: Optional[Exception] = None
+        repeatable = request.kind in self.IDEMPOTENT_KINDS
         for attempt in range(self.policy.max_retries):
             try:
                 frame = self.encode(request)
@@ -646,6 +789,21 @@ class RobotDriver:
                 status = self._read_status(
                     self.policy.command_timeout_ms / 1000)
             except self.TRANSIENT_EXCEPTIONS as exc:
+                if not repeatable:
+                    # The failure is transient; the request is not. None
+                    # of the three things caught here licenses a second
+                    # grasp-and-insert: a read timeout says the reply has
+                    # not arrived, which is not the same as the command
+                    # not having run; an unparseable reply says it ran
+                    # and the answer was corrupted; and a ValueError out
+                    # of encode() will raise identically on the second
+                    # attempt. Stop the arm and say so instead.
+                    self._fatal(
+                        f"{request.name} failed transiently ({exc!r}) and is "
+                        f"a {request.kind.name} request, which this driver "
+                        f"does not classify as safe to repeat; re-sending it "
+                        f"could run the operation a second time",
+                        exc)
                 last_err = exc
                 self.log.warning(
                     "channel error (attempt %d/%d): %s",
@@ -674,6 +832,26 @@ class RobotDriver:
                     f"{status.code.name}")
 
             if status.code in self.RETRYABLE_STATUS:
+                # Re-sent even for a kind outside IDEMPOTENT_KINDS, and
+                # the asymmetry with the transient-exception path above
+                # is deliberate. A controller-reported status is a
+                # complete, well-formed reply *to this request*: the
+                # pairing is intact, so a re-send cannot skew it, and a
+                # line fault reported back means the far end could not
+                # read the frame. On this project's controller that is
+                # provable — krl_prog/laptop_comm.src compares the CRC
+                # before it enters the opcode SWITCH, so a CRC_ERROR
+                # reply is evidence that nothing was dispatched.
+                #
+                # Residual, stated rather than papered over: the other
+                # member of the default tuple, a controller-reported
+                # TIMEOUT, carries no such evidence. Nothing on either
+                # side of this wire emits it — the KRL loop has no branch
+                # that can, and neither simulator sends it — so the
+                # ambiguity is unreachable here rather than resolved. A
+                # driver whose controller does emit it, and whose
+                # non-idempotent operations can be half-done when it
+                # does, must drop it from RETRYABLE_STATUS.
                 last_err = RobotFault(
                     f"controller reported {status.code.name}")
                 self.log.warning(
@@ -723,6 +901,42 @@ class RobotDriver:
         and clearing one is out of band. What this method does guarantee
         is the client-side half: after it, the driver refuses to command
         motion and refuses to reconnect.
+
+        **Actionable only between commands.** This is a correction to
+        what the module docstring used to claim. "Decelerate and hold, in
+        band" describes what the *opcode* means, not what this backend
+        can deliver, and on this backend it cannot be delivered mid-cycle
+        for two independent reasons — either alone is sufficient:
+
+        * *Host side.* There is one socket and one thread. The only
+          caller inside this class is :meth:`_request_halt`, reached
+          after :meth:`execute` has already returned or raised, and the
+          thread that would call it is the thread blocked in ``recv``.
+          A halt cannot be *sent* while a command is in flight.
+        * *Controller side.* ``krl_prog/laptop_comm.src`` reads one
+          record, dispatches it, replies, and only then calls
+          ``EKI_CheckBuffer`` for the next one. CASE 4 dispatches to
+          ``PickAndPlace``, which does not return until the whole cycle
+          has run. A halt frame arriving mid-cycle sits in the EKI FIFO
+          until it ends. A halt cannot be *serviced* while a command is
+          in flight either.
+
+        So during the one operation where an abort would matter most —
+        the seven-step pick-and-place — this method's effect is confined
+        to the client-side latch: no *further* motion is commanded, and
+        the vacuum is dropped by the controller's own CASE 6 when the
+        frame is finally read.
+
+        A real in-cycle abort is not a change to this method. It needs a
+        second, asynchronous channel into the controller and a KRL
+        ``INTERRUPT`` declared against it — the shape
+        ``krl_prog/routines.src`` already uses for ``$STOPMESS``
+        (``GLOBAL INTERRUPT DECL 3 WHEN $STOPMESS==TRUE DO IR_STOPM()``)
+        — so that the interpreter services it without the receive loop
+        having to come back round. Neither exists here, and nothing in
+        this class simulates one: an abort path that returned promptly
+        while the arm kept moving would be worse than the honest
+        limitation, because a caller would stop watching.
 
         Idempotent in effect: the latch is one-way, so a second call
         cannot un-set it, and a call with no channel left to send over
@@ -838,9 +1052,41 @@ class TcpFrameDriver(RobotDriver):
             self._sock = None
 
     def send(self, frame: bytes) -> None:
+        """Write one whole frame, under the command timeout, or fail hard.
+
+        **Two things happen here that used to not.**
+
+        *The deadline is re-armed.* :meth:`read_exactly` calls
+        ``settimeout(remaining)`` before every chunk and does not restore
+        it, so after a reply that arrived near its deadline the socket
+        was left carrying whatever was left over — measured at ~0.15 s of
+        a 0.4 s command timeout in the conformance suite, and arbitrarily
+        close to zero on a reply that only just made it. The next
+        ``sendall`` then ran under the *previous read's* remainder, a
+        number that has nothing to do with how long a write may take.
+
+        *A write timeout is fatal, not transient.* ``sendall`` raises
+        ``socket.timeout`` without reporting how many bytes it managed to
+        write, so a timed-out write may have left a partial frame on the
+        stream. This protocol cannot resynchronise — no length prefix, no
+        sync word, readers take a fixed count — so a retry writing a
+        second frame behind a partial one corrupts every frame after it,
+        which is the CRC-error-forever behaviour recorded in audit F
+        §1.6. Raising :class:`RobotFault` puts it past
+        ``TRANSIENT_EXCEPTIONS`` and onto the catch-all, which halts.
+        """
         if self._sock is None:
             raise RobotFault("socket not connected")
-        self._sock.sendall(frame)
+        self._sock.settimeout(self.policy.command_timeout_ms / 1000)
+        try:
+            self._sock.sendall(frame)
+        except socket.timeout as exc:
+            raise RobotFault(
+                f"the write of a {len(frame)}-byte frame timed out after "
+                f"{self.policy.command_timeout_ms} ms. An unknown prefix of "
+                f"it may be on the wire and this stream cannot "
+                f"resynchronise, so nothing further may be written over it."
+            ) from exc
 
     def read_exactly(self, n: int, deadline: float) -> bytes:
         """Read exactly ``n`` bytes, or raise before ``deadline``.
@@ -849,6 +1095,11 @@ class TcpFrameDriver(RobotDriver):
         controller that trickles one byte at a time used to be accepted
         after 3 s at a 250 ms setting, which left the command deadline —
         the thing the bounded-response argument rests on — unenforced.
+
+        This method leaves the transport armed with the remainder of the
+        deadline it was given. That is correct for the read it is in the
+        middle of and wrong for anything afterwards, which is why
+        :meth:`send` arms its own.
         """
         if self._sock is None:
             raise RobotFault("socket not connected")

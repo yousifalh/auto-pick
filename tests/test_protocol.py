@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 
 from execution.protocol import (
-    COMMAND_LEN, STATUS_LEN, OpCode, PROTOCOL_VERSION,
+    COMMAND_LEN, STATUS_LEN, OpCode,
     crc16_modbus, pack_command, unpack_command,
     pack_status, unpack_status,
 )

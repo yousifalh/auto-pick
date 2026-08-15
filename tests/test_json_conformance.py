@@ -109,10 +109,29 @@ class JsonHarness(ConformanceHarness):
     def break_channel(self, driver: RobotDriver) -> None:
         driver._sock.close()
 
+    def transport_deadline_s(self, driver: RobotDriver):
+        return driver._sock.gettimeout()
+
     # ---- targets ---------------------------------------------------------
 
     def reachable_target(self) -> Pose:
         return Pose(0.10, 0.10, 0.10)
+
+    def non_repeatable_request(self, driver: RobotDriver) -> Request:
+        """``pick_place``: one frame, but still one grasp-and-insert.
+
+        This backend carries both poses in a single self-describing
+        message, which changes the framing and changes nothing about
+        repeatability — running it twice still tries to pick a cell that
+        is no longer there. That is the point of classifying by what the
+        request *does* rather than by how many frames it takes.
+        """
+        return driver.pick_place_requests(
+            pick=WorkspacePoint(100.0, 50.0, 5.0),
+            place=WorkspacePoint(-50.0, 100.0, 2.0),
+            transport_height_mm=80.0,
+            vacuum_level_percent=80,
+        )[0]
 
     def unencodable_target(self) -> Pose:
         """Infinite. Raises ``NonFiniteCoordinate``, an
