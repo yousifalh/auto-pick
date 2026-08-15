@@ -1,0 +1,50 @@
+version: 2
+
+# Two ecosystems, for two things that could otherwise change without a
+# commit in this repository saying so.
+#
+# `github-actions`: ci.yml pins every action to a commit SHA rather than to
+# `@v5` / `@v6`, because those tags are branches the publisher moves and a
+# moved tag runs unreviewed third-party code inside a job holding this
+# repository's token. A SHA pin is only safe if something proposes the
+# bumps; that is this file's first job. Without it the pins rot and the
+# argument for pinning turns into an argument for not updating.
+#
+# `pip`: the runtime floors in pyproject.toml are floors, not pins, so a
+# fresh resolve already moves on its own - what dependabot adds here is a
+# pull request when a floor is no longer high enough. pillow>=10.3 is in
+# pyproject because two CVEs were found by hand, once, by reading; the
+# `security` filter below is the standing version of that. `bpy==5.0.1` and
+# the pinned dev tooling are the entries that genuinely need a bot.
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+    labels:
+      - dependencies
+
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: monthly
+    # Zero is not "off". It disables routine VERSION updates while leaving
+    # SECURITY updates untouched, which is precisely the split this project
+    # already reasons in: a floor is a floor because the resolve is expected
+    # to move past it on its own, so a monthly PR raising `numpy>=1.24` to
+    # `>=2.x` would be arguing against pyproject's own comment. What is
+    # worth a pull request is an advisory that makes a floor wrong - the
+    # pillow>=10.3 case, found by hand, once, by reading.
+    #
+    # bpy==5.0.1 is the one hard pin and it is deliberately left to a human:
+    # it is pinned to the last release with a cp311 wheel, so bumping it
+    # requires moving the orientation gate's python-version in the same
+    # commit, which a bot cannot know.
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: "deps"
+    labels:
+      - dependencies

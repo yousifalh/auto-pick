@@ -5,7 +5,7 @@ description = "Autonomous recognition, pick and place for Li-ion batteries"
 authors = [{name = "Yousif Al-Haidary"}]
 requires-python = ">=3.10"
 # These are floors, not pins, and a fresh install resolves well above them.
-# The two below are floors that a constrained or reproducible resolve could
+# The three below are floors that a constrained or reproducible resolve could
 # legitimately land on, so they say what they mean:
 #   * pillow>=10.3 - 10.0 admits CVE-2023-4863 (libwebp heap overflow, fixed
 #     in 10.0.1) and CVE-2023-50447 (code execution via PIL.ImageMath.eval,
@@ -18,30 +18,98 @@ requires-python = ">=3.10"
 #     install weight, CI weight and the `ImportError: libGL.so.1` class of
 #     container failure for nothing. The one videoio call, main.py's
 #     cv2.VideoCapture, is present in the headless build.
+#   * albumentations>=2.0 - two measured reasons, both of which the old >=1.4
+#     floor admitted. (a) recog/seeding.py:449 seeds a pipeline through
+#     `transform.set_random_seed`; that method does not exist before 1.4.21
+#     (checked by unpacking every 1.4.x wheel on PyPI: absent 1.4.0-1.4.20,
+#     present from 1.4.21), and neither does the `.rng` Generator its
+#     fallback branch at :493 looks for, so on a legal 1.4.0 resolve
+#     seed_transform raises SeedingError and no seeded training run can
+#     start. (b) 1.4.21-1.4.24 do pass the seeding contract, but they are
+#     the wrong library for this code anyway: run under 1.4.24, building
+#     recog/augmentation.py's pipelines emits `UserWarning: Argument
+#     'border_mode' is not valid and will be ignored`, the same for 'fill'
+#     on A.Affine (augmentation.py:116) and for 'std_range' on A.GaussNoise
+#     (:138 and :307). Those are the 2.x argument names; on 1.4.x the
+#     training run silently uses albumentations' defaults for border
+#     handling and noise magnitude instead of the values the config asks
+#     for. 2.0.8 builds the same pipelines with no warnings at all.
 dependencies = [
     "numpy>=1.24",
     "opencv-python-headless>=4.8",
     "pillow>=10.3",
     "pyyaml>=6.0",
-    "albumentations>=1.4",
+    "albumentations>=2.0",
 ]
 
 [project.optional-dependencies]
 # scipy is imported lazily by recog/seg_evaluate.py for the boundary-F1
 # distance transform; it only ever runs alongside torch, so it lives here.
-train = ["torch>=2.0", "torchvision>=0.15", "tensorboard", "scipy>=1.10"]
+#
+# tensorboard was declared here and imported nowhere: grep over every
+# tracked .py for `tensorboard` and for `SummaryWriter` returns zero hits
+# (the only match anywhere in the tree is a prose mention in
+# docs/superpowers/specs/2026-08-12-ci-and-tone.md). It was ~50 MB and a
+# protobuf/grpcio pin added to every `.[train]` install for a logger that
+# does not exist. Removed rather than wired up: recog/seg_training.py
+# writes its own receipts, which is the form of evidence this repo uses.
+train = ["torch>=2.0", "torchvision>=0.15", "scipy>=1.10"]
 test = ["pytest", "pytest-cov"]
-# `dev` is the extra the README's install line asks for; keep it as the
-# umbrella alias so `pip install -e '.[dev]'` resolves.
-dev = ["pytest", "pytest-cov"]
+# `dev` is the extra the README's install line asks for. It was a
+# byte-identical copy of `test`, so `pip install -e '.[dev]'` gave a
+# contributor a test runner and nothing else - notably not ruff, which
+# this repo's own specs report running ("`ruff` clean",
+# docs/superpowers/specs/2026-08-12-fix-execution-safety.md:238) and which
+# CI now gates on. It is a superset of `test` rather than a copy, so the
+# two cannot drift apart again.
+#
+# bpy is deliberately NOT here. It is the `synth` extra below because its
+# wheels are single-CPython-version (see there) while `pip install -e
+# '.[dev]'` runs on the whole declared 3.10/3.12/3.14 matrix in CI; adding
+# it would make the README's own dev install fail on two of the three.
+dev = ["auto-pick[test]", "ruff>=0.6"]
 # STEP -> .glb conversion only (recog/convert_cad.py, recog/synth3d/catalog.py).
 # Not needed to run the demo or the test suite.
 cad = ["trimesh>=4.0", "cascadio>=0.1"]
+# Blender-as-a-module, for recog/synth3d/* and the orientation gate. `bpy`
+# is imported by seven files (render.py, scene.py, world.py, lightrig.py,
+# materials.py, bay.py, _gate_orientation.py) and was declared in no extra
+# at all, so the one job that runs it installed it unpinned and the gate
+# floated to whatever the Blender Foundation last published.
+#
+# Pinned at 5.0.1 because that is exactly what an unpinned `pip install
+# bpy` resolves to on the CI job's Python 3.11 today (2026-08-15): every
+# bpy wheel is built for one CPython, and 5.0.1 is the last release with a
+# cp311 wheel - 5.1.0 onwards ship cp313 only, with no sdist to fall back
+# on. So this pin changes nothing about what CI installs right now; it
+# stops the gate's Blender version from moving without a commit saying so.
+# Raising it means moving the job's Python at the same time.
+synth = ["bpy==5.0.1"]
+
+# The README's steps 2 and 3 are `python main.py --config ...` from a
+# clone. From an installed copy there is no main.py to point at, so the
+# same run needs a name on PATH. `_cli` is main.py's argparse front end
+# (main.py:780); `run()` beneath it stays the importable API.
+[project.scripts]
+auto-pick = "main:_cli"
 
 # Flat layout with several top-level directories: setuptools' automatic
 # discovery refuses to guess between them (it also sees the non-package
 # `cad/` and `configs/` data dirs), which made `pip install -e .` fail
 # outright. List the real packages explicitly.
+#
+# Everything below the packages list is here because the wheel was, on
+# measurement, unusable. Built from a clean `git archive HEAD` export on
+# 2026-08-15, auto_pick-0.2.0-py3-none-any.whl held 59 entries whose only
+# non-.py members were the four dist-info files: no main.py, no configs,
+# and none of recog/synth3d/assets/ despite those four .glb files and
+# catalog.json living inside a listed package. So `pip install auto-pick`
+# produced a tree where recog/synth3d/catalog.py's load_catalog raised
+# FileNotFoundError immediately and the README's own steps 2 and 3 had
+# nothing to run. CI never saw it because both jobs use `pip install -e .`,
+# where every one of those files resolves out of the source tree whatever
+# the wheel contains. The wheel-build job added in ci.yml is what makes
+# this section falsifiable.
 [tool.setuptools]
 packages = [
     "common",
@@ -49,11 +117,86 @@ packages = [
     "plan",
     "recog",
     "recog.synth3d",
+    # configs/ is not a Python package and has no __init__.py; it is
+    # mapped in below so its YAML ships inside recog/. Listed here because
+    # package-data is only collected for declared packages.
+    "recog.configs",
 ]
+# main.py is a top-level module, not a package, so the packages list above
+# could never have carried it - and without it the console script above
+# has no module to import.
+py-modules = ["main"]
+
+# configs/ has to end up somewhere importable to be shipped at all, and
+# `recog/configs/` is the one placement that needs no code change to work.
+# common/config.py:45 resolves demo.yaml's sub-config paths against "the
+# grandparent of demo.yaml": in the source tree that is <root>/configs/..
+# = <root>, so `configs/recognition.yaml` resolves to <root>/configs/.
+# Installed at <site-packages>/recog/configs/demo.yaml the same rule gives
+# <site-packages>/recog, and `configs/recognition.yaml` resolves to
+# <site-packages>/recog/configs/ - the files that are actually there. The
+# existing relative-path convention carries over unchanged, so this is a
+# packaging change only; nothing in main.py or common/config.py moves.
+#
+# Measured on the installed wheel: `importlib.resources.files("recog.configs")`
+# returns <site-packages>/recog/configs, demo.yaml is there, and
+# load_demo_config resolves all three sub-configs out of it. Measured on an
+# editable install: that same call raises ModuleNotFoundError, because
+# setuptools' editable finder can only reach a NESTED namespace package
+# through a path placeholder it does not put on a real package's __path__.
+# Nothing imports recog.configs, so nothing breaks - but a future
+# config-locating helper must try the source-tree path FIRST and fall back
+# to importlib.resources, never the other way round.
+[tool.setuptools.package-dir]
+"recog.configs" = "configs"
+
+# The four .glb templates and catalog.json are committed under
+# recog/synth3d/assets/ and read at runtime by catalog.py:276 and by
+# _gate_orientation.py. setuptools ships .py files and nothing else unless
+# told, which is why they were missing from the wheel.
+[tool.setuptools.package-data]
+"recog.synth3d" = ["assets/*.glb", "assets/catalog.json"]
+"recog.configs" = ["*.yaml", "*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q --tb=short"
+
+# ruff was already the linter this project's specs report running
+# ("`ruff` clean", docs/superpowers/specs/2026-08-12-fix-execution-safety.md)
+# but it had no config file, so "clean" meant whatever ruff's built-in
+# defaults happened to be on the author's machine that day and CI checked
+# nothing at all. Pinning the rule set here is what lets ci.yml assert it.
+[tool.ruff]
+# Matches requires-python = ">=3.10". Without it ruff infers a target from
+# the environment it runs in, so the same tree lints differently on the
+# 3.10 and 3.14 legs of the CI matrix.
+target-version = "py310"
+line-length = 88
+
+[tool.ruff.lint]
+# Deliberately narrow: pyflakes (real defects - undefined names, unused
+# imports, unused locals) plus pycodestyle errors and warnings. Measured
+# against the tree at 2026-08-15: 81 findings raw, 62 after the
+# per-file-ignores below, which is a reviewable backlog rather than a
+# number nobody will ever burn down. isort (I) is NOT selected: it would
+# add 81 pure import-ordering rewrites (also measured) across files three
+# other audits are editing concurrently, which is churn that buries real
+# diffs rather than evidence of a defect. Adding a rule family here is a
+# deliberate act with a cleanup attached, not a default to inherit.
+select = ["E", "F", "W"]
+
+[tool.ruff.lint.per-file-ignores]
+# E402 (import not at top of file), all 19 of them, and all in these two
+# files. Both are >1,000-line suites organised into banner-delimited
+# sections, each of which imports the module it exercises at the head of
+# its own section - `from recog.synth3d import catalog as CAT` under
+# `# ---- catalog ----`, `import random` where a test needs to fix a
+# stream. That is the layout, not an oversight, and hoisting the imports
+# to the top would separate every import from the tests that explain why
+# it is there.
+"tests/test_bay.py" = ["E402"]
+"tests/test_synth3d.py" = ["E402"]
 
 [tool.coverage.run]
 branch = true

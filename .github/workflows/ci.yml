@@ -5,18 +5,145 @@ name: CI
 # torch and no Blender. `pip install -e .` was broken outright until 3fedcb6
 # (setuptools' flat-layout discovery refused to guess between the top-level
 # packages), which is exactly the class of breakage a reader hits first.
+#
+# What it did NOT prove, until 2026-08-15, and each of these was measured
+# rather than suspected:
+#
+#   * That the package works when it is not installed from the source tree.
+#     Every job used `pip install -e .`, under which main.py, configs/ and
+#     recog/synth3d/assets/ all resolve out of the checkout no matter what
+#     the built distribution contains. Built from a clean `git archive HEAD`
+#     export, the wheel held 59 entries whose only non-.py members were the
+#     four dist-info files - no main.py, no configs, no .glb assets, no
+#     console script. `pip install auto-pick` produced a tree that could not
+#     run the README and in which load_catalog raised on import of its data.
+#     The `wheel` job below is the one that would have caught it.
+#   * That the seeded-training subsystem works at all. No job ever installed
+#     torch, so all 47 torch tests skipped in CI - including all 33 in
+#     tests/test_seeding.py, the most carefully argued module in the repo,
+#     whose own docstrings describe defects that shipped. Zero automated
+#     coverage. The `torch` job runs them on CPU.
+#   * That docs/datasets/checksums.json means anything. It was written by
+#     `scripts/model_card_tables.py --sync-datasets` and read back by
+#     nothing. The `provenance` job compares it.
+#   * That the tree lints. ruff is what this project's specs report running,
+#     with no config file and no CI step; the rule set now lives in
+#     pyproject.toml and the `lint` job enforces it.
 
 on:
+  # `on: push` was unfiltered, so every branch ran a full matrix and every
+  # commit on an open PR ran the whole workflow twice - once for the push,
+  # once for the pull_request event. Pushes are now only interesting on the
+  # trunk and on release tags; branch work is covered by its PR.
   push:
+    branches: [main]
+    tags: ["v*"]
   pull_request:
+  # The dependency floors in pyproject are floors, not pins, so what a fresh
+  # `pip install` resolves changes without any commit here. A weekly run is
+  # the canary for that, and for a new advisory landing against something
+  # already released.
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+# Superseded runs used to keep going to completion: pushing three fixes to a
+# PR bought three full 3-leg matrices plus a Blender job. Only the newest run
+# for a PR ref is worth anything, so the older ones are cancelled. Pushes to
+# main and the weekly run are NOT cancelled - those results are the record.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Actions are pinned to commit SHAs, not to `@v5` / `@v6`. Those tags are
+# branches that the publisher moves: pinning to one means an unreviewed
+# third-party commit can start running inside a job holding this repo's
+# token, without any change to this file. The trailing comment is the human
+# name of the pin; .github/dependabot.yml proposes the bumps, so the pins
+# stay current by pull request rather than by trust.
+#   actions/checkout@fbc6f39      = v5.1.0  (resolved 2026-08-15)
+#   actions/setup-python@ece7cb0  = v6.3.0  (resolved 2026-08-15)
+
 jobs:
+  # ruff has been this project's linter throughout ("`ruff` clean",
+  # docs/superpowers/specs/2026-08-12-fix-execution-safety.md:238) and was
+  # never once run by CI, so "clean" meant whatever ruff's built-in defaults
+  # were on the author's machine that day. pyproject.toml now states the rule
+  # set (E, F, W, with per-file-ignores for the two suites whose mid-file
+  # imports are deliberate); this job is what makes that statement binding.
+  #
+  # `--output-format github` puts each finding on the diff as an annotation
+  # rather than only in the log.
+  lint:
+    name: ruff
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      # `.[dev]` is the README's contributor install and now actually carries
+      # ruff; it used to be a byte-identical copy of `.[test]`, which is how
+      # the linter stayed uninstalled and unrun.
+      - name: Install dev extras
+        run: pip install -e ".[dev]"
+
+      - name: ruff
+        run: ruff check . --output-format github
+
+  # docs/datasets/checksums.json records the SHA-256 and byte count of every
+  # generator manifest and its COCO annotations, and every dataset row in
+  # docs/MODEL_CARD.md cites those digests. Nothing had ever read the file
+  # back: no module, no test, no CI step. A hash that is never compared is
+  # not provenance, and a dataset regenerated under an old name would have
+  # left the card and the suite exactly as green as before.
+  #
+  # This runs on a bare clone with no datasets present, because the manifests
+  # are copied into docs/ byte-for-byte and hashed at the source: the
+  # committed copy must hash to the committed digest, or one of the two was
+  # edited by hand. It also fails on a copy with no entry and an entry with
+  # no copy. Measured 2026-08-15: 11 recorded datasets, all 11 copies match,
+  # and all 7 live dataset directories on the author's machine match too.
+  provenance:
+    name: dataset checksum gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
+        with:
+          python-version: "3.12"
+
+      # Standard library only, so no install step: that is deliberate, this
+      # gate must not be able to fail for a reason unrelated to the hashes.
+      - name: Verify the committed manifest copies
+        run: python -m recog.verify_dataset --docs
+
+      - name: Its own tests
+        run: |
+          pip install pytest
+          pytest -p no:cacheprovider -q tests/test_verify_dataset.py
+
   test:
     name: install + torch-free suite (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    # This 3-leg matrix inherited GitHub's 360-minute default. One hung leg
+    # billed six job-hours and the whole job eighteen, for a suite that
+    # finishes in under five minutes. 20 is roughly four times the observed
+    # worst case: long enough that a slow runner is not a false red, short
+    # enough that a hang is caught the same morning.
+    timeout-minutes: 20
 
     # pyproject declares requires-python >=3.10. Only 3.14 had ever been
     # verified, so the floor was a claim with no evidence behind it. The
@@ -29,18 +156,23 @@ jobs:
         python-version: ["3.10", "3.12", "3.14"]
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
         with:
           python-version: ${{ matrix.python-version }}
+          # Cache keyed on pyproject.toml. The dependency set is declared as
+          # floors, so this caches the download, not the resolution: a new
+          # release still gets picked up.
+          cache: pip
+          cache-dependency-path: pyproject.toml
 
       # Verbatim the README's "Running it" step 1, on a clean checkout: this
       # step failing is the failure this workflow exists to catch.
       - name: Install (README step 1)
         run: pip install -e .
 
-      # The README's dev install; adds pytest and pytest-cov, nothing else.
+      # The README's dev install; adds pytest, pytest-cov and ruff.
       - name: Install dev extras
         run: pip install -e ".[dev]"
 
@@ -58,6 +190,10 @@ jobs:
       # That claim was false until 2026-08-12: tests/test_calibration.py did a
       # bare `import torch`, so this job was red on all three Pythons while this
       # comment asserted every torch test guarded itself.
+      #
+      # Those 47 skips are no longer only skips: the `torch` job below runs
+      # them. This leg still proves the separate and load-bearing claim that
+      # a torch-free machine gets a green suite rather than a broken one.
       - name: Tests
         run: pytest -q
 
@@ -82,6 +218,164 @@ jobs:
                <(git show HEAD:docs/receipts/main_run.txt | grep -v '^  generated') \
                <(grep -v '^  generated' docs/receipts/main_run.txt)
 
+  # The 47 torch tests were guarded so that a torch-free machine stays green.
+  # That guard was working perfectly and no job ever removed it, so what CI
+  # actually asserted about recog/seeding.py, recog/model.py, recog/training.py
+  # and recog/bay_segmenter.py was nothing at all - 33 tests in
+  # tests/test_seeding.py alone, a module whose docstrings document a
+  # per-child seeding defect that shipped and trained real checkpoints for a
+  # day. A skip is not a pass, and this job is the difference.
+  #
+  # CPU wheels from PyTorch's own index: the default PyPI torch is a ~2.5 GB
+  # CUDA build, and there is no GPU on a hosted runner to use it with. `pip
+  # install -e ".[train,test]"` afterwards is not a second download - it sees
+  # torch>=2.0 and torchvision>=0.15 already satisfied and adds scipy and the
+  # test runner. The extras stay the declared thing; only where torch comes
+  # from is overridden.
+  #
+  # 3.12 rather than the full matrix: this job exists to run the torch tests
+  # at all, and running them on three Pythons triples a multi-minute install
+  # to re-prove a claim the matrix above already makes about pure-Python
+  # compatibility.
+  torch:
+    name: full suite with CPU torch
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install CPU torch
+        run: |
+          pip install torch torchvision \
+            --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install (train + test extras)
+        run: pip install -e ".[train,test]"
+
+      # Not a filtered selection: the whole suite, so the count is directly
+      # comparable with the torch-free legs above. What this job adds is the
+      # 47 that skip there. If that number falls, a guard has started hiding
+      # something on a machine that can run it.
+      - name: Tests
+        run: pytest -q
+
+      - name: Confirm torch actually loaded
+        run: |
+          python - <<'PY'
+          import torch
+          print("torch", torch.__version__, "cuda", torch.cuda.is_available())
+          PY
+
+  # The job that would have caught the wheel being empty.
+  #
+  # Editable installs are why nobody noticed: under `pip install -e .` the
+  # interpreter reads main.py, configs/*.yaml and recog/synth3d/assets/*.glb
+  # straight out of the checkout, so every other job here passes whatever the
+  # built distribution contains - and on 2026-08-15 it contained none of them.
+  # The only way to test a package is to leave the source tree behind, which
+  # is what the `cd "$RUNNER_TEMP/clean"` below is for: nothing in these steps
+  # after the build may resolve a file from the repository.
+  #
+  # The final diff is the strongest assertion in this workflow. It runs the
+  # README's demo through the installed console script and requires the
+  # receipt to match the committed one line for line, excluding only the three
+  # lines that name the environment (`generated`, `command`, `config` - the
+  # last two hold absolute site-packages paths). Verified locally 2026-08-15:
+  # the installed wheel reproduces docs/receipts/main_run.txt exactly, down to
+  # cartridges 3 / batteries 5 / queue poses 3 / placed 1.
+  wheel:
+    name: wheel builds, installs and runs the README
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Build the wheel
+        run: |
+          pip install build
+          python -m build --wheel --outdir "$RUNNER_TEMP/dist" .
+
+      # Named files rather than "some data got in": the four .glb templates
+      # and catalog.json are what recog/synth3d/catalog.py opens at runtime,
+      # and configs/demo.yaml is what the README's step 3 points at. This
+      # step failing tells you which one went missing.
+      - name: The wheel must contain its data files
+        run: |
+          python - "$RUNNER_TEMP/dist" <<'PY'
+          import pathlib, sys, zipfile
+          whl = next(pathlib.Path(sys.argv[1]).glob("*.whl"))
+          names = set(zipfile.ZipFile(whl).namelist())
+          required = {
+              "main.py",
+              "recog/synth3d/assets/catalog.json",
+              "recog/synth3d/assets/AnkerPowerCore10000.glb",
+              "recog/synth3d/assets/AnkerPowerCore13000.glb",
+              "recog/synth3d/assets/AnkerPowerCore20100.glb",
+              "recog/synth3d/assets/AnkerPowerCore26800.glb",
+              "recog/configs/demo.yaml",
+              "recog/configs/recognition.yaml",
+              "recog/configs/planning.yaml",
+              "recog/configs/execution.yaml",
+          }
+          missing = sorted(required - names)
+          print(f"{whl.name}: {len(names)} entries")
+          if missing:
+              sys.exit("missing from the wheel: " + ", ".join(missing))
+          PY
+
+      - name: Install it into a clean venv, outside the checkout
+        run: |
+          mkdir -p "$RUNNER_TEMP/clean"
+          python -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install "$RUNNER_TEMP"/dist/*.whl
+
+      # recog/synth3d/catalog.py's load_catalog opened a path that simply did
+      # not exist in the installed tree. This is that call, from a directory
+      # with no recog/ in it.
+      - name: Assets load from the installed package
+        working-directory: ${{ runner.temp }}/clean
+        run: |
+          "$RUNNER_TEMP/venv/bin/python" - <<'PY'
+          import pathlib
+          import recog.synth3d, recog.synth3d.catalog as catalog
+          assets = pathlib.Path(recog.synth3d.__file__).parent / "assets"
+          entries = catalog.load_catalog(str(assets))["assets"]
+          print("load_catalog:", len(entries), "assets from", assets)
+          assert len(entries) == 4, entries
+          PY
+
+      # README steps 2 and 3, from the installed distribution: `auto-pick` is
+      # the console script that pyproject now declares, and the config comes
+      # out of the package rather than the repository.
+      - name: README steps 2 and 3, from the installed distribution
+        working-directory: ${{ runner.temp }}/clean
+        run: |
+          export PATH="$RUNNER_TEMP/venv/bin:$PATH"
+          python -m recog.synth_dataset --out recog/dataset --n 50
+          CFG=$(python -c "import importlib.resources as r; print(r.files('recog.configs') / 'demo.yaml')")
+          echo "config: $CFG"
+          auto-pick --config "$CFG" --receipt installed_run.txt
+
+      - name: The installed run must reproduce the committed receipt
+        run: |
+          diff --strip-trailing-cr \
+            <(grep -vE '^  (generated|command|config) ' docs/receipts/main_run.txt) \
+            <(grep -vE '^  (generated|command|config) ' "$RUNNER_TEMP/clean/installed_run.txt")
+
   # recog/synth3d/_gate_orientation.py called itself a CI gate for months
   # while no CI ran it. It is the ONLY executable check against the
   # class of failure that actually happened here: `lay_flat` and
@@ -95,9 +389,18 @@ jobs:
   # It is a separate job because it needs Blender, which the torch-free
   # job above deliberately does not have. `bpy` is the Blender
   # Foundation's own PyPI wheel: it is Blender-as-a-module, so no
-  # `blender` binary and no display are needed. It is cp311-only, which
-  # is why this job pins 3.11 while the suite above runs the declared
-  # 3.10/3.12/3.14 matrix.
+  # `blender` binary and no display are needed.
+  #
+  # bpy is now installed through the `synth` extra at a pinned version
+  # rather than by a bare `pip install bpy` in this file. It was imported by
+  # seven modules and declared in no extra at all, so the gate's Blender
+  # floated to whatever the Foundation last published - a gate whose
+  # reference implementation can change under it overnight proves less each
+  # time it does. Every bpy wheel is built for exactly one CPython, and the
+  # pin (5.0.1) is the newest with a cp311 build, which is why this job
+  # stays on 3.11 while the suite above runs the declared 3.10/3.12/3.14
+  # matrix. Moving the pin past 5.0.1 means moving this python-version in
+  # the same commit; there is no sdist to fall back on.
   #
   # NOT continue-on-error, and not conditional on the diff touching
   # recog/synth3d/: the no-op it guards against was invisible in the
@@ -111,11 +414,13 @@ jobs:
     timeout-minutes: 25
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
         with:
           python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
 
       # The bpy wheel links against Blender's usual X/GL stack even when
       # it never opens a window. Without these it imports and dies.
@@ -126,10 +431,8 @@ jobs:
             libx11-6 libxi6 libxrender1 libxxf86vm1 libxfixes3 \
             libxkbcommon0 libsm6 libgl1 libegl1
 
-      - name: Install (package + bpy)
-        run: |
-          pip install -e .
-          pip install bpy
+      - name: Install (package + the synth extra)
+        run: pip install -e ".[synth]"
 
       # The gate imports `recog.synth3d.assets` and loads the four .glb
       # templates that are committed under recog/synth3d/assets/, so it
@@ -137,3 +440,46 @@ jobs:
       # check and prints which one.
       - name: Orientation gate
         run: python recog/synth3d/_gate_orientation.py
+
+  # There was no dependency scanning of any kind, and the runtime set is
+  # declared as floors rather than pins - pillow>=10.3 exists in pyproject
+  # precisely because two CVEs were found by hand, once, by reading. This is
+  # the automated version of that reading.
+  #
+  # Scoped to the runtime install (`pip install -e .`), not `.[train]`: an
+  # advisory against something the demo actually installs on every clone is
+  # worth stopping a merge for, whereas the torch stack pulls a hundred
+  # transitive packages whose advisories are not this repository's to fix.
+  # It also runs weekly on the schedule above, because an advisory can land
+  # against an unchanged dependency set with no pull request to attach to.
+  audit:
+    name: pip-audit (runtime dependencies)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install (runtime only)
+        run: |
+          pip install -e .
+          pip install pip-audit
+
+      # --strict so that a package pip-audit cannot resolve is an error
+      # rather than a silent gap; --desc so the log says what the advisory
+      # is without a round trip to the browser. The local editable install
+      # of auto-pick itself has no advisory feed and is skipped.
+      #
+      # No --ignore-vuln list, deliberately: the first one added is where a
+      # scanner turns into a formality. If an advisory here is genuinely not
+      # applicable, the entry belongs in this file with a dated sentence
+      # saying why, the way the pillow and opencv floors are argued in
+      # pyproject.toml.
+      - name: pip-audit
+        run: pip-audit --strict --desc --skip-editable
