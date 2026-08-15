@@ -85,7 +85,8 @@ _PAINT_ORDER: Sequence[Tuple[str, str]] = (
 )
 
 
-def _rng_for_worker(seed: int, worker_id: Optional[int]) -> np.random.Generator:
+def _rng_for_worker(seed: int, worker_id: Optional[int],
+                    torch_seed: Optional[int] = None) -> np.random.Generator:
     """A jitter RNG stream for one DataLoader worker.
 
     ``worker_id`` is None in the main process (num_workers=0, today's
@@ -96,8 +97,33 @@ def _rng_for_worker(seed: int, worker_id: Optional[int]) -> np.random.Generator:
     identical jitter stream, silently degrading augmentation the moment
     num_workers > 0. Combining the dataset's own seed with the worker id
     keeps each worker's stream distinct and each stream reproducible.
+
+    ``torch_seed`` is ``torch.initial_seed()``, read INSIDE the worker,
+    and it is what makes the stream differ per EPOCH rather than only per
+    worker. ``(seed, worker_id)`` is a constant for the life of the run,
+    and the workers are re-created from scratch at the start of every
+    epoch out of a parent dataset object whose ``_worker_id`` is
+    permanently None - so every epoch re-entered the re-seed branch and
+    rebuilt the SAME generator, and the crop-jitter multiset repeated
+    byte for byte from epoch 2 onwards. Augmentation that looks random
+    and is actually one fixed draw is worse than no augmentation,
+    because nothing says so.
+
+    torch already derives each worker's own seed from the loader's
+    ``generator`` afresh each epoch - ``recog/seeding.py``'s
+    ``seed_worker`` documents and uses exactly this property to spread
+    ``random`` and ``numpy.random`` across workers, and
+    ``recog/seg_training.py`` passes the ``generator`` that drives it.
+    The mechanism was already there and this stream was the one thing not
+    reading from it. Keeping ``seed`` and ``worker_id`` in the tuple as
+    well costs nothing and keeps two datasets constructed with different
+    ``seed`` values distinct inside one worker.
     """
-    return np.random.default_rng(seed if worker_id is None else (seed, worker_id))
+    if worker_id is None:
+        return np.random.default_rng(seed)
+    if torch_seed is None:
+        return np.random.default_rng((seed, worker_id))
+    return np.random.default_rng((seed, worker_id, torch_seed))
 
 
 def jitter_box(box, rng: np.random.Generator, frac: float):
@@ -352,15 +378,40 @@ class BaySegDataset:
     def __len__(self) -> int:
         return len(self.samples)
 
+    def _reseed_for_worker(self) -> None:
+        """Give this process its own jitter stream, once per fork.
+
+        The guard fires exactly once per worker process: a worker is
+        built from the parent object, whose ``_worker_id`` is None, so
+        the first ``__getitem__`` in it re-seeds and every later one
+        leaves the stream running. With ``num_workers=0`` (today's
+        default) ``wid`` is None, matches the constructor's
+        ``_worker_id``, and nothing here runs at all - that path is
+        `default_rng(seed)` exactly as it always was.
+
+        ``torch.initial_seed()`` is read here and not in ``__init__``
+        because it is only per-worker and per-epoch when read from inside
+        the worker; in the parent it is one constant. With
+        ``persistent_workers=True`` a worker is NOT rebuilt between
+        epochs, so this does not fire again and the stream simply keeps
+        running - which is the same guarantee by a different route.
+        """
+        import torch
+
+        worker = torch.utils.data.get_worker_info()
+        if worker is None:
+            wid = torch_seed = None
+        else:
+            wid, torch_seed = worker.id, int(torch.initial_seed())
+        if wid != self._worker_id:
+            self.rng = _rng_for_worker(self._seed, wid, torch_seed)
+            self._worker_id = wid
+
     def __getitem__(self, idx: int):
         import torch
         from PIL import Image
 
-        worker = torch.utils.data.get_worker_info()
-        wid = worker.id if worker is not None else None
-        if wid != self._worker_id:
-            self.rng = _rng_for_worker(self._seed, wid)
-            self._worker_id = wid
+        self._reseed_for_worker()
 
         img_meta, anns, unit_box = self.samples[idx]
         path = os.path.join(self.img_dir, img_meta["file_name"])

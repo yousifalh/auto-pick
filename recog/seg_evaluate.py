@@ -32,7 +32,6 @@ CLI::
 from __future__ import annotations
 
 import argparse
-import json
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -61,7 +60,15 @@ from recog.calibration import (  # noqa: F401  (re-exported)
 # wherever it happens; a second class called the same thing in a second
 # module is how "raise rather than default" quietly becomes "raise in one
 # of the two places".
-from plan.placement_area import UnknownScale
+#
+# From common.types since 2026-08-15, not plan.placement_area. Importing
+# it was always right; the class was simply filed in the wrong package,
+# and this line was one of the two module-level back-edges from `recog`
+# into `plan` (tests/test_seams.py pins that there are now none).
+# plan.placement_area re-exports the same object, so nothing about which
+# exception this is has changed - and pulling it from `common` no longer
+# drags cv2 and plan.scene into this module's import.
+from common.types import UnknownScale
 
 # Derived from the dataset's contract rather than restated. Two
 # hand-written copies of the same order drift, and the drift is silent:
@@ -150,7 +157,7 @@ def resolve_frame_scales(full_dataset, indices: Sequence[int],
     ``fallback`` is for inputs that carry no render metadata at all - a
     photograph, or ``recog/synth_dataset.py``'s cv2-drawn rectangles. It
     must be passed DELIBERATELY: with no fallback configured, an
-    uncalibrated frame raises :class:`plan.placement_area.UnknownScale`
+    uncalibrated frame raises :class:`common.types.UnknownScale`
     rather than quietly reverting to a constant. That is the whole point
     of the change; silent degradation is this project's characteristic
     failure and this receipt was an instance of it.
@@ -264,6 +271,42 @@ def _boundary(mask: np.ndarray) -> np.ndarray:
     return m & ~interior
 
 
+def _distance_to_nearest(tb: np.ndarray,
+                         max_elements: int = 4_000_000) -> np.ndarray:
+    """Euclidean distance from every pixel to the nearest ``True`` in
+    ``tb``, without scipy. Chunked over the boundary pixels.
+
+    The one-shot form this replaces broadcast every pixel against every
+    boundary pixel at once - an (H, W, N) array. On the crop size this
+    module is built around, 131 x 288 with the ~1000 boundary pixels a
+    real bay outline carries, that is 37.7 million float64 elements: 302
+    MB per temporary and roughly 1 GB across the subtract / square / add
+    chain, three times per crop (once per class in SELECT_ON), on a
+    machine whose only sin is not having scipy installed.
+
+    Chunking bounds the peak at ``max_elements`` per temporary and is
+    EXACT rather than approximate, in two steps that both have to hold:
+    the minimum over the per-chunk minima is the same number as the
+    minimum over all of them, and sqrt is monotone, so taking it once at
+    the end selects the same pixel and returns the same float as taking
+    it before the min. `tests/test_bay_segmenter.py` pins the result
+    against scipy's and across chunk sizes.
+    """
+    ty, tx = np.nonzero(tb)
+    h, w = tb.shape
+    yy, xx = np.mgrid[0:h, 0:w]
+    best = np.full((h, w), np.inf)
+    step = max(1, int(max_elements // max(1, h * w)))
+    for s in range(0, ty.size, step):
+        dy = yy[..., None] - ty[s:s + step]
+        dy *= dy
+        dx = xx[..., None] - tx[s:s + step]
+        dx *= dx
+        dy += dx
+        np.minimum(best, dy.min(axis=-1), out=best)
+    return np.sqrt(best)
+
+
 def boundary_displacement_mm(pred: np.ndarray, target: np.ndarray,
                              cls: int, mm_per_px: float) -> float:
     """Mean distance from each predicted boundary pixel to the nearest
@@ -273,15 +316,21 @@ def boundary_displacement_mm(pred: np.ndarray, target: np.ndarray,
     if not pb.any() or not tb.any():
         return float("nan")
 
+    # ImportError ONLY, and around the import ONLY. A bare `except
+    # Exception` wrapped the distance transform as well, so any failure
+    # inside scipy - a bad dtype, a memory error, a version whose
+    # signature moved - was silently answered by the fallback instead of
+    # being reported, and the receipt would carry a number nobody could
+    # tell apart from a scipy-computed one. Missing scipy is a
+    # configuration a machine can legitimately be in; scipy raising is a
+    # fault, and this module's whole argument is that silent degradation
+    # is the failure mode to refuse.
     try:
         from scipy.ndimage import distance_transform_edt
+    except ImportError:
+        dist = _distance_to_nearest(tb)
+    else:
         dist = distance_transform_edt(~tb)
-    except Exception:
-        ty, tx = np.nonzero(tb)
-        yy, xx = np.mgrid[0:target.shape[0], 0:target.shape[1]]
-        dist = np.min(
-            np.sqrt((yy[..., None] - ty) ** 2 + (xx[..., None] - tx) ** 2),
-            axis=-1)
 
     return float(dist[pb].mean() * mm_per_px)
 
@@ -359,6 +408,107 @@ def _mean_or_nan(xs: Sequence[float]) -> float:
     return float(np.mean(xs)) if xs else float("nan")
 
 
+# ONE crop per `segment_batch` call, deliberately, and this default is
+# the conclusion of a measurement rather than an oversight.
+#
+# Batching the evaluation looks obviously right - `recog/bay_segmenter.py`
+# documents the looped anti-pattern against itself (eight crops, 101 ms
+# looped against 18.1 ms batched), the deployed pipeline batches, and
+# this was the last per-crop loop in the module. It was implemented, run
+# against `configs/segmentation.yaml`'s 126-crop split and
+# `recog/checkpoints/seg/best.pt` on an RTX 3060, and BOTH halves of the
+# argument came back smaller than expected:
+#
+#   * the saving is 0.43 s. Best of three over the whole split: 2.58 s
+#     with this pass at batch 1, 2.15 s at batch 8, inside a
+#     `python -m recog.seg_evaluate` run that takes ~20 s end to end.
+#     The 3.4x is GPU time, and GPU time is not what this loop spends -
+#     PIL decode, `extract_crop` and the resize dominate it.
+#   * the cost is every figure in the receipt. Batch 8 and batch 1
+#     disagree on 128 of 2 217 730 label pixels, spread over 46 of the
+#     126 crops: batch-size-dependent kernels move a logit in its last
+#     bits and argmax follows on the pixels that were close. Measured
+#     end to end, that shifted background IoU 0.3629 -> 0.3628,
+#     electronics 0.8613 -> 0.8612, battery 0.6907 -> 0.6905, the
+#     selected mean 0.8032 -> 0.8031, and the area totals by ~0.04%.
+#
+# Twelve published figures moving in their last digit, in a module whose
+# docstring is a standing account of what happened the last time a
+# receipt's numbers moved without a reason a reader could reconstruct, is
+# not worth 0.43 s. `batch_size` is a real argument and the chunking
+# below is exercised by its own test, so raising this is a one-line
+# decision for whoever also regenerates `docs/receipts/seg_eval.txt` and
+# says in the commit that the figures moved and why. It is not a decision
+# to take silently, which is what leaving the default at 8 would have
+# been.
+#
+# The per-frame decode cache below is a different matter: it is free, and
+# it is bit-identical.
+SEG_EVAL_BATCH = 1
+
+
+def predict_val_crops(segmenter, full_dataset, val_indices: Sequence[int],
+                      batch_size: int = SEG_EVAL_BATCH) -> List[np.ndarray]:
+    """One native-resolution label map per entry of ``val_indices``, in
+    ``val_indices``' own order.
+
+    Crops are visited GROUPED BY SOURCE FILE and the decode is cached, so
+    a frame is decoded once rather than once per crop it contributes.
+    `resolve_frame_scales` above already caches its sidecar per file,
+    with a comment saying exactly this, while the decode next to it did
+    not. Measured on `configs/segmentation.yaml`'s split that is 112
+    frames behind 126 crops - 14 redundant decodes, 2.76 s to 2.58 s over
+    the split, and not one label pixel different.
+
+    (1.12 crops per frame, not the ~1.68 the audit note assumed. The
+    ratio is a property of the corpus, and on a corpus that packs more
+    units into a frame this saves proportionally more; it is never
+    negative.)
+
+    ``batch_size`` chunks the `segment_batch` calls and defaults to 1.
+    See SEG_EVAL_BATCH above for the measurement behind that default -
+    briefly, batching is NOT label-identical here and the saving does not
+    pay for the drift.
+
+    Returning a list in the CALLER's order, rather than accumulating as
+    it goes, is what makes the file-grouped traversal safe. `evaluate`
+    reduces its per-crop boundary and area lists with `np.mean` and
+    `sum`, and floating-point addition is not associative: accumulating
+    in file-sorted order would move the published millimetre figures in
+    their last digits for no reason anyone reading the receipt could
+    reconstruct. The reordering starts and stops inside this function.
+    """
+    from PIL import Image
+
+    # Stable sort, so crops from one file keep their val_indices order
+    # and the whole traversal stays deterministic.
+    order = sorted(range(len(val_indices)),
+                   key=lambda p: full_dataset.samples[
+                       val_indices[p]][0]["file_name"])
+
+    preds: List[Optional[np.ndarray]] = [None] * len(val_indices)
+    cached_name: Optional[str] = None
+    cached_image: Optional[np.ndarray] = None
+
+    for start in range(0, len(order), max(1, int(batch_size))):
+        chunk = order[start:start + max(1, int(batch_size))]
+        crops: List[np.ndarray] = []
+        for pos in chunk:
+            img_meta, _anns, unit_box = full_dataset.samples[val_indices[pos]]
+            if img_meta["file_name"] != cached_name:
+                cached_image = np.asarray(
+                    Image.open(crop_image_path(full_dataset, img_meta))
+                    .convert("RGB"))
+                cached_name = img_meta["file_name"]
+            crops.append(extract_crop(cached_image,
+                                      tuple(int(v) for v in unit_box),
+                                      out_size=None))
+        for pos, pred in zip(chunk, segmenter.segment_batch(crops)):
+            preds[pos] = pred
+
+    return preds
+
+
 def evaluate(segmenter, full_dataset, val_indices: Sequence[int],
             scales: Dict[int, float], num_classes: int = 6
             ) -> Dict[str, Any]:
@@ -397,8 +547,6 @@ def evaluate(segmenter, full_dataset, val_indices: Sequence[int],
     seg_dataset.py's module docstring), so format_report reads the
     real count instead of restating an assumption.
     """
-    from PIL import Image
-
     if isinstance(scales, (int, float)):
         raise TypeError(
             "evaluate() takes a per-crop {index: mm_per_px} map, not one "
@@ -436,17 +584,18 @@ def evaluate(segmenter, full_dataset, val_indices: Sequence[int],
     cart_c, bay_c = SEG_CHANNELS["cartridge"], SEG_CHANNELS["bay"]
     cb_cart_only = cb_bay_only = cb_both = cb_neither = 0
 
-    for idx in val_indices:
-        img_meta, anns, unit_box = full_dataset.samples[idx]
+    # Inference first, with the per-frame decode cached; the accumulation
+    # below then walks val_indices in its ORIGINAL order, so every float
+    # sum in this function is added up in exactly the order it was
+    # before. See predict_val_crops' docstring.
+    preds = predict_val_crops(segmenter, full_dataset, val_indices)
+
+    for pred, idx in zip(preds, val_indices):
+        _img_meta, anns, unit_box = full_dataset.samples[idx]
         box = tuple(int(v) for v in unit_box)     # no jitter at eval
         mm_per_px = scales[idx]                   # THIS frame's own GSD
 
-        path = crop_image_path(full_dataset, img_meta)
-        image = np.asarray(Image.open(path).convert("RGB"))
-
-        crop = extract_crop(image, box, out_size=None)
         target = rasterise_crop(anns, box, out_size=None)
-        pred = segmenter.segment_batch([crop])[0]
 
         for c in range(num_classes):
             i, u = _class_confusion(pred, target, c)
@@ -671,7 +820,11 @@ def _sibling_checkpoint_note(checkpoint_path: str) -> Optional[str]:
         stats[name] = (state.get("selected_mean_iou"),
                        state.get("val_instance_counts"))
 
-    (b_iou, b_counts), (l_iou, l_counts) = stats["best.pt"], stats["last.pt"]
+    # last.pt's instance counts are discarded on purpose: the note below
+    # reports ONE count string, and it has to be best.pt's, because that is
+    # the checkpoint whose mean IoU the selection argument rests on. Binding
+    # the unused half was F841.
+    (b_iou, b_counts), (l_iou, _) = stats["best.pt"], stats["last.pt"]
     if b_iou is None or l_iou is None:
         return None
 
@@ -1069,6 +1222,8 @@ __all__ = [
     "signed_area_error_mm2",
     "latency_table",
     "latency_within_budget",
+    "predict_val_crops",
+    "SEG_EVAL_BATCH",
     "resolve_mm_per_px",
     "frame_mm_per_px",
     "load_synth_config",

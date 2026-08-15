@@ -129,24 +129,72 @@ class FasterRCNNDetector(Detector):
         )
         self.model.to(self.device)
 
+        # The 255.0 that `detect` divides the frame by, as a 0-dim tensor
+        # on the device, built once.
+        #
+        # It is a TENSOR and not the Python scalar 255 on purpose, and
+        # this is measured, not stylistic. `float_tensor.div_(255)` takes
+        # torch's Scalar overload, which on CUDA is implemented as a
+        # multiply by the reciprocal: over the 256 possible byte values
+        # it disagrees with a true divide on 126 of them, by 1 ulp.
+        # numpy's `uint8_array.astype(np.float32) / 255.0` - the form
+        # this replaced - is a true divide. Feeding the 1-ulp-different
+        # frame through this detector on an RTX 3060 did NOT just move
+        # the last bits of the scores (max delta 6.9e-5): it returned a
+        # DIFFERENT detection set, because NMS and top-k reorder on those
+        # ties. Dividing by a 0-dim tensor takes the tensor-tensor path,
+        # which is correctly rounded and reproduces the old frame, and
+        # the old detections, bit for bit.
+        self._u8_scale = torch.tensor(255.0, device=self.device)
+
     @torch.no_grad() if _TORCH_AVAILABLE else (lambda f: f)
     def detect(self, image_rgb: np.ndarray) -> Snapshot:
         import torch  # type: ignore
 
-        arr = image_rgb.astype(np.float32) / 255.0
-        tensor = torch.as_tensor(
-            np.transpose(arr, (2, 0, 1)), dtype=torch.float32,
-        ).to(self.device)
+        # Transfer the frame as uint8 and do the widening and the
+        # transpose ON the device. The previous form built
+        # `image_rgb.astype(np.float32) / 255.0` and then
+        # `np.transpose(...)`: two 11 MB host arrays for a 1280x720
+        # frame, of which the second is a stride-(1, W*3, 3) view, so
+        # `.to(device)` had to materialise a THIRD contiguous buffer by a
+        # cache-hostile gather and then push 11 MB across PCIe where
+        # 2.76 MB of uint8 carries the identical information.
+        #
+        # ascontiguousarray is a no-op for every caller in this repo
+        # (main.py's cv2.cvtColor and eval_real.py's np.array(im) both
+        # hand over a fresh contiguous array) and costs one 2.76 MB uint8
+        # copy for one that does not - `astype` used to launder a
+        # negative-stride view such as `bgr[:, :, ::-1]`, which
+        # `torch.from_numpy` refuses outright, and losing that would be a
+        # behaviour change rather than a speed-up.
+        tensor = (
+            torch.from_numpy(np.ascontiguousarray(image_rgb))
+            .to(self.device, non_blocking=True)
+            .permute(2, 0, 1)
+            .float()
+            .div_(self._u8_scale)
+        )
         out = self.model([tensor])[0]
 
+        # THREE device-to-host transfers per frame, not 3N. Zipping the
+        # output tensors themselves made each `lbl.item()`,
+        # `score.item()` and `box.cpu()` its own copy and its own stream
+        # synchronisation - 3N of them, so roughly 30-90 per frame at the
+        # shipped 0.70 confidence threshold, each one draining the queue
+        # to read a single number. The loop below touches the device
+        # exactly zero times; it walks numpy rows.
+        boxes = out["boxes"].cpu().numpy()
+        labels = out["labels"].cpu().numpy()
+        scores = out["scores"].cpu().numpy()
+
         detections: List[Detection] = []
-        for box, lbl, score in zip(out["boxes"], out["labels"], out["scores"]):
-            label = _ID_TO_LABEL.get(int(lbl.item()), ClassLabel.BACKGROUND)
+        for box, lbl, score in zip(boxes, labels, scores):
+            label = _ID_TO_LABEL.get(int(lbl), ClassLabel.BACKGROUND)
             if label == ClassLabel.BACKGROUND:
                 continue
-            x1, y1, x2, y2 = box.cpu().numpy().tolist()
+            x1, y1, x2, y2 = box.tolist()
             detections.append(
-                Detection(BBox(x1, y1, x2, y2), label, float(score.item())),
+                Detection(BBox(x1, y1, x2, y2), label, float(score)),
             )
 
         snap = Snapshot(
@@ -292,7 +340,8 @@ def _contains(outer: BBox, inner: BBox) -> bool:
 
 # --------------------------------------------------- batched masks -----
 
-def attach_cartridge_masks(snapshot: Snapshot, image_rgb: np.ndarray, segmenter) -> None:
+def attach_cartridge_masks(snapshot: Snapshot, image_rgb: np.ndarray,
+                           segmenter) -> None:
     """Segment every cartridge in ``snapshot``, in ONE batched call.
 
     Keys are indices into ``snapshot.detections``, not positions within

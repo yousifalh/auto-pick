@@ -51,8 +51,10 @@ def test_rasterise_paints_battery_over_bay():
     """A cell seated in a bay must win. That paint order IS the modal
     definition of placement_area: the free floor is what is left."""
     H = W = 40
-    bay = np.zeros((H, W), np.uint8); bay[5:35, 5:35] = 1
-    cell = np.zeros((H, W), np.uint8); cell[10:20, 10:20] = 1
+    bay = np.zeros((H, W), np.uint8)
+    bay[5:35, 5:35] = 1
+    cell = np.zeros((H, W), np.uint8)
+    cell[10:20, 10:20] = 1
     anns = [_ann("placement_area", bay, 4), _ann("battery", cell, 1)]
 
     lab = rasterise_crop(anns, (0, 0, W, H), out_size=40)
@@ -63,9 +65,12 @@ def test_rasterise_paints_battery_over_bay():
 
 def test_rasterise_paints_electronics_and_obstruction_over_bay():
     H = W = 40
-    bay = np.zeros((H, W), np.uint8); bay[0:40, 0:40] = 1
-    pcb = np.zeros((H, W), np.uint8); pcb[0:10, :] = 1
-    glue = np.zeros((H, W), np.uint8); glue[20:24, 20:24] = 1
+    bay = np.zeros((H, W), np.uint8)
+    bay[0:40, 0:40] = 1
+    pcb = np.zeros((H, W), np.uint8)
+    pcb[0:10, :] = 1
+    glue = np.zeros((H, W), np.uint8)
+    glue[20:24, 20:24] = 1
     anns = [_ann("placement_area", bay, 4),
             _ann("electronics_module", pcb, 3),
             _ann("obstruction", glue, 5)]
@@ -80,8 +85,10 @@ def test_rasterise_resizes_with_nearest_neighbour():
     """Labels must never be interpolated: averaging class 2 and 4 gives
     class 3, which is a different object."""
     H = W = 40
-    bay = np.zeros((H, W), np.uint8); bay[0:40, 0:20] = 1
-    pcb = np.zeros((H, W), np.uint8); pcb[0:40, 20:40] = 1
+    bay = np.zeros((H, W), np.uint8)
+    bay[0:40, 0:20] = 1
+    pcb = np.zeros((H, W), np.uint8)
+    pcb[0:40, 20:40] = 1
     anns = [_ann("placement_area", bay, 4),
             _ann("electronics_module", pcb, 3)]
 
@@ -92,7 +99,8 @@ def test_rasterise_resizes_with_nearest_neighbour():
 
 def test_crop_outside_the_annotation_is_all_background():
     H = W = 40
-    bay = np.zeros((H, W), np.uint8); bay[0:10, 0:10] = 1
+    bay = np.zeros((H, W), np.uint8)
+    bay[0:10, 0:10] = 1
     lab = rasterise_crop([_ann("placement_area", bay, 4)],
                          (20, 20, 40, 40), out_size=16)
     assert (lab == SEG_CHANNELS["background"]).all()
@@ -107,7 +115,8 @@ def test_crop_outside_the_annotation_is_all_background():
 
 def test_rasterise_crop_out_size_none_stays_at_native_resolution():
     H, W = 40, 30
-    bay = np.zeros((H, W), np.uint8); bay[5:15, 5:15] = 1
+    bay = np.zeros((H, W), np.uint8)
+    bay[5:15, 5:15] = 1
     lab = rasterise_crop([_ann("placement_area", bay, 4)], (0, 0, W, H),
                          out_size=None)
     assert lab.shape == (H, W)
@@ -189,6 +198,131 @@ def test_rng_for_worker_none_matches_plain_default_rng():
     a = _rng_for_worker(5, None).uniform(size=3)
     b = np.random.default_rng(5).uniform(size=3)
     np.testing.assert_array_equal(a, b)
+
+
+# --------------------------------------------------- per-EPOCH rng --
+#
+# The worker id alone is a constant for the life of a run. DataLoader
+# rebuilds its workers from the parent dataset object at the start of
+# every epoch, and that parent's `_worker_id` is permanently None, so the
+# re-seed branch fired every epoch and rebuilt the SAME generator: the
+# crop-jitter multiset repeated byte for byte from epoch 2 onwards.
+# Latent at num_workers=0, which is what every config here ships, and
+# live the moment configs/segmentation.yaml's "raise on Linux" comment is
+# taken up.
+#
+# torch already derives each worker's own seed from the loader's
+# `generator` afresh each epoch - recog/seeding.py's `seed_worker` uses
+# exactly that property for `random` and `numpy.random`, and
+# recog/seg_training.py passes the generator that drives it. These tests
+# read `torch.initial_seed()` through `torch.manual_seed`, which is what
+# sets it, rather than mocking it.
+
+def _tiny_dataset(tmp_path, seed=0):
+    from recog.seg_dataset import BaySegDataset
+
+    coco = _unit_doc([_unit_ann(1, 0, 2, (10, 20, 140, 80), unit_id="item0")])
+    coco_path = tmp_path / "instances_seg.json"
+    coco_path.write_text(json.dumps(coco))
+    return BaySegDataset(str(coco_path), str(tmp_path), seed=seed)
+
+
+class _FakeWorkerInfo:
+    def __init__(self, wid):
+        self.id = wid
+
+
+def _in_worker(monkeypatch, torch, dataset, worker_id, epoch_seed):
+    """Draw one jitter box the way a freshly forked worker would.
+
+    `deepcopy` is the fork: DataLoader hands each worker process its own
+    copy of the PARENT dataset object, and the parent's `_worker_id` has
+    been None since construction. `torch.manual_seed` stands in for what
+    torch itself does inside the worker - reseed the process from a base
+    seed it drew from the loader's generator for THIS epoch.
+    """
+    import copy
+
+    worker = copy.deepcopy(dataset)
+    assert worker._worker_id is None, "a forked worker starts from the parent"
+    monkeypatch.setattr(torch.utils.data, "get_worker_info",
+                        lambda: _FakeWorkerInfo(worker_id))
+    torch.manual_seed(epoch_seed)
+    worker._reseed_for_worker()
+    return [jitter_box((0, 0, 100, 200), worker.rng, 0.06) for _ in range(8)]
+
+
+def test_a_worker_draws_a_new_jitter_stream_every_epoch(tmp_path, monkeypatch):
+    """The defect: identical augmentation in every epoch after the first,
+    with nothing to signal it."""
+    torch = pytest.importorskip("torch")
+    ds = _tiny_dataset(tmp_path)
+
+    epoch1 = _in_worker(monkeypatch, torch, ds, 0, 111_111)
+    epoch2 = _in_worker(monkeypatch, torch, ds, 0, 222_222)
+
+    assert epoch1 != epoch2, (
+        "worker 0 drew the same eight crop boxes in epoch 2 as in epoch 1 - "
+        "the jitter multiset is fixed for the whole run and the model sees "
+        "one draw of it repeated")
+
+
+def test_the_same_epoch_seed_reproduces_the_same_stream(tmp_path, monkeypatch):
+    """Per-epoch variation must not cost reproducibility: the loader
+    generator is seeded (recog/seeding.py's dataloader_kwargs), so the
+    same run replays the same epochs."""
+    torch = pytest.importorskip("torch")
+    ds = _tiny_dataset(tmp_path)
+
+    assert _in_worker(monkeypatch, torch, ds, 0, 333_333) == \
+        _in_worker(monkeypatch, torch, ds, 0, 333_333)
+
+
+def test_two_workers_in_one_epoch_still_draw_different_streams(
+    tmp_path, monkeypatch,
+):
+    """The property the worker id was folded in for in the first place,
+    kept. torch gives worker `i` the epoch's base seed plus `i`, which is
+    what the epoch seeds below model."""
+    torch = pytest.importorskip("torch")
+    ds = _tiny_dataset(tmp_path)
+
+    assert _in_worker(monkeypatch, torch, ds, 0, 444_444) != \
+        _in_worker(monkeypatch, torch, ds, 1, 444_445)
+
+
+def test_two_datasets_with_different_seeds_differ_inside_one_worker(
+    tmp_path, monkeypatch,
+):
+    """`seed` stays in the tuple: a train and a val dataset constructed
+    with different seeds must not collide just because they land in the
+    same worker of the same epoch."""
+    torch = pytest.importorskip("torch")
+
+    a = _in_worker(monkeypatch, torch, _tiny_dataset(tmp_path, seed=0),
+                   0, 555_555)
+    b = _in_worker(monkeypatch, torch, _tiny_dataset(tmp_path, seed=7),
+                   0, 555_555)
+    assert a != b
+
+
+def test_the_main_process_stream_is_untouched(tmp_path, monkeypatch):
+    """num_workers=0 is what every config in this repo actually ships.
+    That path must be byte-for-byte what it was: `default_rng(seed)`,
+    never re-seeded, running continuously across epochs."""
+    torch = pytest.importorskip("torch")
+    ds = _tiny_dataset(tmp_path, seed=5)
+    monkeypatch.setattr(torch.utils.data, "get_worker_info", lambda: None)
+
+    torch.manual_seed(999)
+    before = ds.rng
+    ds._reseed_for_worker()
+    assert ds.rng is before, "the main process must not be re-seeded at all"
+
+    drawn = [jitter_box((0, 0, 100, 200), ds.rng, 0.06) for _ in range(8)]
+    reference_rng = np.random.default_rng(5)
+    assert drawn == [jitter_box((0, 0, 100, 200), reference_rng, 0.06)
+                     for _ in range(8)]
 
 
 # ------------------------------------------------------- per-SKU tracking --

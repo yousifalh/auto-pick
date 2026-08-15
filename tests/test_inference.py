@@ -120,6 +120,179 @@ def test_masks_are_keyed_by_detection_index():
     assert snap.cartridge_masks[1].shape == (50, 40)
 
 
+# ------------------------------------------------- FasterRCNN hot path --
+#
+# `FasterRCNNDetector.detect` is per-frame code inside a 50 ms budget and
+# has no test that runs it, because constructing one needs a checkpoint.
+# These build the object without one - `detect` reads only `self.model`,
+# `self.device`, `self._u8_scale` and `self.segmenter` - so the frame
+# preprocessing and the output decode are exercised directly. Both are
+# EQUIVALENCE tests: they pin the values against the pre-optimisation
+# expressions, which is the whole claim being made about the change.
+
+# torch is imported defensively, NOT via a module-level importorskip:
+# HeuristicDetector exists precisely so this pipeline stays exercisable
+# without torch (see recog/inference.py's module docstring), and skipping
+# the whole file would take those tests down with it.
+try:                                    # pragma: no cover - import guard
+    import torch
+except Exception:                       # pragma: no cover - torch-free CI
+    torch = None
+
+_DEVICES = ([] if torch is None else
+            ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])) \
+    or [pytest.param("cpu", marks=pytest.mark.skip(reason="torch not installed"))]
+
+
+def _recording_detector(out, device):
+    """A `FasterRCNNDetector` whose model is a stub that records its input.
+
+    Subclassed rather than mocked, and constructed without calling
+    `__init__`: `detect` is inherited verbatim, so what these tests
+    measure is the shipped method, and no 160 MB checkpoint is needed to
+    reach it. `detect` reads only these four attributes.
+    """
+    from recog.inference import FasterRCNNDetector
+
+    class _Recording(FasterRCNNDetector):
+        def __init__(self):
+            self.device = torch.device(device)
+            self._u8_scale = torch.tensor(255.0, device=self.device)
+            self.segmenter = None
+            self.received = None
+            self.model = self._record
+
+        def _record(self, images):
+            self.received = images[0]
+            return [out]
+
+    return _Recording()
+
+
+def _stub_output(device):
+    """Two real detections and one unknown class id, on `device`."""
+    d = torch.device(device)
+    return {
+        "boxes": torch.tensor([[10.5, 20.25, 30.75, 40.125],
+                               [1.0, 2.0, 3.0, 4.0],
+                               [5.0, 6.0, 7.0, 8.0]], device=d),
+        "labels": torch.tensor([1, 3, 2], device=d),
+        "scores": torch.tensor([0.9140625, 0.5, 0.703125], device=d),
+    }
+
+
+@pytest.mark.parametrize("device", _DEVICES)
+def test_detect_hands_the_model_the_same_frame_the_float32_path_did(device):
+    """Transferring uint8 and widening on the device must reproduce the
+    old `astype(float32) / 255.0` + `np.transpose` frame BIT FOR BIT.
+
+    Not a formality on CUDA. `div_(255)` with a Python scalar takes
+    torch's Scalar overload, which multiplies by the reciprocal there and
+    disagrees with a true divide by 1 ulp on 126 of the 256 possible byte
+    values; pushed through a real Faster R-CNN that returned a different
+    detection SET, not just different last bits. Dividing by a 0-dim
+    tensor is the correctly-rounded path, and this asserts it.
+    """
+    rng = np.random.default_rng(0)
+    image_rgb = rng.integers(0, 256, (97, 131, 3), dtype=np.uint8)
+
+    det = _recording_detector(_stub_output(device), device)
+    det.detect(image_rgb)
+
+    before_the_change = torch.as_tensor(
+        np.transpose(image_rgb.astype(np.float32) / 255.0, (2, 0, 1)),
+        dtype=torch.float32,
+    ).to(torch.device(device))
+
+    assert det.received.shape == before_the_change.shape
+    assert det.received.dtype == torch.float32
+    assert torch.equal(det.received, before_the_change), (
+        "the frame handed to the model changed value - this optimisation "
+        "is only allowed to change how the bytes travel, not what they are")
+
+
+@pytest.mark.parametrize("device", _DEVICES)
+def test_detect_decodes_exactly_what_the_per_element_loop_decoded(device):
+    """The bulk-transfer decode must produce the same Detection list the
+    `lbl.item()` / `score.item()` / `box.cpu()` loop produced, including
+    dropping the unrecognised class id as background."""
+    from common.types import BBox, ClassLabel, Detection
+    from recog.inference import _ID_TO_LABEL
+
+    out = _stub_output(device)
+    det = _recording_detector(out, device)
+    snap = det.detect(np.zeros((16, 16, 3), np.uint8))
+
+    before_the_change = []
+    for box, lbl, score in zip(out["boxes"], out["labels"], out["scores"]):
+        label = _ID_TO_LABEL.get(int(lbl.item()), ClassLabel.BACKGROUND)
+        if label == ClassLabel.BACKGROUND:
+            continue
+        x1, y1, x2, y2 = box.cpu().numpy().tolist()
+        before_the_change.append(
+            Detection(BBox(x1, y1, x2, y2), label, float(score.item())))
+
+    assert len(snap.detections) == 2, "class id 3 is not ours; it must drop"
+    for got, want in zip(snap.detections, before_the_change):
+        assert got.label is want.label
+        assert got.confidence == want.confidence      # exact, not approx
+        assert (got.bbox.xmin, got.bbox.ymin, got.bbox.xmax, got.bbox.ymax) \
+            == (want.bbox.xmin, want.bbox.ymin, want.bbox.xmax, want.bbox.ymax)
+
+
+@pytest.mark.parametrize("device", _DEVICES)
+def test_detect_reads_the_device_three_times_not_three_times_per_box(device):
+    """The reason for the change, pinned so it cannot regress.
+
+    Every `.item()` and every `.cpu()` on a CUDA tensor is a copy AND a
+    full stream synchronisation. The old loop did three per detection -
+    roughly 30-90 syncs per frame at the shipped 0.70 confidence
+    threshold - to read numbers that arrive in one transfer per field.
+    """
+    calls = {"item": 0, "cpu": 0}
+    item, cpu = torch.Tensor.item, torch.Tensor.cpu
+
+    def counting_item(self):
+        calls["item"] += 1
+        return item(self)
+
+    def counting_cpu(self, *a, **kw):
+        calls["cpu"] += 1
+        return cpu(self, *a, **kw)
+
+    det = _recording_detector(_stub_output(device), device)
+    torch.Tensor.item, torch.Tensor.cpu = counting_item, counting_cpu
+    try:
+        det.detect(np.zeros((16, 16, 3), np.uint8))
+    finally:
+        torch.Tensor.item, torch.Tensor.cpu = item, cpu
+
+    assert calls["item"] == 0, (
+        f"{calls['item']} per-element .item() calls; boxes, labels and "
+        "scores must come back in bulk and be read from numpy")
+    assert calls["cpu"] == 3, (
+        f"{calls['cpu']} device->host transfers, not 3 (boxes, labels, "
+        "scores)")
+
+
+def test_detect_accepts_a_negative_stride_frame():
+    """`bgr[:, :, ::-1]` without a copy is a plausible caller, and
+    `torch.from_numpy` refuses a negative stride outright. The old
+    `.astype(np.float32)` laundered that silently; losing it would be a
+    behaviour change, not a speed-up."""
+    rng = np.random.default_rng(1)
+    bgr = rng.integers(0, 256, (12, 20, 3), dtype=np.uint8)
+    reversed_view = bgr[:, :, ::-1]
+    assert reversed_view.strides[2] < 0, "fixture must be a negative-stride view"
+
+    det = _recording_detector(_stub_output("cpu"), "cpu")
+    det.detect(reversed_view)                     # must not raise
+
+    expected = torch.as_tensor(
+        np.transpose(reversed_view.astype(np.float32) / 255.0, (2, 0, 1)))
+    assert torch.equal(det.received, expected)
+
+
 def test_no_cartridges_means_no_segmenter_call():
     import numpy as np
 
