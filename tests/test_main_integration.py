@@ -6,7 +6,6 @@ with no exceptions and sensible stats.
 """
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
@@ -626,6 +625,73 @@ def test_load_detector_refuses_a_segmenter_it_cannot_run():
 
     # No segmenter: the documented fallback is unchanged.
     assert isinstance(load_detector(None, {}), HeuristicDetector)
+
+
+def test_the_cartridge_tuneables_reach_the_heuristic_extractor():
+    """`cartridge.morph_close_ksize` / `.morph_open_ksize` were the worst
+    of the twelve dead keys in `configs/planning.yaml` (audit 2026-08-15,
+    C1a), and they were dead in the most misleading possible way:
+    `HeuristicPlacementAreaExtractor.__init__` ACCEPTS both, under those
+    exact names and with those exact values, while `_build_planner`
+    passed only `safety_margin_px`. A reader checking whether the config
+    reached the code would find the parameter and stop looking, and
+    editing either key changed nothing about the mask.
+
+    Asserted with values that are NOT the extractor's defaults (5 and 3),
+    because a test at the defaults would pass whether or not the wire
+    exists - which is exactly how this survived.
+    """
+    from main import _build_planner
+
+    planner = _build_planner({
+        "battery": {"diameter_mm": 18.5, "length_mm": 65.0},
+        "camera": {"mm_per_px_x": 0.38},
+        "cartridge": {"safety_margin_px": 4,
+                      "morph_close_ksize": 9, "morph_open_ksize": 7},
+        "occupancy_grid": {"resolution_mm_per_cell": 1.5},
+    })
+    assert planner.extractor.safety_margin_px == 4
+    assert planner.extractor.k_close == 9
+    assert planner.extractor.k_open == 7
+
+
+def test_the_shipped_planning_config_still_gets_the_documented_kernels():
+    """`configs/planning.yaml` states 5 and 3, which ARE the extractor's
+    defaults - so wiring the keys moves no measured number. Pinned so
+    that stays a fact rather than an assumption."""
+    from common.config import load_yaml
+    from main import _build_planner
+
+    plan_cfg = load_yaml(
+        Path(__file__).resolve().parents[1] / "configs" / "planning.yaml")
+    planner = _build_planner(plan_cfg)
+    assert (planner.extractor.k_close, planner.extractor.k_open) == (5, 3)
+    assert planner.extractor.safety_margin_px == 5
+
+
+def test_mode_log_level_reaches_the_pipeline_loggers(demo_config: Path):
+    """`mode.log_level` was in configs/demo.yaml from the beginning and
+    was read by nothing.
+
+    `common.logging` sets `propagate = False` and gives each logger its
+    own handler, so there is no ancestor whose level governs the
+    pipeline - the level has to reach the loggers the modules built at
+    import time. The fixture asks for WARNING; INFO must be off
+    afterwards on a logger `main` never mentions by name.
+    """
+    import logging
+
+    from common.logging import get_logger, set_level
+
+    planner_log = get_logger("autopick.planner")
+    try:
+        set_level("DEBUG")
+        main_run(str(demo_config))
+        assert planner_log.level == logging.WARNING, (
+            "mode.log_level never reached plan.planner's logger")
+        assert not planner_log.isEnabledFor(logging.INFO)
+    finally:
+        set_level("INFO")
 
 
 def test_build_planner_selects_the_extractor_the_config_asks_for():
