@@ -54,3 +54,15 @@ recog/realtest/overlays/
 # Non-deterministic wall-clock timings from forbidden_bench.py; the
 # deterministic counts live in the committed forbidden_bench.csv.
 docs/receipts/forbidden_bench_timings.csv
+
+# Untracked on 2026-08-16, kept locally. The two superseded FDR revisions and
+# the v2 export were history only; NEXT_STEPS.md was an internal working note
+# describing 2026-08-09; and superpowers/plans/ was addressed to the coding
+# agent that executed the specs rather than to a reader. Nothing in them is
+# load-bearing — docs/README.md answers the citations that still point here,
+# and all of it remains in the git history.
+docs/FDR.md
+docs/FDR_v2.md
+docs/FDR_v2.pdf
+docs/NEXT_STEPS.md
+docs/superpowers/plans/

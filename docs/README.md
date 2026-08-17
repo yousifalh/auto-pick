@@ -10,8 +10,15 @@ authoritative and which is history.
 | --- | --- |
 | [`FDR_v3.md`](FDR_v3.md) | **Current, and the only corrected text.** The Final Design Report — requirements, literature review, detailed design, test strategy, risk assessment, AHEP-4 mapping. Every unprefixed `§` reference in the repository README points here. |
 | [`FDR_v3.pdf`](FDR_v3.pdf) | **The submitted artefact, frozen.** Exported at the baseline commit (`69fad79`, 2026-08-05) and not re-exported since. |
-| [`FDR.md`](FDR.md) | Superseded (first revision). Kept for history, with one marked editorial correction (the supervisor's title, title block and §12.2, 2026-08-14). |
-| [`FDR_v2.md`](FDR_v2.md) | Superseded (second revision; its title block still carries unfilled `[fill in]` placeholders). Kept for history, with one marked editorial correction (Appendix F, rows O4.b and Std-1, 2026-08-12). [`FDR_v2.pdf`](FDR_v2.pdf) is the export as it stood before that correction. |
+
+`FDR.md` and `FDR_v2.md`, the two superseded revisions, and `FDR_v2.pdf`, were **removed from the
+published tree on 2026-08-16** along with `NEXT_STEPS.md` and `superpowers/plans/`. Nothing in them
+was load-bearing: the superseded revisions were kept only for history and every figure they carried
+that still stands is stated with its caveat in `FDR_v3.md`; `NEXT_STEPS.md` was an internal working
+note describing where the project stood on 2026-08-09; and the plans were addressed to the coding
+agent that executed them rather than to a reader. Documents written before that date still cite all
+five — this paragraph is the answer to those citations, and they are left standing as the record of
+what was done. They remain in the git history.
 
 **The PDF and the Markdown are no longer the same document, and the Markdown
 is the one to read.** Until 2026-08-12 the `FDR_v3.md` row above ended
@@ -54,11 +61,9 @@ was done, and this paragraph is the answer to them.
 
 | Document | What it is |
 | --- | --- |
-| [`NEXT_STEPS.md`](NEXT_STEPS.md) | **Internal-facing.** Where the project stood on 2026-08-09 and what the author intended to do next. A working note, not a statement of the project's conclusions — it is superseded by `FDR_v3.md` wherever the two differ. |
 | [`ANNOTATION_PROTOCOL.md`](ANNOTATION_PROTOCOL.md) | Operational procedure for producing repeatable real-photo polygon ground truth. Written for whoever holds the camera and mouse. |
 | [`superpowers/specs/`](superpowers/specs/README.md) | The working record: one document per investigation, written at the time and kept as evidence. This is what the report's numbers were derived from. |
 | [`superpowers/audit/`](superpowers/audit/) | **Nineteen adversarial reviews**, each briefed to invalidate rather than confirm. Sixteen were run on 2026-08-12 — A measurement tools, B security, C methodology, D reproducibility, E silent failures, F execution and configuration, G detector, H digital twin, I data pipeline, J claim verification, K complexity, L reachability, M real-photo unlock, N objective closure, O ML maturity, P stranger experience — and three on 2026-08-14: T KUKA conformance, U robot-interface survey, V execution seam. Every claim in them is labelled as measured-by-execution or established-by-reading. The `specs/2026-08-12-fix-*.md` and `specs/2026-08-14-*.md` documents record what was done about them, and [`superpowers/specs/README.md`](superpowers/specs/README.md) indexes both. |
-| [`superpowers/plans/`](superpowers/plans/) | The seven task-by-task implementation plans the design specs were executed from. They open with a note addressed to the coding agent that ran them, and each now carries a one-line header saying so; they are published as evidence of method, not as instructions for a reader. |
 | [`superpowers/blender-dataset-known-issues.md`](superpowers/blender-dataset-known-issues.md) | Measured known issues in the Blender dataset generator. |
 
 ## Generated evidence
