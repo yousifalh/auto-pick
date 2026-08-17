@@ -1,8 +1,24 @@
 # Autonomous Recognition, Pick and Place
 
+> ### One of the four cartridges cannot be automated by a vision system.
+>
+> Not by this one — by any of them. The bay is **65.0 mm**; the cell is **65.0 mm**. Fed perfect
+> masks, perfect boxes and true scale, it places **zero cells in 47 of 47 instances**.
+>
+> **A bay packed to exact tolerance cannot be certified by a vision system: certification needs
+> margin to absorb measurement error, and an exact fit offers none.**
+>
+> A design constraint, not an accuracy problem.
+> **[The derivation ↓](#a-cartridge-that-cannot-be-certified)**
+
 **A vision-guided robotic cell that picks loose 18650 / 21700 lithium-ion cells from a camera view and places them into protective cartridges — perception, digital twin, 2-D bin packing and KUKA command streaming, running end to end in software.**
 
 MEng Individual Project — Yousif Al-Haidary, University of Nottingham, supervised by Professor Svetan Ratchev FREng.
+
+**What this repository is for.** Many people have built a CAD-to-robot perception stack. The part
+worth reading is the measurement discipline: three pre-registered predictions came out null and are
+published as null, one success criterion is recorded as a **Fail**, and one headline figure is
+currently **withdrawn** rather than restated.
 
 ```
 Camera ─▶ Recognition ─▶ Planning ─▶ Execution ─▶ KUKA controller
@@ -16,6 +32,22 @@ Training data is path-traced in Blender from real measured CAD. The robot is a m
 ![Block diagram of the pipeline. An RGB frame enters Recognition, which holds recog/inference.py (Faster R-CNN, ResNet-34 FPN), recog/bay_segmenter.py (DeepLabv3 + MobileNetV3-Large, run per ROI and batched once per frame) and recog/calibration.py. Recognition emits a Snapshot — detections, masks and mm_per_px — to Planning, which holds plan/scene.py, plan/placement_area.py, plan/arbitration.py and common/packing.py's pack_best_effort. Planning emits a PickPlacePose to Execution, which holds execution/protocol.py, execution/execution.py and execution/mock_kuka_server.py, and streams it over TCP as EthernetKRL 3.1. A RobotStatus arrow returns from Execution to Planning each cycle. The real KUKA KR 6 R700 is drawn in a dashed box marked withdrawn.](docs/figures/fig11_architecture.png)
 
 **The shipping architecture, drawn from the code as of 2026-08-12.** Nothing on it is measured: the only quantity is the 8 ms per-cartridge planning budget, which is a requirement (FDR O3), not a result. It is drawn fresh rather than reused because `docs/figures/fig1_architecture.png`, the version in the submitted FDR, predates both the segmenter's arrival in Recognition and the planner's move off bare FFDH — see `docs/superpowers/specs/2026-08-12-figures-audit.md`.
+
+![Six panels in two rows of three. The top row shows three path-traced synthetic frames cropped to their detections, with the Faster R-CNN's boxes drawn on: cyan boxes labelled cartridge with confidences 0.92 to 1.00, and magenta boxes on loose cylindrical cells. The middle frame shows one large open cartridge beside eight loose cells in a row, all eight boxed. The bottom row shows the same three frames with the per-ROI segmenter's six-class label map painted back into each detected cartridge: blue for the cartridge shell, green for the open bay, orange for the electronics module and red for a small obstruction lying in the bay. The middle cartridge's bay is a large unbroken green region; the two closed cartridges in the outer frames are painted flat blue with no bay at all.](docs/figures/fig12_detections.png)
+
+**Both recognition stages on the same frames.** Top: the Faster R-CNN. Bottom: the per-ROI
+segmenter's label map composited back into each detected cartridge — green is the `bay` the packer
+is allowed to use, red is an obstruction lying in it. Note the two *closed* cartridges, painted flat
+blue with no bay: refusing to hallucinate a bay onto a sealed lid is the failure mode that
+[the crown work ↓](#one-gap-diagnosed-to-mechanism-and-closed) was about.
+
+The detector trained on `recog/dataset3d` and the segmenter on `recog/dataset3d_seg`; these frames
+come from `recog/dataset3d_seg_cad_test`, so neither model was fitted to them. **The frames are
+selected, and the rule is mechanical**: the first three in sorted filename order carrying a detected
+cartridge with ≥ 2,000 predicted `bay` pixels — 3 of the first 7 scanned qualified. The crop is a
+display choice; an 18 mm cell is ~25 px in a full 1280×720 frame. **These are renders, not
+photographs**, and nothing here is a measurement — the numbers are in
+[`docs/receipts/`](docs/receipts/). Regenerate with `python scripts/figure_detections.py`.
 
 **Start here** — 15 minutes, no GPU:
 
