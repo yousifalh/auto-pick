@@ -9,7 +9,22 @@ authoritative and which is history.
 | Document | Status |
 | --- | --- |
 | [`FDR_v3.md`](FDR_v3.md) | **Current, and the only corrected text.** The Final Design Report — requirements, literature review, detailed design, test strategy, risk assessment, AHEP-4 mapping. Every unprefixed `§` reference in the repository README points here. |
-| [`FDR_v3.pdf`](FDR_v3.pdf) | **The submitted artefact, frozen.** Exported at the baseline commit (`69fad79`, 2026-08-05) and not re-exported since. |
+
+**`FDR_v3.pdf` was removed from the published tree on 2026-08-17, and the reason is not editorial.**
+Page 2 of it carries the author's student ID in the title block. This repository's history was
+rewritten with `git-filter-repo` before first publication *specifically* to strip that ID from every
+commit tree — publishing the PDF would have put it straight back, in a tracked file, and defeated
+the rewrite entirely. It is untracked and gitignored rather than deleted, and it remains in the git
+history like everything else removed here.
+
+Two corrections go with it, because the row that described it was wrong in both halves. The PDF was
+dated "exported at the baseline commit (`69fad79`, 2026-08-05)"; its own title block reads
+**"Submission date: 5 May 2026"**, and 2026-08-05 is a repository baseline, not a submission. And
+the report it froze describes a **materially different project** from the one `FDR_v3.md` now
+describes: 100 procedurally-drawn OpenCV images against today's Blender/Cycles renders of four
+measured CAD assemblies, no bay segmenter at all, 102 tests against ~1,400, and O2 recorded as a
+**Pass** where it is now measured as a **Fail**. Treating the two as one document with a stale
+figure or two understated the gap by a wide margin.
 
 `FDR.md` and `FDR_v2.md`, the two superseded revisions, and `FDR_v2.pdf`, were **removed from the
 published tree on 2026-08-16** along with `NEXT_STEPS.md` and `superpowers/plans/`. Nothing in them
