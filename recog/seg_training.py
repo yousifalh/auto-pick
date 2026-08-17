@@ -372,19 +372,38 @@ def train(cfg: Dict[str, Any], resume: bool = False,
              seed_transform(train_tf, run_seed, "train augmentation"),
              seed_transform(val_tf, run_seed, "val augmentation"))
 
-    full_dataset = BaySegDataset(
-        coco_path=ds_cfg["coco_path"],
-        img_dir=ds_cfg["img_dir"],
-        out_size=crop_size,
-        jitter_frac=float(ds_cfg.get("jitter_frac", 0.06)),
-        train=True,
-        transform=train_tf,
-        # The crop-jitter RNG follows the RUN seed, so two runs at
-        # different seeds are independent samples in every stochastic
-        # component rather than sharing their box jitter. (The
-        # train/val SPLIT does not - see split_seed below.)
-        seed=run_seed,
-    )
+    # `dataset.whole_frame` selects the architecture-comparison arm:
+    # one sample per IMAGE instead of one per cartridge ROI. Absent or
+    # false everywhere in configs/segmentation*.yaml, so every member of
+    # the byte-identical generalisation family takes the ROI path
+    # unchanged. See recog/seg_wholeframe.py for what the comparison is
+    # and why the split has to be derived rather than drawn.
+    if bool(ds_cfg.get("whole_frame", False)):
+        from recog.seg_wholeframe import WholeFrameSegDataset
+
+        full_dataset = WholeFrameSegDataset(
+            coco_path=ds_cfg["coco_path"],
+            img_dir=ds_cfg["img_dir"],
+            out_size=crop_size,
+            transform=train_tf,
+            seed=run_seed,
+        )
+        log.info("whole-frame arm: %d frames at %d px (ROI path disabled)",
+                 len(full_dataset), crop_size)
+    else:
+        full_dataset = BaySegDataset(
+            coco_path=ds_cfg["coco_path"],
+            img_dir=ds_cfg["img_dir"],
+            out_size=crop_size,
+            jitter_frac=float(ds_cfg.get("jitter_frac", 0.06)),
+            train=True,
+            transform=train_tf,
+            # The crop-jitter RNG follows the RUN seed, so two runs at
+            # different seeds are independent samples in every stochastic
+            # component rather than sharing their box jitter. (The
+            # train/val SPLIT does not - see split_seed below.)
+            seed=run_seed,
+        )
     if len(full_dataset) == 0:
         raise RuntimeError(
             f"No crops found for {ds_cfg['coco_path']}. "
@@ -400,24 +419,82 @@ def train(cfg: Dict[str, Any], resume: bool = False,
     # longer be comparable. It is its own knob and stays at its own
     # default.
     split_seed = int(ds_cfg.get("split_seed", 0))
-    train_set, val_set = _split_dataset(
-        full_dataset, float(ds_cfg.get("train_val_split", 0.85)),
-        seed=split_seed)
-    log.info("train/val split seed=%d (%d train / %d val of %d crops)",
-             split_seed, len(train_set), len(val_set), len(full_dataset))
+    if bool(ds_cfg.get("whole_frame", False)):
+        # The whole-frame arm must NOT draw its own split, and this is the
+        # one place that can go wrong silently.
+        #
+        # It trains on frames; the architecture comparison scores CROPS,
+        # on the crop split. An independent random_split over the 436
+        # frames puts a frame in training whenever the draw says so -
+        # including frames that contribute crops to the crop split's
+        # VALIDATION half. The model would then be scored on pixels it
+        # trained on, it would win, and nothing in the output would say
+        # so. Measured on this corpus: an independent draw gives 371/65,
+        # against 324/112 for the derived split - 47 frames' difference,
+        # every one of them a potential leak.
+        #
+        # So the frame split is DERIVED: a frame trains only if every
+        # crop it carries is in the crop split's training half. See
+        # recog/seg_wholeframe.frame_split_from_crop_split. The asymmetry
+        # handicaps this arm and that is deliberate - a comparison unfair
+        # towards the hypothesis under test is the one worth having.
+        import torch
+
+        from recog.seg_wholeframe import frame_split_from_crop_split
+
+        crop_ds = full_dataset._crops
+        crop_train, _crop_val = _split_dataset(
+            crop_ds, float(ds_cfg.get("train_val_split", 0.85)),
+            seed=split_seed)
+        f_train, f_val = frame_split_from_crop_split(
+            full_dataset, [int(i) for i in crop_train.indices])
+        train_set = torch.utils.data.Subset(full_dataset, f_train)
+        val_set = torch.utils.data.Subset(full_dataset, f_val)
+        log.info(
+            "whole-frame split DERIVED from the crop split seed=%d "
+            "(%d train / %d held out of %d frames; an independent draw "
+            "would have been %d/%d and could leak)",
+            split_seed, len(f_train), len(f_val), len(full_dataset),
+            int(round(float(ds_cfg.get("train_val_split", 0.85))
+                      * len(full_dataset))),
+            len(full_dataset) - int(round(
+                float(ds_cfg.get("train_val_split", 0.85))
+                * len(full_dataset))))
+    else:
+        train_set, val_set = _split_dataset(
+            full_dataset, float(ds_cfg.get("train_val_split", 0.85)),
+            seed=split_seed)
+        log.info("train/val split seed=%d (%d train / %d val of %d crops)",
+                 split_seed, len(train_set), len(val_set), len(full_dataset))
     # Swap in the un-augmented, un-jittered dataset for the val subset -
     # jitter models detector box error, which belongs in training only;
     # any geometry at validation time would make the reported IoU a
     # property of the augmenter, not of the model. Same pattern as
     # recog/training.py.
-    val_set.dataset = BaySegDataset(
-        coco_path=ds_cfg["coco_path"],
-        img_dir=ds_cfg["img_dir"],
-        out_size=crop_size,
-        jitter_frac=float(ds_cfg.get("jitter_frac", 0.06)),
-        train=False,
-        transform=val_tf,
-    )
+    #
+    # The replacement has to be the SAME KIND of dataset the subset's
+    # indices were drawn against. For the whole-frame arm those indices
+    # are FRAME indices, and substituting a BaySegDataset here would index
+    # frame 300 into crop 300 - a different image, silently, with the
+    # validation IoU quietly describing the wrong pixels.
+    if bool(ds_cfg.get("whole_frame", False)):
+        from recog.seg_wholeframe import WholeFrameSegDataset
+
+        val_set.dataset = WholeFrameSegDataset(
+            coco_path=ds_cfg["coco_path"],
+            img_dir=ds_cfg["img_dir"],
+            out_size=crop_size,
+            transform=val_tf,
+        )
+    else:
+        val_set.dataset = BaySegDataset(
+            coco_path=ds_cfg["coco_path"],
+            img_dir=ds_cfg["img_dir"],
+            out_size=crop_size,
+            jitter_frac=float(ds_cfg.get("jitter_frac", 0.06)),
+            train=False,
+            transform=val_tf,
+        )
 
     train_cfg = cfg["training"]
     batch_size = int(train_cfg.get("batch_size", 8))

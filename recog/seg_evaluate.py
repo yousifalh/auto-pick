@@ -510,10 +510,21 @@ def predict_val_crops(segmenter, full_dataset, val_indices: Sequence[int],
 
 
 def evaluate(segmenter, full_dataset, val_indices: Sequence[int],
-            scales: Dict[int, float], num_classes: int = 6
-            ) -> Dict[str, Any]:
+            scales: Dict[int, float], num_classes: int = 6,
+            predict=None) -> Dict[str, Any]:
     """Run the segmenter over every validation crop at native resolution
     and accumulate every metric this module reports.
+
+    ``predict`` overrides how predictions are obtained and defaults to
+    :func:`predict_val_crops`. It exists for exactly one caller -
+    ``recog.seg_wholeframe.predict_val_crops_from_frames``, the
+    whole-frame arm of the architecture comparison, which must run the
+    model over the entire frame and then cut this crop out of the result
+    rather than being handed the crop. Everything after the prediction
+    step is then bit-for-bit the same code for both arms, which is the
+    only way the two are comparable at all. Any replacement must honour
+    ``predict_val_crops``' contract: one NATIVE-resolution label map per
+    entry of ``val_indices``, in ``val_indices``' own order.
 
     ``scales`` maps crop index -> that crop's OWN mm_per_px, as
     :func:`resolve_frame_scales` builds it. It is deliberately NOT a
@@ -588,7 +599,8 @@ def evaluate(segmenter, full_dataset, val_indices: Sequence[int],
     # below then walks val_indices in its ORIGINAL order, so every float
     # sum in this function is added up in exactly the order it was
     # before. See predict_val_crops' docstring.
-    preds = predict_val_crops(segmenter, full_dataset, val_indices)
+    preds = (predict or predict_val_crops)(segmenter, full_dataset,
+                                           val_indices)
 
     for pred, idx in zip(preds, val_indices):
         _img_meta, anns, unit_box = full_dataset.samples[idx]

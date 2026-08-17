@@ -1,0 +1,108 @@
+# Whole-frame segmentation - the ALTERNATIVE arm of the architecture
+# comparison, not a member of the generalisation family.
+#
+# NAMED `wholeframe_segmentation` AND NOT `segmentation_wholeframe` ON
+# PURPOSE. The README and FDR Appendix C both make a checked claim about
+# the `segmentation*.yaml` glob - that all nine training configs matching
+# it are byte-identical apart from three path values, which is what makes
+# every cross-model comparison in this project an ablation rather than an
+# anecdote. This config is deliberately NOT byte-identical to them: it
+# changes the architecture. Naming it outside that glob keeps the claim
+# true and checkable instead of forcing a caveat onto it.
+#
+# What this arm is, and what the comparison is for, is in
+# recog/seg_wholeframe.py's module docstring. Briefly: the shipping
+# segmenter labels a 256x256 crop per detected cartridge; this one labels
+# the whole camera frame in a single pass, and the detector is still what
+# supplies instance identity. The prediction, the resolvable effect and
+# the falsifier were written down before the first run, in
+# docs/superpowers/specs/2026-08-16-wholeframe-preregistration.md.
+
+model:
+  num_classes: 6        # unchanged - same six channels, same paint order
+  pretrained: true
+  # 512, not 256. This is the whole point of the comparison and the one
+  # number worth arguing about.
+  #
+  # The ROI arm sees a ~131x288 px cartridge resized to 256x256, i.e. at
+  # or above its native resolution. A whole-frame model at 512 sees that
+  # same cartridge at 512/1280 = 0.4x of native, so ~52x115 px - about a
+  # quarter of the pixels the ROI arm gets on the same object. That is
+  # the resolution cost the comparison is measuring, stated up front so
+  # a poor result is not mistaken for a training failure.
+  #
+  # 512 rather than native 1280x720 because a 1280x720 forward pass is
+  # ~1.76x the pixel count of eight 256x256 crops and would not fit the
+  # 50 ms end-to-end budget alongside detection. If 512 loses badly, a
+  # native-resolution run is the obvious follow-up and it should be
+  # reported as a SEPARATE arm, not as this one re-tuned.
+  crop_size: 512
+  half: true
+
+dataset:
+  # THE SWITCH. seg_training reads this and builds WholeFrameSegDataset
+  # (one sample per image) instead of BaySegDataset (one per cartridge
+  # ROI). Absent from every configs/segmentation*.yaml, so the family
+  # above is untouched.
+  whole_frame: true
+
+  # The same corpus the shipping segmenter trained on, deliberately: the
+  # comparison must differ in architecture and nothing else.
+  coco_path: recog/dataset3d_seg/instances_seg.json
+  img_dir: recog/dataset3d_seg/images
+  train_val_split: 0.85
+  split_seed: 0
+
+  # No crop jitter. Jitter exists in the ROI path to simulate the
+  # detector's box error, because at inference the crop comes from the
+  # detector rather than from ground truth. A whole-frame model is handed
+  # the frame; there is no box error to simulate. Left at 0.0 explicitly
+  # rather than deleted, so the difference from segmentation.yaml is
+  # visible on the same line rather than by absence.
+  jitter_frac: 0.0
+
+training:
+  epochs: 40
+  # 2, not 8. A 512x512 sample is 4x the pixels of a 256x256 one and the
+  # activations scale with it; 8 will not fit an RTX 3060 alongside
+  # DeepLabv3's ASPP. The learning rate below is scaled with it.
+  batch_size: 2
+  num_workers: 0
+  # 0.0025, not 0.01 - linear scaling with the batch size (8 -> 2). Not a
+  # tuned value and not claimed as one. If the whole-frame arm loses,
+  # "the LR was wrong" is the first objection, so it is set by the same
+  # rule the ROI arm's would be rather than by hand, and a sweep is the
+  # named follow-up rather than a silent re-run.
+  learning_rate: 0.0025
+  momentum: 0.9
+  weight_decay: 0.0001
+  lr_scheduler: cosine
+  # 0.5, unchanged. Dice matters MORE here, not less: on a whole frame
+  # the cartridges occupy a small fraction of the pixels, so `bay`
+  # becomes rarer than it is in a crop and cross-entropy is dominated by
+  # background even harder. Left unchanged anyway, because changing two
+  # things at once is how a comparison stops meaning anything. If the arm
+  # loses on the rare classes specifically, reweighting is the named
+  # follow-up.
+  dice_weight: 0.5
+  seed: 20260812
+  deterministic: warn
+  checkpoint_dir: recog/checkpoints/seg_wholeframe
+  select_on: [bay, electronics, obstruction]
+
+augmentation:
+  # Byte-identical to configs/segmentation.yaml. Not reviewed, not
+  # re-tuned, not improved - identical, so that augmentation cannot be
+  # the explanation for whichever arm wins.
+  brightness_limit: 0.55
+  contrast_limit: 0.50
+  gamma_limit: [45, 190]
+  hue_shift_limit: 15
+  sat_shift_limit: 30
+  val_shift_limit: 20
+  motion_blur_limit: [3, 11]
+  gauss_noise_std_range: [0.02, 0.14]
+  p_photometric: 0.85
+  p_flip: 0.5
+  p_rot90: 0.5
+  p_camera: 0.6

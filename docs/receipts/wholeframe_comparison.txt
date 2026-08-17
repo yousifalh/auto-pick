@@ -1,0 +1,21 @@
+whole-frame vs per-ROI segmentation - architecture comparison
+pre-registration: docs/superpowers/specs/2026-08-16-wholeframe-preregistration.md
+
+  val crops       : 126  (identical for both arms)
+  whole-frame split: 324 train frames, 112 held out
+  leak check      : PASS - no training frame feeds a val crop
+  mm/px           : {'n_measured': 126, 'n_fallback': 0, 'n_frames': 112, 'fallback': None}
+
+metric                                     ROI   whole-frame     delta
+----------------------------------------------------------------------
+bay boundary displacement (mm)           1.226         6.852    +5.626
+bay IoU                                 0.8903        0.6161   -0.2742
+electronics IoU                         0.8613        0.5650   -0.2963
+obstruction IoU                         0.6579        0.0000   -0.6579
+selected mean IoU                       0.8032        0.3937   -0.4095
+
+baseline (published ROI figure) : 1.226 mm
+prediction: whole-frame >= 1.726 mm (worse by >= 0.50 mm)
+falsifier : whole-frame within 0.25 mm AND <= 40 ms/frame
+
+VERDICT: PREDICTION HELD. Spec 3.1's conclusion is confirmed by measurement; its stated reason (connected components) should be replaced by the measured one (resolution per object at this scale).

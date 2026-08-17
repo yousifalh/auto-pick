@@ -192,6 +192,30 @@ cluster of touching cells into a single blob". Connected-component instance
 recovery reintroduces that exact failure mode on the same hardware, after the
 project already paid to diagnose it.
 
+**Amended 2026-08-16, on measurement.** That paragraph rejected the wrong thing.
+It disposes of whole-frame *plus connected components*, but a whole-frame model
+can keep the detector for instance identity and supply pixel labels only — a
+cartridge's mask being the frame prediction intersected with its own box — and
+no connected components appear anywhere. Against that design this section had
+**no evidence at all**, only an objection that did not apply to it.
+
+It does now. A whole-frame arm was pre-registered and trained
+(`2026-08-16-wholeframe-preregistration.md`, `configs/wholeframe_segmentation.yaml`)
+and scored on the same 126 validation crops through the same metric code, differing
+only in the prediction step. Bay boundary displacement **1.226 → 6.852 mm**, bay IoU
+**0.8903 → 0.6161**, and `obstruction` **0.6579 → 0.0000** — not learned at any epoch,
+because obstructions are the smallest objects in the corpus and 512/1280 leaves them a
+few pixels wide. Receipt: `docs/receipts/wholeframe_comparison.txt`.
+
+So the conclusion survives and the *reason* is replaced: this section rests on
+resolution per object at this scale, not on connected components. Two limits on
+that, both stated in the pre-registration and neither resolved here: class
+imbalance is not excluded as a contributor to the `obstruction` collapse, so
+"the default whole-frame configuration is unusable here" is the claim, not "no
+whole-frame configuration could work"; and the cost argument is scale-dependent —
+per-ROI pays 2.3 ms per cartridge against a fixed whole-frame pass, so the two
+cross at roughly **14 cartridges per frame**, and this corpus carries 1–8.
+
 ### 3.2 Where the segmenter runs, and the O3 budget
 
 FDR O3 is a **tested requirement**: queue rebuild ≤ 8 ms per cartridge, verified
