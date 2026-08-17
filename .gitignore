@@ -55,16 +55,31 @@ recog/realtest/overlays/
 # deterministic counts live in the committed forbidden_bench.csv.
 docs/receipts/forbidden_bench_timings.csv
 
-# Untracked on 2026-08-16, kept locally. The two superseded FDR revisions and
-# the v2 export were history only; NEXT_STEPS.md was an internal working note
-# describing 2026-08-09; and superpowers/plans/ was addressed to the coding
-# agent that executed the specs rather than to a reader. Nothing in them is
-# load-bearing — docs/README.md answers the citations that still point here,
-# and all of it remains in the git history.
+# Untracked from the published tree, kept locally, all still in git history.
+# docs/README.md carries the paragraph that answers the citations still
+# pointing at each of them.
+#
+# 2026-08-16 — history and working notes. FDR.md and FDR_v2.md are superseded
+# revisions kept only for history, with FDR_v2.pdf their export; NEXT_STEPS.md
+# was an internal note describing where things stood on 2026-08-09.
 docs/FDR.md
 docs/FDR_v2.md
 docs/FDR_v2.pdf
 docs/NEXT_STEPS.md
-docs/superpowers/plans/
+
+# 2026-08-17 — page 2 of this PDF carries the author's student ID in its title
+# block. The repository history was rewritten with git-filter-repo before first
+# publication specifically to strip that ID from every commit tree; publishing
+# this file would have put it straight back. THIS ENTRY IS A PRIVACY CONTROL,
+# not tidying — do not remove it without redacting and re-exporting first.
 docs/FDR_v3.pdf
+
+# 2026-08-17 — the working record: one spec per investigation and nineteen
+# adversarial reviews, 70 files. Supersedes the earlier superpowers/plans/
+# entry, which this covers. Cited ~144 times from 50 files that remain, in both
+# READMEs, FDR_v3.md and several source comments; those citations are left
+# standing as the record of what was investigated and when. The cost, stated in
+# docs/README.md: a claim of the form "measured in spec X" can no longer be
+# followed to spec X. docs/receipts/ and docs/CORRECTIONS.md are what a reader
+# can still check.
 docs/superpowers/
